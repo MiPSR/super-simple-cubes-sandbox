@@ -35,5 +35,16 @@ The host needs no Rust toolchain; everything goes through Nix.
 
 ## Current state
 
-Pre-alpha: engine architecture phase. See `implemented-features.md` for what
-actually works.
+Pre-alpha engine milestone: working client+server, both buildable and
+runnable through Nix.
+
+- Local play: `nix run .#ssc-client` (spawns an embedded server thread).
+- Dedicated play: `nix run .#ssc-server`, then
+  `nix run .#ssc-client -- --connect host:port`.
+- Textured cube world (procedural placeholder atlas), server-authoritative
+  20 TPS physics, dig/place with server-side raycasts, server-driven sound
+  triggers (logged), frustum + face culling, first-cut Distant
+  Horizons-style LOD.
+
+See `implemented-features.md` for the full parity tracker.
+

@@ -18,4 +18,5 @@ ssc-server = { path = "../ssc-server" }
 [features]
 default = ["opengl"]
 opengl = ["ssc-engine/opengl"]
-vulkan = ["ssc-engine/vulkan"]
+# The vulkan backend is engine-side and not fully implemented yet; it is
+# deliberately not selectable from the client until it works.

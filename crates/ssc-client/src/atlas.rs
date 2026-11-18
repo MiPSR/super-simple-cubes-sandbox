@@ -1,0 +1,167 @@
+//! Procedural placeholder texture atlas.
+//!
+//! Produces a 256×256 RGBA atlas of 16×16-pixel tiles in the exact layout
+//! the block registry's tile ids reference (`ssc_world::blocks`). This
+//! keeps us asset-free while staying compatible with the Minecraft texture
+//! convention: once a real pack loader lands (PNG via the approved `png`
+//! crate), it just fills the same atlas slots.
+//!
+//! Row order is bottom-up (GL convention, `specs.md` engine contract).
+
+/// Tiles per atlas edge.
+pub const ATLAS_TILES: u32 = 16;
+/// Pixels per tile edge.
+pub const TILE_SIZE: u32 = 16;
+/// Atlas edge in pixels.
+pub const ATLAS_PX: u32 = ATLAS_TILES * TILE_SIZE;
+
+/// Deterministic per-pixel hash noise in `0..1`.
+fn noise2(x: i32, y: i32, s: i32) -> f32 {
+    let mut h = (x as u32).wrapping_mul(3_747_613_937)
+        ^ (y as u32).wrapping_mul(2_654_435_761)
+        ^ (s as u32).wrapping_mul(2_246_822_519);
+    h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
+    h ^= h >> 16;
+    (h & 0xFFFF) as f32 / 65535.0
+}
+
+/// Smooth-ish value noise by averaging a 2×2 hash neighborhood.
+fn smooth_noise2(x: i32, y: i32, s: i32) -> f32 {
+    let a = noise2(x, y, s);
+    let b = noise2(x + 1, y, s);
+    let c = noise2(x, y + 1, s);
+    let d = noise2(x + 1, y + 1, s);
+    (a + b + c + d) * 0.25
+}
+
+type Rgb = [u8; 3];
+
+fn mix(base: Rgb, shade: f32) -> Rgb {
+    [
+        (base[0] as f32 * shade).clamp(0.0, 255.0) as u8,
+        (base[1] as f32 * shade).clamp(0.0, 255.0) as u8,
+        (base[2] as f32 * shade).clamp(0.0, 255.0) as u8,
+    ]
+}
+
+/// Paint one pixel of tile `tile` at intra-tile coords `(x, y)` (y down
+/// in image space).
+fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgb {
+    match tile {
+        ssc_world::TILE_MISSING => {
+            // Magenta/black 2×2 checker — unmissable.
+            if (x / 2 + y / 2) % 2 == 0 { [255, 0, 255] } else { [10, 10, 10] }
+        }
+        ssc_world::TILE_STONE => {
+            let n = smooth_noise2(x, y, 1);
+            mix([128, 128, 128], 0.82 + n * 0.36)
+        }
+        ssc_world::TILE_COBBLESTONE => {
+            // 4×4 rounded stones with dark seams.
+            let cell = (x / 4 + (y / 4) * 4) as i32;
+            let in_seam = x % 4 == 0 || y % 4 == 0;
+            let n = noise2(x, y, cell + 2);
+            if in_seam {
+                mix([70, 70, 70], 0.9 + n * 0.2)
+            } else {
+                mix([135, 135, 135], 0.8 + n * 0.4)
+            }
+        }
+        ssc_world::TILE_DIRT => mix([134, 96, 67], 0.75 + noise2(x, y, 3) * 0.5),
+        ssc_world::TILE_GRASS_TOP => mix([98, 160, 74], 0.75 + noise2(x, y, 4) * 0.5),
+        ssc_world::TILE_GRASS_SIDE => {
+            // Dirt with a ragged grass lip on top.
+            let edge = 2 + (noise2(x, 0, 5) * 2.5) as i32;
+            if y < edge {
+                mix([98, 160, 74], 0.8 + noise2(x, y, 4) * 0.4)
+            } else {
+                mix([134, 96, 67], 0.75 + noise2(x, y, 3) * 0.5)
+            }
+        }
+        ssc_world::TILE_SAND => mix([219, 207, 163], 0.88 + noise2(x, y, 6) * 0.24),
+        ssc_world::TILE_SANDSTONE_TOP => mix([216, 203, 155], 0.93 + noise2(x, y, 7) * 0.14),
+        ssc_world::TILE_SANDSTONE_SIDE => {
+            if (4..7).contains(&y) {
+                mix([196, 183, 135], 0.95 + noise2(x, y, 8) * 0.1)
+            } else {
+                mix([216, 203, 155], 0.92 + noise2(x, y, 7) * 0.16)
+            }
+        }
+        ssc_world::TILE_GRAVEL => {
+            let n = noise2(x, y, 9);
+            if n > 0.72 {
+                mix([160, 150, 140], 0.9 + n * 0.1) // light pebbles
+            } else {
+                mix([110, 100, 95], 0.8 + n * 0.4)
+            }
+        }
+        ssc_world::TILE_LOG_TOP => {
+            // Concentric rings.
+            let dx = x as f32 - 7.5;
+            let dy = y as f32 - 7.5;
+            let r = (dx * dx + dy * dy).sqrt();
+            let ring = ((r * 1.4).sin() * 0.5 + 0.5) * 0.25;
+            mix([160, 130, 78], 0.85 - ring + noise2(x, y, 10) * 0.1)
+        }
+        ssc_world::TILE_LOG_SIDE => {
+            // Vertical bark streaks.
+            let streak = noise2(x, 0, 11);
+            let dark_col = streak > 0.65;
+            mix([107, 84, 51], if dark_col { 0.72 } else { 0.98 } + noise2(x, y, 11) * 0.08)
+        }
+        ssc_world::TILE_PLANKS => {
+            let seam_row = y % 4 == 3;
+            let band = y / 4;
+            let seam_x = (noise2(0, band, 12) * 16.0) as i32;
+            if seam_row || x == seam_x {
+                mix([110, 86, 52], 0.9)
+            } else {
+                mix([162, 130, 78], 0.9 + noise2(x, y, 12) * 0.2)
+            }
+        }
+        ssc_world::TILE_LEAVES => {
+            let n = noise2(x, y, 13);
+            if n > 0.8 {
+                mix([30, 70, 25], 1.0) // dark holes
+            } else {
+                mix([60, 120, 45], 0.75 + n * 0.5)
+            }
+        }
+        ssc_world::TILE_SNOW => mix([240, 246, 250], 0.96 + noise2(x, y, 14) * 0.06),
+        ssc_world::TILE_BRICKS => {
+            let row = y / 4;
+            let offset = (row % 2) * 4;
+            let mortar_row = y % 4 == 3;
+            let mortar_col = (x + offset) % 8 == 7;
+            if mortar_row || mortar_col {
+                mix([188, 188, 188], 0.92)
+            } else {
+                mix([150, 67, 54], 0.85 + noise2(x, y, 15) * 0.3)
+            }
+        }
+        _ => [255, 0, 255],
+    }
+}
+
+/// Build the atlas as raw RGBA with row 0 at the **bottom** (GL upload
+/// convention).
+pub fn build_atlas_rgba() -> Vec<u8> {
+    let mut out = vec![0u8; (ATLAS_PX * ATLAS_PX * 4) as usize];
+    for tile in 0..(ATLAS_TILES * ATLAS_TILES) {
+        let tx = (tile % ATLAS_TILES) * TILE_SIZE;
+        let ty = (tile / ATLAS_TILES) * TILE_SIZE;
+        for py in 0..TILE_SIZE {
+            for px in 0..TILE_SIZE {
+                let rgb = paint_pixel(tile as u16, px as i32, py as i32);
+                let img_y = ty + py; // image row, y down from top
+                let gl_y = ATLAS_PX - 1 - img_y; // flip for GL
+                let idx = ((gl_y * ATLAS_PX) + tx + px) as usize * 4;
+                out[idx] = rgb[0];
+                out[idx + 1] = rgb[1];
+                out[idx + 2] = rgb[2];
+                out[idx + 3] = 255;
+            }
+        }
+    }
+    out
+}

@@ -5,3 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+
+# LOD data comes from the server as coarse column summaries; this crate is
+# deliberately standalone (no world dependency) so it stays pure presentation.
+[dependencies]

@@ -19,6 +19,14 @@ repository = "https://github.com/MiPSR/super-simple-cubes-sandbox"
 # Selection of what gets built is done via workspace members (-p) and Cargo
 # features (graphics backend: `opengl` default, `vulkan`), per specs.md §2.
 
+[workspace.dependencies]
+# Owner-approved stack (specs.md §4): minimal, ultra-popular, well-maintained.
+glam = "0.29"          # math (Bevy's math lib, SIMD, pure Rust)
+winit = "0.30"         # windowing (rust-windowing org)
+glutin = "0.32"        # GL context creation (rust-windowing org)
+glow = "0.16"          # GL bindings (pure Rust, egui-glow's loader)
+raw-window-handle = "0.6" # window handle traits (same crate winit/glutin use)
+
 [profile.dev]
 # Keep debug builds usable for perf-sensitive voxel work.
 opt-level = 1

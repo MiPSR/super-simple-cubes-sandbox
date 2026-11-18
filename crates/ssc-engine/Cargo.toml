@@ -6,10 +6,20 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+ssc-math = { path = "../ssc-math" }
+glam.workspace = true
+# The windowing/GFX stack below is only pulled in by the enabled backend
+# features; the rest of the project never sees these crates.
+winit = { version = "0.30", optional = true }
+glutin = { version = "0.32", optional = true }
+glow = { version = "0.16", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+
 # Backend selection (specs.md §3): OpenGL is the default; Vulkan is opt-in.
 # Backends are implemented inside this crate only; the client never sees a
 # raw GFX API.
 [features]
 default = ["opengl"]
-opengl = []
-vulkan = []
+opengl = ["dep:winit", "dep:glutin", "dep:glow", "dep:raw-window-handle"]
+vulkan = [] # planned: ash

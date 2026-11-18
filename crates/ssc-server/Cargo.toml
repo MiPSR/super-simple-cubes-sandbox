@@ -10,8 +10,3 @@ repository.workspace = true
 ssc-math = { path = "../ssc-math" }
 ssc-world = { path = "../ssc-world" }
 ssc-protocol = { path = "../ssc-protocol" }
-
-[features]
-default = []
-# `dedicated`: build the standalone server binary entry point.
-dedicated = []

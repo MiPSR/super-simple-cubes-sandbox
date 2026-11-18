@@ -1,17 +1,681 @@
 //! `ssc-client` — the game client.
 //!
 //! Per `specs.md` §2 this process contains **zero game logic**: it renders
-//! what the server sends and forwards player input. Even sound triggers come
-//! from the server. All rendering goes through `ssc-engine` — never a raw
-//! GFX API. For local play it embeds the `ssc-server` library in-process.
+//! what the server sends and forwards player input. Even sound triggers
+//! come from the server (printed here until an audio backend is approved
+//! and wired up — ask-before-deps, `specs.md` §4). All rendering goes
+//! through `ssc-engine` — never a raw GFX API. For local play it embeds
+//! the `ssc-server` library in-process.
+
+mod atlas;
+mod mesh;
+mod state;
+
+use std::collections::HashMap;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
+
+use ssc_engine::{
+    Camera, DrawCmd, EngineEvent, EngineSettings, Flow, Frame, Key, KeyState, MeshId,
+};
+use ssc_math::{MOUSE_SENS, PLAYER_EYE_HEIGHT, Vec3};
+use ssc_protocol::packets::{keys, ClientPacket, ServerPacket, SoundId};
+use ssc_protocol::wire::{TcpWire, Wire};
+use ssc_protocol::PROTOCOL_VERSION;
+use ssc_server::{spawn_local, ServerConfig};
+use ssc_world::{valid_id, BlockId, ColumnKey};
+
+use mesh::SubchunkMesh;
+use state::ClientWorld;
+
+/// Extra Chebyshev margin (columns) around the near area where LOD cells
+/// are skipped in favor of full-detail meshes.
+const NEAR_MARGIN_EXTRA: i32 = 1;
+
+/// Far plane: must cover the LOD ring.
+const Z_FAR: f32 = 1800.0;
+
+/// Dig/place repeat rate while the button is held.
+const ACTION_REPEAT: Duration = Duration::from_millis(250);
+
+/// Interval for player input snapshots.
+const INPUT_INTERVAL: Duration = Duration::from_millis(45);
+
+// ---------------------------------------------------------------------------
+// Mesh worker (background meshing; GL stays on the main thread)
+// ---------------------------------------------------------------------------
+
+enum Job {
+    Column(ColumnKey),
+    Region {
+        rx: i32,
+        rz: i32,
+        pcx: i32,
+        pcz: i32,
+        near_margin: i32,
+    },
+}
+
+enum JobResult {
+    Column { key: ColumnKey, meshes: Vec<SubchunkMesh> },
+    Region { rx: i32, rz: i32, mesh: Option<ssc_lod::LodMesh> },
+}
+
+fn spawn_worker(shared: Arc<RwLock<ClientWorld>>) -> (Sender<Job>, Receiver<JobResult>) {
+    let (job_tx, job_rx) = mpsc::channel::<Job>();
+    let (res_tx, res_rx) = mpsc::channel::<JobResult>();
+    std::thread::Builder::new()
+        .name("mesh-worker".into())
+        .spawn(move || {
+            while let Ok(job) = job_rx.recv() {
+                match job {
+                    Job::Column(key) => {
+                        let guard = shared.read().unwrap_or_else(|e| e.into_inner());
+                        let meshes = mesh::build_column_meshes(&guard.world, key.0, key.1);
+                        let _ = res_tx.send(JobResult::Column { key, meshes });
+                    }
+                    Job::Region { rx, rz, pcx, pcz, near_margin } => {
+                        let guard = shared.read().unwrap_or_else(|e| e.into_inner());
+                        let built = guard.build_region(rx, rz, pcx, pcz, near_margin);
+                        let _ = res_tx.send(JobResult::Region { rx, rz, mesh: built });
+                    }
+                }
+            }
+        })
+        .expect("spawn mesh worker");
+    (job_tx, res_rx)
+}
+
+// ---------------------------------------------------------------------------
+// The client application
+// ---------------------------------------------------------------------------
+
+struct App {
+    wire: Box<dyn Wire>,
+    shared: Arc<RwLock<ClientWorld>>,
+    job_tx: Sender<Job>,
+    job_rx: Receiver<JobResult>,
+    /// Jobs in flight (avoid duplicates).
+    queued_cols: HashMap<ColumnKey, Instant>,
+    queued_regions: HashMap<(i32, i32), Instant>,
+    /// Live GPU meshes: key → (mesh id, bounds).
+    sub_meshes: HashMap<ColumnKey, HashMap<usize, (MeshId, ssc_math::Aabb)>>,
+    region_meshes: HashMap<(i32, i32), (MeshId, ssc_math::Aabb)>,
+    next_mesh_id: MeshId,
+    // Player presentation state.
+    pos_prev: Vec3,
+    pos_cur: Vec3,
+    state_time: Instant,
+    yaw: f32,
+    pitch: f32,
+    keys: u16,
+    selected_slot: u8,
+    hotbar: [BlockId; 9],
+    joined: bool,
+    render_distance: i32,
+    last_player_col: ColumnKey,
+    // Timers.
+    hello_sent: bool,
+    last_input_send: Instant,
+    last_dig: Instant,
+    last_place: Instant,
+    ui_click: bool,
+    // Stats reporting.
+    frames: u32,
+    stat_ms: f32,
+    stat_drawn: u32,
+    stat_culled: u32,
+    stat_calls: u32,
+    last_report: Instant,
+    atlas_uploaded: bool,
+}
+
+impl App {
+    fn new(wire: Box<dyn Wire>, shared: Arc<RwLock<ClientWorld>>, job_tx: Sender<Job>, job_rx: Receiver<JobResult>) -> Self {
+        let now = Instant::now();
+        // Debug camera overrides (orientation testing / screenshots).
+        let yaw = std::env::var("SSC_YAW").ok().and_then(|v| v.parse().ok());
+        let pitch = std::env::var("SSC_PITCH").ok().and_then(|v| v.parse().ok());
+        Self {
+            wire,
+            shared,
+            job_tx,
+            job_rx,
+            queued_cols: HashMap::new(),
+            queued_regions: HashMap::new(),
+            sub_meshes: HashMap::new(),
+            region_meshes: HashMap::new(),
+            next_mesh_id: 1,
+            pos_prev: Vec3::new(8.5, 128.0, 8.5),
+            pos_cur: Vec3::new(8.5, 128.0, 8.5),
+            state_time: now,
+            yaw: yaw.unwrap_or(0.0),
+            pitch: pitch.unwrap_or(0.0),
+            keys: 0,
+            selected_slot: 0,
+            hotbar: [0; 9],
+            joined: false,
+            render_distance: 8,
+            last_player_col: (0, 0),
+            hello_sent: false,
+            last_input_send: now,
+            last_dig: now,
+            last_place: now,
+            ui_click: false,
+            frames: 0,
+            stat_ms: 0.0,
+            stat_drawn: 0,
+            stat_culled: 0,
+            stat_calls: 0,
+            last_report: now,
+            atlas_uploaded: false,
+        }
+    }
+
+    fn send(&mut self, pkt: &ClientPacket) {
+        if let Err(e) = self.wire.send(&pkt.encode()) {
+            eprintln!("[client] send failed: {e}");
+        }
+    }
+
+    /// One frame.
+    fn tick(&mut self, frame: &mut Frame, events: &[EngineEvent]) -> Flow {
+        // Upload the procedural placeholder atlas once (real texture-pack
+        // loading via PNG lands later — same atlas slots, specs.md §3).
+        if !self.atlas_uploaded {
+            let rgba = atlas::build_atlas_rgba();
+            if let Err(e) = frame.upload_atlas(&rgba, atlas::ATLAS_PX, atlas::ATLAS_PX) {
+                eprintln!("[client] atlas upload failed: {e}");
+            }
+            self.atlas_uploaded = true;
+        }
+
+        self.ui_click = false;
+        for ev in events {
+            match *ev {
+                EngineEvent::Closed => return Flow::Exit,
+                EngineEvent::Key { key: Key::Escape, state: KeyState::Pressed } => {
+                    let locked = frame.mouse_locked();
+                    frame.set_mouse_locked(!locked);
+                }
+                EngineEvent::Key { key: Key::Digit(n), state: KeyState::Pressed } => {
+                    self.selected_slot = n - 1;
+                    if self.joined {
+                        let id = self.hotbar[self.selected_slot as usize];
+                        println!(
+                            "[hotbar] slot {}: {}",
+                            self.selected_slot,
+                            ssc_world::info(id).name
+                        );
+                        self.send(&ClientPacket::SelectSlot { slot: self.selected_slot });
+                    }
+                }
+                EngineEvent::MouseButton { button, state: KeyState::Pressed } => {
+                    // While unlocked, the first click grabs the mouse
+                    // instead of interacting (classic FPS UX).
+                    if !frame.mouse_locked() {
+                        self.ui_click = true;
+                        frame.set_mouse_locked(true);
+                    }
+                    let _ = button;
+                }
+                EngineEvent::Focused(false) => frame.set_mouse_locked(false),
+                _ => {}
+            }
+        }
+
+        // Look (client-side smoothing of server-driven state; logic stays
+        // on the server — this is presentation only).
+        let input = frame.input();
+        if frame.mouse_locked() {
+            self.yaw += input.mouse_dx * MOUSE_SENS;
+            self.pitch -= input.mouse_dy * MOUSE_SENS;
+            self.pitch = self.pitch.clamp(-1.5697, 1.5697); // ±89.9°
+        }
+
+        // Input mask.
+        let i = frame.input();
+        let mut mask = 0u16;
+        if i.key(Key::W) {
+            mask |= keys::FORWARD;
+        }
+        if i.key(Key::S) {
+            mask |= keys::BACKWARD;
+        }
+        if i.key(Key::A) {
+            mask |= keys::LEFT;
+        }
+        if i.key(Key::D) {
+            mask |= keys::RIGHT;
+        }
+        if i.key(Key::Space) {
+            mask |= keys::JUMP;
+        }
+        if i.key(Key::Shift) {
+            mask |= keys::SNEAK;
+        }
+        if i.key(Key::Ctrl) {
+            mask |= keys::SPRINT;
+        }
+        self.keys = mask;
+
+        // Network out.
+        if !self.hello_sent {
+            self.hello_sent = true;
+            self.send(&ClientPacket::Hello {
+                version: PROTOCOL_VERSION,
+                name: "player".into(),
+            });
+        }
+        if Instant::now() - self.last_input_send >= INPUT_INTERVAL {
+            self.last_input_send = Instant::now();
+            self.send(&ClientPacket::Input { keys: self.keys, yaw: self.yaw, pitch: self.pitch });
+        }
+
+        // Held dig/place (no action consumed by UI clicks).
+        if !self.ui_click {
+            let now = Instant::now();
+            if i.mouse_left && frame.mouse_locked() && now - self.last_dig >= ACTION_REPEAT {
+                self.last_dig = now;
+                self.send(&ClientPacket::Dig);
+            }
+            if i.mouse_right && frame.mouse_locked() && now - self.last_place >= ACTION_REPEAT {
+                self.last_place = now;
+                self.send(&ClientPacket::Place);
+            }
+        }
+
+        // Network in.
+        while let Some(bytes) = self.wire.try_recv() {
+            match ServerPacket::decode(&bytes) {
+                Ok(p) => {
+                    if self.handle_packet(frame, p) == Flow::Exit {
+                        return Flow::Exit;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[client] bad packet from server: {e}");
+                    return Flow::Exit;
+                }
+            }
+        }
+
+        // Drop stale queued jobs (server moved on).
+        self.gc_stale_jobs();
+
+        // Enqueue mesh jobs for dirty columns/regions.
+        self.pump_mesh_jobs(frame);
+
+        // Consume finished meshes.
+        self.upload_finished_meshes(frame);
+
+        // Track player column: nearby LOD regions must re-mesh when the
+        // near ring moves.
+        if self.joined {
+            let pcx = (self.pos_cur.x as i32).div_euclid(16);
+            let pcz = (self.pos_cur.z as i32).div_euclid(16);
+            if (pcx, pcz) != self.last_player_col {
+                self.last_player_col = (pcx, pcz);
+                let (prx, prz) = ssc_lod::region_of(pcx, pcz);
+                {
+                    let mut w = self.shared.write().unwrap_or_else(|e| e.into_inner());
+                    for rx in prx - 2..=prx + 2 {
+                        for rz in prz - 2..=prz + 2 {
+                            w.dirty_regions.insert((rx, rz));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build the draw list.
+        let mut draws = Vec::with_capacity(self.sub_meshes.len() * 8 + self.region_meshes.len());
+        for (_key, subs) in &self.sub_meshes {
+            for (_sub, (id, aabb)) in subs {
+                draws.push(DrawCmd { mesh: *id, aabb: *aabb, lod: false });
+            }
+        }
+        for (_r, (id, aabb)) in &self.region_meshes {
+            draws.push(DrawCmd { mesh: *id, aabb: *aabb, lod: true });
+        }
+
+        // Camera: interpolate the last two server states over one tick.
+        let alpha = ((Instant::now() - self.state_time).as_secs_f32() / 0.05).clamp(0.0, 1.0);
+        let pos = self.pos_prev.lerp(self.pos_cur, alpha);
+        let camera = Camera {
+            pos: pos + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0),
+            yaw: self.yaw,
+            pitch: self.pitch,
+            fov_y: ssc_engine::DEFAULT_FOV_Y,
+            z_near: 0.1,
+            z_far: Z_FAR,
+        };
+
+        let stats = frame.render(&camera, &draws);
+
+        // Stats reporting (1 Hz).
+        self.frames += 1;
+        self.stat_ms += stats.frame_ms;
+        self.stat_drawn += stats.drawn;
+        self.stat_culled += stats.culled_frustum;
+        self.stat_calls += stats.draw_calls;
+        let since = Instant::now() - self.last_report;
+        if since >= Duration::from_secs(1) {
+            let secs = since.as_secs_f32();
+            let fps = self.frames as f32 / secs;
+            if std::env::var("SSC_DEBUG").map(|v| v == "1").unwrap_or(false) {
+                let has_spawn_col = self.sub_meshes.contains_key(&(0, 0));
+                eprintln!(
+                    "[dbg] sub_mesh_cols={} lod_regions={} queued_cols={} queued_regions={} spawn_col_mesh={}",
+                    self.sub_meshes.len(),
+                    self.region_meshes.len(),
+                    self.queued_cols.len(),
+                    self.queued_regions.len(),
+                    has_spawn_col
+                );
+                if let Some(subs) = self.sub_meshes.get(&(0, 0)) {
+                    for (sub, (id, aabb)) in subs.iter() {
+                        eprintln!(
+                            "[dbg] col(0,0) sub={sub} id={id} aabb=({:.1},{:.1},{:.1})-({:.1},{:.1},{:.1})",
+                            aabb.min.x, aabb.min.y, aabb.min.z, aabb.max.x, aabb.max.y, aabb.max.z
+                        );
+                    }
+                }
+            }
+            println!(
+                "[stats] {:5.1} fps | render {:4.2} ms | draws {:4} ({:4} culled) | calls {:4} | pos ({:7.2},{:7.2},{:7.2})",
+                fps,
+                self.stat_ms / self.frames as f32,
+                self.stat_drawn / self.frames,
+                self.stat_culled / self.frames,
+                self.stat_calls / self.frames,
+                self.pos_cur.x,
+                self.pos_cur.y,
+                self.pos_cur.z
+            );
+            self.frames = 0;
+            self.stat_ms = 0.0;
+            self.stat_drawn = 0;
+            self.stat_culled = 0;
+            self.stat_calls = 0;
+            self.last_report = Instant::now();
+        }
+
+        Flow::Continue
+    }
+
+    fn handle_packet(&mut self, frame: &mut Frame, p: ServerPacket) -> Flow {
+        match p {
+            ServerPacket::Welcome { spawn, render_distance, hotbar } => {
+                self.hotbar = hotbar;
+                self.render_distance = render_distance as i32;
+                let s = Vec3::new(spawn[0], spawn[1], spawn[2]);
+                self.pos_prev = s;
+                self.pos_cur = s;
+                self.state_time = Instant::now();
+                self.joined = true;
+                frame.set_mouse_locked(true);
+                eprintln!(
+                    "[client] joined: render distance {render_distance}, spawn {s:?}"
+                );
+            }
+            ServerPacket::Subchunk { cx, cz, sub, blocks } => {
+                if blocks.len() != ssc_world::SUBCHUNK_VOLUME {
+                    eprintln!("[client] bad subchunk size, dropping");
+                    return Flow::Exit;
+                }
+                if blocks.iter().any(|&b| !valid_id(b)) {
+                    eprintln!("[client] invalid block id in subchunk, dropping");
+                    return Flow::Exit;
+                }
+                let mut w = self.shared.write().unwrap_or_else(|e| e.into_inner());
+                w.apply_subchunk(cx, cz, sub, &blocks);
+            }
+            ServerPacket::ColumnEnd { cx, cz } => {
+                let mut w = self.shared.write().unwrap_or_else(|e| e.into_inner());
+                w.apply_column_end(cx, cz);
+            }
+            ServerPacket::UnloadColumn { cx, cz } => {
+                {
+                    let mut w = self.shared.write().unwrap_or_else(|e| e.into_inner());
+                    w.apply_unload(cx, cz);
+                }
+                // Drop GPU meshes for that column.
+                if let Some(subs) = self.sub_meshes.remove(&(cx, cz)) {
+                    for (_sub, (id, _aabb)) in subs {
+                        frame.remove_mesh(id);
+                    }
+                }
+            }
+            ServerPacket::LodColumn { cx, cz, cells } => {
+                let mut w = self.shared.write().unwrap_or_else(|e| e.into_inner());
+                w.apply_lod(cx, cz, &cells);
+            }
+            ServerPacket::UnloadLod { cx, cz } => {
+                let mut w = self.shared.write().unwrap_or_else(|e| e.into_inner());
+                w.apply_lod_unload(cx, cz);
+            }
+            ServerPacket::PlayerState { x, y, z, yaw: _yaw, pitch: _pitch } => {
+                self.pos_prev = self.pos_cur;
+                self.pos_cur = Vec3::new(x, y, z);
+                self.state_time = Instant::now();
+            }
+            ServerPacket::BlockUpdate { x, y, z, block } => {
+                if !valid_id(block) {
+                    return Flow::Continue;
+                }
+                let mut w = self.shared.write().unwrap_or_else(|e| e.into_inner());
+                w.apply_block_update(x, y, z, block);
+            }
+            ServerPacket::Sound { sound, x, y, z } => {
+                let id = SoundId::from_u16(sound);
+                // Audio playback awaits the audio dependency approval
+                // (specs.md §4); the trigger itself is server-driven and
+                // already flows end to end.
+                println!(
+                    "[sound] {} at ({x:.1}, {y:.1}, {z:.1})",
+                    id.name()
+                );
+            }
+            ServerPacket::Goodbye { reason } => {
+                eprintln!("[client] server said goodbye: {reason}");
+                return Flow::Exit;
+            }
+        }
+        Flow::Continue
+    }
+
+    fn gc_stale_jobs(&mut self) {
+        // Queued entries whose jobs were never picked up block re-queues.
+        // (Jobs are drained by the worker immediately, so entries are
+        // removed on result; anything ancient is a bug guard.)
+        let cutoff = Duration::from_secs(5);
+        self.queued_cols.retain(|_k, t| Instant::now() - *t < cutoff);
+        self.queued_regions.retain(|_k, t| Instant::now() - *t < cutoff);
+    }
+
+    fn pump_mesh_jobs(&mut self, _frame: &mut Frame) {
+        let (cols, regions) = {
+            let mut w = self.shared.write().unwrap_or_else(|e| e.into_inner());
+            let cols = w.take_dirty_columns();
+            let regions = w.take_dirty_regions();
+            (cols, regions)
+        };
+
+        for key in cols {
+            // (Re)queue — uploads overwrite existing mesh ids, so a column
+            // already on screen can simply be re-meshed.
+            if !self.queued_cols.contains_key(&key) {
+                self.queued_cols.insert(key, Instant::now());
+                let _ = self.job_tx.send(Job::Column(key));
+            }
+        }
+        let pcx = (self.pos_cur.x as i32).div_euclid(16);
+        let pcz = (self.pos_cur.z as i32).div_euclid(16);
+        let near_margin = self.render_distance + NEAR_MARGIN_EXTRA;
+        for (rx, rz) in regions {
+            if !self.queued_regions.contains_key(&(rx, rz)) {
+                self.queued_regions.insert((rx, rz), Instant::now());
+                let _ = self.job_tx.send(Job::Region { rx, rz, pcx, pcz, near_margin });
+            }
+        }
+    }
+
+    fn upload_finished_meshes(&mut self, frame: &mut Frame) {
+        while let Ok(res) = self.job_rx.try_recv() {
+            match res {
+                JobResult::Column { key, meshes } => {
+                    self.queued_cols.remove(&key);
+                    let entry = self.sub_meshes.entry(key).or_default();
+                    // Upload every produced sub-chunk mesh.
+                    let mut produced: Vec<usize> = Vec::new();
+                    for m in meshes {
+                        produced.push(m.sub);
+                        let id = match entry.get(&m.sub) {
+                            Some((id, _)) => *id,
+                            None => {
+                                let id = self.next_mesh_id;
+                                self.next_mesh_id += 1;
+                                id
+                            }
+                        };
+                        let aabb = ssc_math::Aabb::new(m.min, m.max);
+                        if let Err(e) =
+                            frame.upload_mesh(id, &m.verts, &m.indices)
+                        {
+                            eprintln!("[client] mesh upload failed: {e}");
+                        } else {
+                            entry.insert(m.sub, (id, aabb));
+                        }
+                    }
+                    // Remove stale sub-chunk meshes emptied by edits.
+                    let stale: Vec<usize> = entry
+                        .keys()
+                        .copied()
+                        .filter(|s| !produced.contains(s))
+                        .collect();
+                    for s in stale {
+                        if let Some((id, _)) = entry.remove(&s) {
+                            frame.remove_mesh(id);
+                        }
+                    }
+                    if entry.is_empty() {
+                        self.sub_meshes.remove(&key);
+                    }
+                }
+                JobResult::Region { rx, rz, mesh } => {
+                    self.queued_regions.remove(&(rx, rz));
+                    match mesh {
+                        Some(m) => {
+                            let span = (ssc_lod::REGION_COLS * 16) as f32;
+                            let aabb = ssc_math::Aabb::new(
+                                Vec3::new(rx as f32 * span, m.min_y, rz as f32 * span),
+                                Vec3::new(
+                                    rx as f32 * span + span,
+                                    m.max_y,
+                                    rz as f32 * span + span,
+                                ),
+                            );
+                            let id = match self.region_meshes.get(&(rx, rz)) {
+                                Some((id, _)) => *id,
+                                None => {
+                                    let id = self.next_mesh_id;
+                                    self.next_mesh_id += 1;
+                                    id
+                                }
+                            };
+                            let verts: Vec<ssc_engine::Vertex> = m
+                                .verts
+                                .iter()
+                                .map(|v| ssc_engine::Vertex { pos: [v[0], v[1], v[2]], uv: [v[3], v[4]] })
+                                .collect();
+                            if let Err(e) = frame.upload_mesh(id, &verts, &m.indices) {
+                                eprintln!("[client] lod upload failed: {e}");
+                            } else {
+                                self.region_meshes.insert((rx, rz), (id, aabb));
+                            }
+                        }
+                        None => {
+                            if let Some((id, _)) = self.region_meshes.remove(&(rx, rz)) {
+                                frame.remove_mesh(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
 
 fn main() {
-    let version = env!("CARGO_PKG_VERSION");
-    let backend = if cfg!(feature = "vulkan") {
-        "vulkan"
-    } else {
-        "opengl"
+    let mut connect: Option<String> = None;
+    let mut cfg = ServerConfig::default();
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--connect" => {
+                if let Some(v) = args.next() {
+                    connect = Some(v);
+                }
+            }
+            "--seed" => {
+                if let Some(v) = args.next() {
+                    if let Ok(seed) = v.parse::<u64>() {
+                        cfg.seed = seed;
+                    }
+                }
+            }
+            "--rd" => {
+                if let Some(v) = args.next() {
+                    if let Ok(rd) = v.parse::<i32>() {
+                        cfg.render_distance = rd.clamp(2, 16);
+                    }
+                }
+            }
+            other => eprintln!("unknown argument {other:?}"),
+        }
+    }
+
+    // Connect: dedicated over TCP, or embed the server locally.
+    let wire: Box<dyn Wire> = match &connect {
+        Some(addr) => {
+            eprintln!("[client] connecting to {addr} …");
+            Box::new(TcpWire::connect(addr).unwrap_or_else(|e| {
+                eprintln!("cannot connect to {addr}: {e}");
+                std::process::exit(1);
+            }))
+        }
+        None => {
+            eprintln!(
+                "[client] starting local server (seed {}, rd {})",
+                cfg.seed, cfg.render_distance
+            );
+            let (client_wire, _server_thread) = spawn_local(cfg);
+            Box::new(client_wire)
+        }
     };
-    println!("ssc-client {version} (engine backend: {backend}) — Super Simple Cubes");
-    println!("Renderer ships in the upcoming commits; see implemented-features.md");
+
+    let shared = Arc::new(RwLock::new(ClientWorld::new()));
+    let (job_tx, job_rx) = spawn_worker(shared.clone());
+
+    let mut app = App::new(wire, shared, job_tx, job_rx);
+
+    let settings = EngineSettings {
+        title: "Super Simple Cubes".into(),
+        width: 1280,
+        height: 720,
+        vsync: false,
+    };
+
+    let code = ssc_engine::run(settings, move |frame, events| app.tick(frame, events));
+    if let Err(e) = code {
+        eprintln!("[client] engine error: {e}");
+        std::process::exit(1);
+    }
+    eprintln!("[client] bye");
 }
