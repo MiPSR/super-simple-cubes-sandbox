@@ -1,0 +1,17 @@
+[package]
+name = "ssc-server"
+description = "Super Simple Cubes authoritative server (all game logic)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ssc-math = { path = "../ssc-math" }
+ssc-world = { path = "../ssc-world" }
+ssc-protocol = { path = "../ssc-protocol" }
+
+[features]
+default = []
+# `dedicated`: build the standalone server binary entry point.
+dedicated = []

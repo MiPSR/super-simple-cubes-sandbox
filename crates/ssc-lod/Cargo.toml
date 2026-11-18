@@ -1,0 +1,7 @@
+[package]
+name = "ssc-lod"
+description = "Distant Horizons-style far-terrain LOD (core, from day one)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "ssc-client"
+description = "Super Simple Cubes client: renders and sends input, zero game logic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ssc-math = { path = "../ssc-math" }
+ssc-world = { path = "../ssc-world" }
+ssc-protocol = { path = "../ssc-protocol" }
+ssc-engine = { path = "../ssc-engine" }
+ssc-lod = { path = "../ssc-lod" }
+# The client may embed the server library for local play (specs.md §2).
+ssc-server = { path = "../ssc-server" }
+
+[features]
+default = ["opengl"]
+opengl = ["ssc-engine/opengl"]
+vulkan = ["ssc-engine/vulkan"]

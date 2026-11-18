@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ssc-engine",
+    "crates/ssc-math",
+    "crates/ssc-world",
+    "crates/ssc-protocol",
+    "crates/ssc-lod",
+    "crates/ssc-server",
+    "crates/ssc-client",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+repository = "https://github.com/MiPSR/super-simple-cubes-sandbox"
+
+# Selection of what gets built is done via workspace members (-p) and Cargo
+# features (graphics backend: `opengl` default, `vulkan`), per specs.md §2.
+
+[profile.dev]
+# Keep debug builds usable for perf-sensitive voxel work.
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

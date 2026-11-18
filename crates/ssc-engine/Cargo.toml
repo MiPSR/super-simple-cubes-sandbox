@@ -1,0 +1,15 @@
+[package]
+name = "ssc-engine"
+description = "Super Simple Cubes rendering engine (the only crate that touches GFX APIs)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Backend selection (specs.md §3): OpenGL is the default; Vulkan is opt-in.
+# Backends are implemented inside this crate only; the client never sees a
+# raw GFX API.
+[features]
+default = ["opengl"]
+opengl = []
+vulkan = []
