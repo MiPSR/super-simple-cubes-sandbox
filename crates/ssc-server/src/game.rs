@@ -88,6 +88,8 @@ struct Player {
 struct Session {
     wire: Box<dyn Wire>,
     player: Player,
+    /// The player's hotbar (creative-assignable).
+    hotbar: [BlockId; 9],
     /// Full columns queued to stream, nearest first.
     stream_queue: VecDeque<ColumnKey>,
     streamed: HashSet<ColumnKey>,
@@ -112,6 +114,7 @@ impl Session {
                 on_ground: false,
                 joined: false,
             },
+            hotbar: HOTBAR,
             stream_queue: VecDeque::new(),
             streamed: HashSet::new(),
             lod_queue: VecDeque::new(),
@@ -599,6 +602,21 @@ impl Server {
                 let Some(session) = self.sessions.get_mut(&id) else { return Ok(()) };
                 session.player.selected_slot = slot % HOTBAR.len() as u8;
             }
+            ClientPacket::SetHotbarSlot { slot, block } => {
+                // Creative: validate against the palette (registered
+                // blocks), update the player's hotbar, confirm.
+                if !ssc_world::valid_id(block) {
+                    return Err(format!("invalid block id {block}"));
+                }
+                let Some(session) = self.sessions.get_mut(&id) else { return Ok(()) };
+                if !session.player.joined {
+                    return Ok(());
+                }
+                let idx = (slot as usize) % HOTBAR.len();
+                session.hotbar[idx] = block;
+                let slots = session.hotbar;
+                let _ = self.direct(id, &ServerPacket::Hotbar { slots });
+            }
             ClientPacket::Dig => {
                 if self
                     .sessions
@@ -669,15 +687,20 @@ impl Server {
             session.player.pos.y,
             session.player.pos.z,
         ];
+        let hotbar = session.hotbar;
         let _ = self.direct(
             id,
             &ServerPacket::Welcome {
                 entity_id: id,
                 spawn,
                 render_distance: self.cfg.render_distance as u8,
-                hotbar: HOTBAR,
+                hotbar,
             },
         );
+        // The creative palette: every registered block, server-driven
+        // like all gameplay data (specs.md §2).
+        let palette: Vec<BlockId> = (1..ssc_world::BLOCK_COUNT).collect();
+        let _ = self.direct(id, &ServerPacket::CreativeBlocks { ids: palette });
         self.refresh_streaming(id);
     }
 
@@ -696,7 +719,8 @@ impl Server {
     }
 
     fn selected_of(&self, id: EntityId) -> BlockId {
-        HOTBAR[self.sessions[&id].player.selected_slot as usize % HOTBAR.len()]
+        let session = &self.sessions[&id];
+        session.hotbar[session.player.selected_slot as usize % HOTBAR.len()]
     }
 
     fn handle_dig(&mut self, id: EntityId) {

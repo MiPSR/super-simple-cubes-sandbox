@@ -212,6 +212,8 @@ pub struct InputState {
     pub mouse_dy: f32,
     pub mouse_left: bool,
     pub mouse_right: bool,
+    /// Absolute cursor position in window pixels, if inside the window.
+    pub cursor: Option<(f32, f32)>,
     /// Left stick movement (x right, y forward), already dead-zoned.
     pub pad_left: (f32, f32),
     /// Right stick look (x right, y up), already dead-zoned.
@@ -563,6 +565,9 @@ where
                         button: b,
                         state: if pressed { KeyState::Pressed } else { KeyState::Released },
                     });
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    self.input.cursor = Some((position.x as f32, position.y as f32));
                 }
                 _ => {}
             }

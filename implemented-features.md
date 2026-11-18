@@ -71,6 +71,10 @@ Every implemented wiki feature gets a line here. Status legend:
   listeners and underwater muffling pending.
 - `partial` — Spawn search: spirals out from the origin for dry land
   (≥2 blocks above sea level); real MC spawn is biome-aware.
+- `partial` — Creative basics: E opens a server-sent block picker (all
+  registered blocks); clicking assigns the block to the selected hotbar
+  slot (server validates and confirms). No inventory persistence,
+  survival inventory, crafting, survival dig timing, tools or drops yet.
 - `partial` — Fixed 9-slot hotbar with server-defined blocks; full inventory,
   survival mode, hunger and health pending.
 - `partial` — Gamepad (owner-approved gilrs, engine-side input abstraction):

@@ -165,6 +165,10 @@ struct App {
     last_stick_tick: Instant,
     /// F3 debug overlay.
     debug_hud: bool,
+    /// Creative block picker open (E).
+    picker_open: bool,
+    /// Server-sent creative palette + picker geometry.
+    creative: Vec<BlockId>,
     // Latest 1 Hz stats for the HUD.
     last_fps: f32,
     last_render_ms: f32,
@@ -230,6 +234,8 @@ impl App {
             audio: audio::AudioSystem::new(sounds_dir.as_deref()),
             last_stick_tick: now,
             debug_hud: false,
+            picker_open: false,
+            creative: Vec::new(),
             last_fps: 0.0,
             last_render_ms: 0.0,
             last_drawn: 0,
@@ -242,6 +248,49 @@ impl App {
         if let Err(e) = self.wire.send(&pkt.encode()) {
             eprintln!("[client] send failed: {e}");
         }
+    }
+
+    /// Handle a click while the creative picker is open: assign the
+    /// clicked block to the selected hotbar slot (server confirms).
+    fn picker_click(&mut self, frame: &mut Frame) {
+        let Some((mx, my)) = frame.input().cursor else { return };
+        let (w, h) = frame.size();
+        let Some(block) = self.picker_hit(mx, my, w as f32, h as f32) else { return };
+        self.send(&ClientPacket::SetHotbarSlot {
+            slot: self.selected_slot,
+            block,
+        });
+        self.picker_open = false;
+        if !frame.mouse_locked() {
+            frame.set_mouse_locked(true);
+        }
+    }
+
+    /// Picker layout: 3 columns of block names in a centered panel.
+    fn picker_layout(&self, w: f32, h: f32) -> (f32, f32, f32, f32, f32, f32) {
+        const COL_W: f32 = 260.0;
+        const ROW_H: f32 = 22.0;
+        const COLS: f32 = 3.0;
+        let rows = ((self.creative.len() as f32) / COLS).ceil().max(1.0);
+        let panel_w = COL_W * COLS + 40.0;
+        let panel_h = rows * ROW_H + 60.0;
+        let x0 = (w - panel_w) / 2.0;
+        let y0 = (h - panel_h) / 2.0;
+        (x0, y0, COL_W, ROW_H, panel_w, panel_h)
+    }
+
+    fn picker_hit(&self, mx: f32, my: f32, w: f32, h: f32) -> Option<BlockId> {
+        let (x0, y0, col_w, row_h, _panel_w, _panel_h) = self.picker_layout(w, h);
+        if mx < x0 || my < y0 + 44.0 {
+            return None;
+        }
+        let col = (((mx - x0) / col_w).floor() as i32).clamp(0, 2);
+        let row = (((my - y0 - 44.0) / row_h).floor()) as i32;
+        if row < 0 {
+            return None;
+        }
+        let idx = (row as usize) * 3 + col as usize;
+        self.creative.get(idx).copied()
     }
 
     /// One frame.
@@ -291,11 +340,23 @@ impl App {
                 EngineEvent::Key { key: Key::F3, state: KeyState::Pressed } => {
                     self.debug_hud = !self.debug_hud;
                 }
+                EngineEvent::Key { key: Key::E, state: KeyState::Pressed } => {
+                    // Creative picker toggle (blocks list is server-sent).
+                    self.picker_open = !self.picker_open;
+                    let locked = frame.mouse_locked();
+                    if self.picker_open && locked {
+                        frame.set_mouse_locked(false);
+                    } else if !self.picker_open && !locked {
+                        frame.set_mouse_locked(true);
+                    }
+                }
                 // Immediate action on the press event: a quick click never
                 // shows up in the held-state snapshot (press and release
                 // land in the same frame's event batch).
                 EngineEvent::MouseButton { button: MouseButton::Left, state: KeyState::Pressed } => {
-                    if frame.mouse_locked() {
+                    if self.picker_open {
+                        self.picker_click(frame);
+                    } else if frame.mouse_locked() {
                         self.send(&ClientPacket::Dig);
                         self.last_dig = Instant::now();
                     } else {
@@ -305,7 +366,7 @@ impl App {
                     }
                 }
                 EngineEvent::MouseButton { button: MouseButton::Right, state: KeyState::Pressed } => {
-                    if frame.mouse_locked() {
+                    if !self.picker_open && frame.mouse_locked() {
                         self.send(&ClientPacket::Place);
                         self.last_place = Instant::now();
                     }
@@ -496,6 +557,30 @@ impl App {
             ];
             for (i, line) in lines.iter().enumerate() {
                 frame.hud_text(line.clone(), 16.0, 8.0 + i as f32 * 18.0, 16.0, [1.0, 1.0, 1.0, 0.9]);
+            }
+        }
+        // Creative block picker (E): the palette is server-sent.
+        if self.picker_open {
+            let (x0, y0, col_w, row_h, _pw, _ph) =
+                self.picker_layout(wf, hf);
+            frame.hud_text(
+                format!("creative blocks - slot {}", self.selected_slot + 1),
+                x0 + 20.0,
+                y0 + 16.0,
+                18.0,
+                [1.0, 0.85, 0.3, 1.0],
+            );
+            for (i, id) in self.creative.iter().enumerate() {
+                let col = (i % 3) as f32;
+                let row = (i / 3) as f32;
+                let name = ssc_world::info(*id).name;
+                frame.hud_text(
+                    name.to_string(),
+                    x0 + 20.0 + col * col_w,
+                    y0 + 44.0 + row * row_h,
+                    16.0,
+                    [0.95, 0.95, 0.95, 0.95],
+                );
             }
         }
 
@@ -767,6 +852,15 @@ impl App {
                     // server-driven trigger is still observable.
                     println!("[sound] {} at ({x:.1}, {y:.1}, {z:.1})", id.name());
                 }
+            }
+            ServerPacket::CreativeBlocks { ids } => {
+                // Server-sent palette (specs.md §2).
+                self.creative = ids;
+            }
+            ServerPacket::Hotbar { slots } => {
+                self.hotbar = slots;
+                let id = self.hotbar[self.selected_slot as usize];
+                println!("[hotbar] slot {}: {}", self.selected_slot, ssc_world::info(id).name);
             }
             ServerPacket::Goodbye { reason } => {
                 eprintln!("[client] server said goodbye: {reason}");

@@ -72,6 +72,8 @@ pub enum ClientPacket {
     Dig,
     /// Request to place the selected hotbar block (server raycasts).
     Place,
+    /// Creative: assign a block from the palette to a hotbar slot.
+    SetHotbarSlot { slot: u8, block: u16 },
 }
 
 impl ClientPacket {
@@ -95,6 +97,11 @@ impl ClientPacket {
             }
             ClientPacket::Dig => w.put_u8(3),
             ClientPacket::Place => w.put_u8(4),
+            ClientPacket::SetHotbarSlot { slot, block } => {
+                w.put_u8(5);
+                w.put_u8(*slot);
+                w.put_u16(*block);
+            }
         }
         w.into_bytes()
     }
@@ -115,6 +122,7 @@ impl ClientPacket {
             2 => ClientPacket::SelectSlot { slot: r.get_u8()? },
             3 => ClientPacket::Dig,
             4 => ClientPacket::Place,
+            5 => ClientPacket::SetHotbarSlot { slot: r.get_u8()?, block: r.get_u16()? },
             _ => return Err(crate::codec::DecodeError(format!("bad client packet tag {tag}"))),
         };
         r.expect_empty()?;
@@ -180,6 +188,10 @@ pub enum ServerPacket {
     Sound { sound: u16, x: f32, y: f32, z: f32 },
     /// Server is shutting down the session.
     Goodbye { reason: String },
+    /// The creative block palette (what the picker may offer).
+    CreativeBlocks { ids: Vec<u16> },
+    /// The player's hotbar contents (after a creative assignment).
+    Hotbar { slots: [u16; 9] },
 }
 
 impl ServerPacket {
@@ -258,6 +270,16 @@ impl ServerPacket {
                 w.put_u8(10);
                 w.put_string(reason);
             }
+            ServerPacket::CreativeBlocks { ids } => {
+                w.put_u8(11);
+                w.put_block_array(ids);
+            }
+            ServerPacket::Hotbar { slots } => {
+                w.put_u8(12);
+                for b in slots {
+                    w.put_u16(*b);
+                }
+            }
         }
         w.into_bytes()
     }
@@ -320,6 +342,14 @@ impl ServerPacket {
                 z: r.get_f32()?,
             },
             10 => ServerPacket::Goodbye { reason: r.get_string()? },
+            11 => ServerPacket::CreativeBlocks { ids: r.get_block_array()? },
+            12 => {
+                let mut slots = [0u16; 9];
+                for b in &mut slots {
+                    *b = r.get_u16()?;
+                }
+                ServerPacket::Hotbar { slots }
+            }
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad server packet tag {tag}"
