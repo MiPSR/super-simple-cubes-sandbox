@@ -22,6 +22,7 @@ pub const OAK_PLANKS: BlockId = 10;
 pub const OAK_LEAVES: BlockId = 11;
 pub const SNOW_BLOCK: BlockId = 12;
 pub const BRICKS: BlockId = 13;
+pub const WATER: BlockId = 14;
 
 // Atlas tile ids (16×16 tiles per row/column in the 256×256 atlas).
 pub const TILE_MISSING: u16 = 0;
@@ -40,6 +41,7 @@ pub const TILE_PLANKS: u16 = 12;
 pub const TILE_LEAVES: u16 = 13;
 pub const TILE_SNOW: u16 = 14;
 pub const TILE_BRICKS: u16 = 15;
+pub const TILE_WATER: u16 = 16; // second atlas row
 
 /// Face indices into [`BlockInfo::tiles`].
 pub const FACE_TOP: usize = 0;
@@ -97,6 +99,13 @@ pub const BLOCKS: &[BlockInfo] = &[
     BlockInfo { name: "snow_block", solid: true, opaque: true, tiles: t(TILE_SNOW, TILE_SNOW, TILE_SNOW) },
     // 13 — bricks
     BlockInfo { name: "bricks", solid: true, opaque: true, tiles: t(TILE_BRICKS, TILE_BRICKS, TILE_BRICKS) },
+    // 14 — water: no collision, light passes, drawn translucent.
+    BlockInfo {
+        name: "water",
+        solid: false,
+        opaque: false,
+        tiles: t(TILE_WATER, TILE_WATER, TILE_WATER),
+    },
 ];
 
 /// Number of registered blocks (valid ids are `0..BLOCK_COUNT`).

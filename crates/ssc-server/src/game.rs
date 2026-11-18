@@ -14,7 +14,9 @@ use ssc_math::{
 use ssc_protocol::packets::{keys, ClientPacket, ServerPacket, SoundId};
 use ssc_protocol::wire::{memory_pair, MemoryWire, Wire};
 use ssc_protocol::PROTOCOL_VERSION;
-use ssc_world::{is_solid, BlockId, ColumnKey, World, AIR, SAND, SANDSTONE, SNOW_BLOCK};
+use ssc_world::{
+    is_solid, BlockId, ColumnKey, World, AIR, SAND, SANDSTONE, SNOW_BLOCK, WATER,
+};
 
 use crate::physics::{move_player, player_aabb};
 use crate::raycast::raycast;
@@ -209,6 +211,20 @@ impl Server {
         let k = self.player.keys;
         let yaw = self.player.yaw;
 
+        // Swimming: check the block at the feet and at the eyes.
+        let feet = self.player.pos;
+        let eye = self.player.pos + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0);
+        let in_water = self.world.block_or_air(
+            feet.x.floor() as i32,
+            (feet.y + 0.4).floor() as i32,
+            feet.z.floor() as i32,
+        ) == WATER
+            || self.world.block_or_air(
+                eye.x.floor() as i32,
+                eye.y.floor() as i32,
+                eye.z.floor() as i32,
+            ) == WATER;
+
         let fwd = yaw_forward(yaw);
         let right = yaw_right(yaw);
         let mut wish = [0.0f32; 2];
@@ -230,7 +246,15 @@ impl Server {
         }
         let sprint = k & keys::SPRINT != 0 && k & keys::FORWARD != 0 && k & keys::SNEAK == 0;
         let sneak = k & keys::SNEAK != 0;
-        let speed = if sprint { SPRINT_SPEED } else if sneak { SNEAK_SPEED } else { WALK_SPEED };
+        let speed = if in_water {
+            WALK_SPEED * 0.55 // swimming is slow
+        } else if sprint {
+            SPRINT_SPEED
+        } else if sneak {
+            SNEAK_SPEED
+        } else {
+            WALK_SPEED
+        };
         let wish_len = (wish[0] * wish[0] + wish[1] * wish[1]).sqrt();
         let target = if wish_len > 0.0 {
             (wish[0] / wish_len * speed, wish[1] / wish_len * speed)
@@ -238,23 +262,34 @@ impl Server {
             (0.0, 0.0)
         };
 
-        // Ground: instant target velocity. Air: limited steering.
-        if self.player.on_ground {
-            self.player.vel.x = target.0;
-            self.player.vel.z = target.1;
+        if in_water {
+            // Buoyant drag physics: slow sink, jump key swims up.
+            self.player.vel.x += (target.0 - self.player.vel.x) * 0.4;
+            self.player.vel.z += (target.1 - self.player.vel.z) * 0.4;
+            self.player.vel.y -= GRAVITY * 0.3 * dt;
             if k & keys::JUMP != 0 {
-                self.player.vel.y = JUMP_VELOCITY;
-                self.player.on_ground = false;
+                self.player.vel.y = (self.player.vel.y + 2.4).min(3.5);
             }
+            self.player.vel.y = self.player.vel.y.clamp(-3.5, 4.0);
         } else {
-            let blend = 0.15;
-            self.player.vel.x += (target.0 - self.player.vel.x) * blend;
-            self.player.vel.z += (target.1 - self.player.vel.z) * blend;
-        }
+            // Ground: instant target velocity. Air: limited steering.
+            if self.player.on_ground {
+                self.player.vel.x = target.0;
+                self.player.vel.z = target.1;
+                if k & keys::JUMP != 0 {
+                    self.player.vel.y = JUMP_VELOCITY;
+                    self.player.on_ground = false;
+                }
+            } else {
+                let blend = 0.15;
+                self.player.vel.x += (target.0 - self.player.vel.x) * blend;
+                self.player.vel.z += (target.1 - self.player.vel.z) * blend;
+            }
 
-        self.player.vel.y -= GRAVITY * dt;
-        if self.player.vel.y < -TERMINAL_VELOCITY {
-            self.player.vel.y = -TERMINAL_VELOCITY;
+            self.player.vel.y -= GRAVITY * dt;
+            if self.player.vel.y < -TERMINAL_VELOCITY {
+                self.player.vel.y = -TERMINAL_VELOCITY;
+            }
         }
 
         let mut pos = self.player.pos;
@@ -489,9 +524,28 @@ impl Server {
         }
         self.player.name = name;
 
-        // Find the spawn point on real terrain.
-        let h = self.gen.height(8, 8);
-        self.player.pos = Vec3::new(8.5, (h + 1) as f32 + 0.02, 8.5);
+        // Find a spawn point on dry land: spiral out from the origin until
+        // the terrain clears sea level by a comfortable margin.
+        let mut spawn_x = 8.5f32;
+        let mut spawn_z = 8.5f32;
+        let mut spawn_y = 0f32;
+        'search: for r in 0..48i32 {
+            for dx in -r..=r {
+                for dz in -r..=r {
+                    if dx.abs() != r && dz.abs() != r {
+                        continue; // ring walk
+                    }
+                    let h = self.gen.height(8 + dx * 16, 8 + dz * 16);
+                    if h > ssc_world::MIN_Y + 20 && h > crate::worldgen::SEA_LEVEL + 2 {
+                        spawn_x = (8 + dx * 16) as f32 + 0.5;
+                        spawn_z = (8 + dz * 16) as f32 + 0.5;
+                        spawn_y = (h + 1) as f32 + 0.02;
+                        break 'search;
+                    }
+                }
+            }
+        }
+        self.player.pos = Vec3::new(spawn_x, spawn_y, spawn_z);
         self.player.vel = Vec3::ZERO;
         self.player.joined = true;
 
@@ -539,20 +593,29 @@ mod tests {
     }
 
     impl Rig {
-        /// Player at `(8.5, floor + 1, 8.5)` looking with `yaw`/`pitch`.
+        /// Player at `(8.5, 55, 8.5)` looking with `yaw`/`pitch`, standing
+        /// on a hand-built flat stone floor (worldgen-independent).
         fn new(yaw: f32, pitch: f32) -> Self {
             let (client, server_wire) = memory_pair();
-            let mut cfg = ServerConfig::default();
-            // Flat world: seed chosen so spawn is a flat beach basin.
-            cfg.seed = 42;
+            let cfg = ServerConfig::default();
             let mut server = Server::new(cfg, Box::new(server_wire));
             server.player.joined = true;
             server.player.pos = Vec3::new(8.5, 55.02, 8.5);
             server.player.vel = Vec3::ZERO;
             server.player.yaw = yaw;
             server.player.pitch = pitch;
-            // Materialize the spawn column so dig/place have real data.
-            let col = server.gen.generate_column(0, 0);
+            // Flat floor: stone up to world y=54 (sub-chunk 7 local
+            // 0..6), air above — the player stands on the top face.
+            let mut col = ssc_world::Column::default();
+            let mut sc = Box::new(ssc_world::SubChunk::default());
+            for y in 0..7i32 {
+                for z in 0..16 {
+                    for x in 0..16 {
+                        sc.set(x, y, z, ssc_world::STONE);
+                    }
+                }
+            }
+            col.subchunks[7] = Some(sc);
             server.world.columns.insert((0, 0), col);
             Self { server, client }
         }

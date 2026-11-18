@@ -16,9 +16,11 @@ use ssc_world::{
 };
 
 /// A built sub-chunk mesh with tight bounds (tight AABBs cull better).
+/// `translucent` marks water (drawn in the blend pass).
 #[derive(Debug, Default)]
 pub struct SubchunkMesh {
     pub sub: usize,
+    pub translucent: bool,
     pub verts: Vec<Vertex>,
     pub indices: Vec<u32>,
     pub min: Vec3,
@@ -345,8 +347,18 @@ pub fn build_column_meshes(world: &World, cx: i32, cz: i32) -> (Vec<SubchunkMesh
         masks_out.push((sub, compute_face_masks(sc)));
         let base_y = MIN_Y + (sub as i32) * 16;
 
-        let mut mesh = SubchunkMesh {
+        // Two buffers per sub-chunk: opaque and translucent (water).
+        let mut solid = SubchunkMesh {
             sub,
+            translucent: false,
+            verts: Vec::new(),
+            indices: Vec::new(),
+            min: Vec3::splat(f32::MAX),
+            max: Vec3::splat(f32::MIN),
+        };
+        let mut water = SubchunkMesh {
+            sub,
+            translucent: true,
             verts: Vec::new(),
             indices: Vec::new(),
             min: Vec3::splat(f32::MAX),
@@ -362,6 +374,7 @@ pub fn build_column_meshes(world: &World, cx: i32, cz: i32) -> (Vec<SubchunkMesh
                     }
                     let info = ssc_world::info(id);
                     let (wx, wy, wz) = (base_x + x, base_y + y, base_z + z);
+                    let mesh = if info.opaque { &mut solid } else { &mut water };
 
                     for f in &FACES {
                         let nb = get(
@@ -369,8 +382,11 @@ pub fn build_column_meshes(world: &World, cx: i32, cz: i32) -> (Vec<SubchunkMesh
                             wy + f.neighbor[1],
                             wz + f.neighbor[2],
                         );
-                        if is_opaque(nb) {
-                            continue; // hidden face — culled at mesh time
+                        // Hidden face — culled at mesh time: either the
+                        // neighbor occludes (opaque) or it is the same
+                        // block type (no internal water/leaves faces).
+                        if is_opaque(nb) || nb == id {
+                            continue;
                         }
                         let [u0, v0, u1, v1] = atlas_tile_uv(info.tiles[f.face]);
                         let base = mesh.verts.len() as u32;
@@ -392,8 +408,11 @@ pub fn build_column_meshes(world: &World, cx: i32, cz: i32) -> (Vec<SubchunkMesh
             }
         }
 
-        if !mesh.is_empty() {
-            out.push(mesh);
+        if !solid.is_empty() {
+            out.push(solid);
+        }
+        if !water.is_empty() {
+            out.push(water);
         }
     }
     (out, masks_out)
@@ -471,5 +490,76 @@ mod tests {
         let m = compute_face_masks(&air);
         assert_eq!(m.x_pos, [u16::MAX; 16]);
         assert_eq!(m.z_neg, [u16::MAX; 16]);
+    }
+
+    #[test]
+    fn water_merges_with_itself_but_surfaces_against_air() {
+        // 3×3 world; every column: stone floor (sub 6), water y 48..53
+        // (sub 7 local 0..5), air above. Only the water top faces remain.
+        let mut world = World::default();
+        for cx in -1..=1 {
+            for cz in -1..=1 {
+                let mut col = Column::default();
+                let mut floor = Box::new(SubChunk::default());
+                for z in 0..16 {
+                    for x in 0..16 {
+                        // Top layer of sub 6 = world y 47, right below the
+                        // water (sub 7 starts at world y 48).
+                        floor.set(x, 15, z, STONE);
+                    }
+                }
+                col.subchunks[6] = Some(floor);
+                let mut sc = Box::new(SubChunk::default());
+                for y in 0..6 {
+                    for z in 0..16 {
+                        for x in 0..16 {
+                            sc.set(x, y, z, ssc_world::WATER);
+                        }
+                    }
+                }
+                col.subchunks[7] = Some(sc);
+                world.columns.insert((cx, cz), col);
+            }
+        }
+
+        let (meshes, _masks) = build_column_meshes(&world, 0, 0);
+        let water = meshes.iter().find(|m| m.translucent).expect("water mesh");
+        // 16×16 top quads only: sides merge with same-id water, the bottom
+        // is hidden by the stone floor.
+        assert_eq!(water.verts.len(), 4 * 16 * 16);
+    }
+
+    #[test]
+    fn solid_faces_below_water_surface_are_drawn() {
+        // 3×3 world; every column: stone at y=48 (sub 7 local 0), water
+        // above it (local 1..5). The stone top face must exist (visible
+        // through the translucent water); its sides merge with the
+        // neighboring stone, its bottom is hidden by nothing below.
+        let mut world = World::default();
+        for cx in -1..=1 {
+            for cz in -1..=1 {
+                let mut col = Column::default();
+                let mut sc = Box::new(SubChunk::default());
+                for z in 0..16 {
+                    for x in 0..16 {
+                        sc.set(x, 0, z, STONE);
+                        for y in 1..6 {
+                            sc.set(x, y, z, ssc_world::WATER);
+                        }
+                    }
+                }
+                col.subchunks[7] = Some(sc);
+                world.columns.insert((cx, cz), col);
+            }
+        }
+
+        let (meshes, _masks) = build_column_meshes(&world, 0, 0);
+        let solid = meshes.iter().find(|m| !m.translucent).expect("solid mesh");
+        // Stone top faces (water is not opaque → drawn) plus the stone
+        // bottom faces (below is nothing). Sides merge with same-id stone.
+        assert_eq!(solid.verts.len(), 4 * 16 * 16 * 2);
+        // Water: top faces only (sides are against same-id water).
+        let water = meshes.iter().find(|m| m.translucent).expect("water mesh");
+        assert_eq!(water.verts.len(), 4 * 16 * 16);
     }
 }

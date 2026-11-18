@@ -14,6 +14,8 @@ ssc-engine = { path = "../ssc-engine" }
 ssc-lod = { path = "../ssc-lod" }
 # The client may embed the server library for local play (specs.md §2).
 ssc-server = { path = "../ssc-server" }
+# Texture-pack (PNG atlas) loading — owner-approved.
+png.workspace = true
 
 [features]
 default = ["opengl"]

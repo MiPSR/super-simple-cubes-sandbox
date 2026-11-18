@@ -29,11 +29,19 @@ Every implemented wiki feature gets a line here. Status legend:
   (modern Java shape, Bedrock sub-chunk granularity); wire/streaming layout
   is our own.
 - `partial` — Terrain generation: 4-octave simplex fbm heightmap, bedrock
-  floor, grass/dirt/sand/sandstone/snow layers by height. No caves, trees,
-  biomes, structures or water yet.
-- `dev` — 14 placeholder blocks with procedurally generated textures in
-  Minecraft's 16×16 tile atlas convention; real texture-pack (PNG) loading
-  planned — we cannot ship Mojang assets (specs §1).
+  floor, grass/dirt/sand/sandstone/snow layers by height; caves carved by
+  seeded 3D simplex (blobby tunnels, surface/bedrock crust preserved);
+  deterministic oak trees (~1 per 16 columns, canopies cross column
+  borders consistently via neighbor scan); water fills basins up to sea
+  level. No biomes, structures, ores or flowing water yet.
+- `partial` — Water: static lakes rendered translucent (blend pass,
+  back-to-front, no depth writes), same-type face merging; swimming
+  physics (slow sink, jump-to-rise, drag). No flow simulation, waves or
+  underwater fog yet; cave pockets under lakes stay dry.
+- `dev` — 15 placeholder blocks with procedurally generated textures in
+  Minecraft's 16×16 tile atlas convention; real texture packs load via
+  `--textures <256×256 atlas.png>` (PNG decode through the approved
+  `png` crate) — we cannot ship Mojang assets (specs §1).
 
 ## Player
 
@@ -50,6 +58,8 @@ Every implemented wiki feature gets a line here. Status legend:
 - `dev` — Sound triggers (dig/place) are chosen and sent by the server and
   flow end-to-end; the client logs them until an audio backend is approved
   (specs §4).
+- `partial` — Spawn search: spirals out from the origin for dry land
+  (≥2 blocks above sea level); real MC spawn is biome-aware.
 - `partial` — Fixed 9-slot hotbar with server-defined blocks; full inventory,
   survival mode, hunger and health pending.
 

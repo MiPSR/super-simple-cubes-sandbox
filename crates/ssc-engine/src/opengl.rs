@@ -256,7 +256,12 @@ impl Renderer for Backend {
         }
     }
 
-    fn render(&mut self, view_proj: &Mat4, draws: &[&DrawCmd]) -> DrawStats {
+    fn render(
+        &mut self,
+        view_proj: &Mat4,
+        opaque: &[&DrawCmd],
+        translucent: &[&DrawCmd],
+    ) -> DrawStats {
         let gl = &self.gl;
         let mut draw_calls = 0u32;
         unsafe {
@@ -275,13 +280,30 @@ impl Renderer for Backend {
                 gl.bind_texture(glow::TEXTURE_2D, Some(tex));
             }
 
-            for d in draws {
-                let Some(m) = self.meshes.get(&d.mesh) else { continue };
-                gl.bind_vertex_array(Some(m.vao));
-                gl.draw_elements(glow::TRIANGLES, m.count, glow::UNSIGNED_INT, 0);
-                draw_calls += 1;
+            let draw_all = |list: &[&DrawCmd], gl: &Gl| {
+                let mut calls = 0u32;
+                for d in list {
+                    let Some(m) = self.meshes.get(&d.mesh) else { continue };
+                    gl.bind_vertex_array(Some(m.vao));
+                    gl.draw_elements(glow::TRIANGLES, m.count, glow::UNSIGNED_INT, 0);
+                    calls += 1;
+                }
+                gl.bind_vertex_array(None);
+                calls
+            };
+
+            // Opaque pass: depth writes on.
+            draw_calls += draw_all(opaque, gl);
+
+            // Translucent pass: blend, no depth writes.
+            if !translucent.is_empty() {
+                gl.enable(glow::BLEND);
+                gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+                gl.depth_mask(false);
+                draw_calls += draw_all(translucent, gl);
+                gl.depth_mask(true);
+                gl.disable(glow::BLEND);
             }
-            gl.bind_vertex_array(None);
         }
         self.surface
             .swap_buffers(&self.context)

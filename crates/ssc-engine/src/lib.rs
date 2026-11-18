@@ -74,6 +74,9 @@ pub struct DrawCmd {
     pub aabb: Aabb,
     /// LOD meshes are drawn after (behind) near geometry.
     pub lod: bool,
+    /// Translucent geometry (water): drawn in the blend pass after all
+    /// opaque geometry, back-to-front, without depth writes.
+    pub translucent: bool,
 }
 
 /// Per-frame render statistics.
@@ -108,8 +111,14 @@ pub trait Renderer {
     /// Upload (or replace) a mesh.
     fn upload_mesh(&mut self, id: MeshId, verts: &[Vertex], indices: &[u32]) -> Result<(), String>;
     fn remove_mesh(&mut self, id: MeshId);
-    /// Draw the given (already culled) commands.
-    fn render(&mut self, view_proj: &Mat4, draws: &[&DrawCmd]) -> DrawStats;
+    /// Draw the given (already culled) commands: opaque pass, then the
+    /// translucent blend pass.
+    fn render(
+        &mut self,
+        view_proj: &Mat4,
+        opaque: &[&DrawCmd],
+        translucent: &[&DrawCmd],
+    ) -> DrawStats;
     fn backend_name(&self) -> &'static str;
 }
 
@@ -281,8 +290,11 @@ impl Frame<'_> {
         let frustum = Frustum::from_view_proj(&vp);
         let cull_enabled = std::env::var("SSC_NOCULL").map(|v| v != "1").unwrap_or(true);
 
-        let mut near: Vec<(f32, &DrawCmd)> = Vec::new();
-        let mut lod: Vec<(f32, &DrawCmd)> = Vec::new();
+        // Four buckets: near-opaque (front-to-back), LOD opaque, then the
+        // translucent (water) pass back-to-front, all after opaque.
+        let mut near_opaque: Vec<(f32, &DrawCmd)> = Vec::new();
+        let mut near_lod: Vec<(f32, &DrawCmd)> = Vec::new();
+        let mut translucent: Vec<(f32, &DrawCmd)> = Vec::new();
         let mut culled = 0u32;
         for d in draws {
             if cull_enabled && !frustum.intersects_aabb(&d.aabb) {
@@ -290,25 +302,28 @@ impl Frame<'_> {
                 continue;
             }
             let dist2 = d.aabb.distance_squared_to_point(camera.pos);
-            if d.lod {
-                lod.push((dist2, d));
-            } else {
-                near.push((dist2, d));
+            match (d.lod, d.translucent) {
+                (true, false) => near_lod.push((dist2, d)),
+                (false, false) => near_opaque.push((dist2, d)),
+                // Translucent LOD isn't produced yet; treat as near water.
+                _ => translucent.push((dist2, d)),
             }
         }
-        // Front-to-back within the near pass (early-z friendly), LOD behind.
-        near.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        lod.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        let mut list: Vec<&DrawCmd> = near.into_iter().map(|(_, d)| d).collect();
-        list.extend(lod.into_iter().map(|(_, d)| d));
+        near_opaque.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        near_lod.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        translucent.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        let stats = self.renderer.render(&vp, &list);
+        let mut opaque_list: Vec<&DrawCmd> = near_opaque.into_iter().map(|(_, d)| d).collect();
+        opaque_list.extend(near_lod.into_iter().map(|(_, d)| d));
+        let translucent_list: Vec<&DrawCmd> =
+            translucent.into_iter().map(|(_, d)| d).collect();
+
+        let stats = self.renderer.render(&vp, &opaque_list, &translucent_list);
         let frame_ms = t0.elapsed().as_secs_f32() * 1000.0;
 
         // Debug: dump projected mesh positions once per second.
         if std::env::var("SSC_PROJDUMP").map(|v| v == "1").unwrap_or(false) {
-            let mut n = 0;
-            for d in list.iter().take(12) {
+            for d in opaque_list.iter().take(12) {
                 let c = d.aabb.center().extend(1.0);
                 let clip = vp * c;
                 if clip.w > 0.0 {
@@ -318,13 +333,11 @@ impl Frame<'_> {
                         d.mesh, d.lod, d.aabb, d.aabb.center(), ndc.x, ndc.y, ndc.z
                     );
                 }
-                n += 1;
-                let _ = n;
             }
         }
 
         FrameStats {
-            drawn: list.len() as u32,
+            drawn: (opaque_list.len() + translucent_list.len()) as u32,
             culled_frustum: culled,
             draw_calls: stats.draw_calls,
             frame_ms,

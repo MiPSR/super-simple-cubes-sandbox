@@ -11,7 +11,7 @@ mod atlas;
 mod mesh;
 mod state;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -107,8 +107,8 @@ struct App {
     /// Jobs in flight (avoid duplicates).
     queued_cols: HashMap<ColumnKey, Instant>,
     queued_regions: HashMap<(i32, i32), Instant>,
-    /// Live GPU meshes: key → (mesh id, bounds).
-    sub_meshes: HashMap<ColumnKey, HashMap<usize, (MeshId, ssc_math::Aabb)>>,
+    /// Live GPU meshes: (column, sub, translucent) → (mesh id, bounds).
+    sub_meshes: HashMap<(ColumnKey, usize, bool), (MeshId, ssc_math::Aabb)>,
     region_meshes: HashMap<(i32, i32), (MeshId, ssc_math::Aabb)>,
     /// Per-sub-chunk border masks for occlusion culling.
     face_masks: HashMap<mesh::SubKey, mesh::FaceMasks>,
@@ -140,10 +140,18 @@ struct App {
     stat_calls: u32,
     last_report: Instant,
     atlas_uploaded: bool,
+    /// Optional texture-pack atlas (PNG) given via `--textures`.
+    texture_path: Option<std::path::PathBuf>,
 }
 
 impl App {
-    fn new(wire: Box<dyn Wire>, shared: Arc<RwLock<ClientWorld>>, job_tx: Sender<Job>, job_rx: Receiver<JobResult>) -> Self {
+    fn new(
+        wire: Box<dyn Wire>,
+        shared: Arc<RwLock<ClientWorld>>,
+        job_tx: Sender<Job>,
+        job_rx: Receiver<JobResult>,
+        texture_path: Option<std::path::PathBuf>,
+    ) -> Self {
         let now = Instant::now();
         // Debug camera overrides (orientation testing / screenshots).
         let yaw = std::env::var("SSC_YAW").ok().and_then(|v| v.parse().ok());
@@ -183,6 +191,7 @@ impl App {
             stat_calls: 0,
             last_report: now,
             atlas_uploaded: false,
+            texture_path,
         }
     }
 
@@ -194,10 +203,22 @@ impl App {
 
     /// One frame.
     fn tick(&mut self, frame: &mut Frame, events: &[EngineEvent]) -> Flow {
-        // Upload the procedural placeholder atlas once (real texture-pack
-        // loading via PNG lands later — same atlas slots, specs.md §3).
+        // Upload the atlas once: a real texture pack if `--textures` was
+        // given, otherwise the procedural placeholder (specs.md §3).
         if !self.atlas_uploaded {
-            let rgba = atlas::build_atlas_rgba();
+            let rgba = match &self.texture_path {
+                Some(path) => match atlas::load_png_atlas(path) {
+                    Ok(rgba) => {
+                        eprintln!("[client] texture pack loaded: {}", path.display());
+                        rgba
+                    }
+                    Err(e) => {
+                        eprintln!("[client] texture pack failed ({e}); using placeholder atlas");
+                        atlas::build_atlas_rgba()
+                    }
+                },
+                None => atlas::build_atlas_rgba(),
+            };
             if let Err(e) = frame.upload_atlas(&rgba, atlas::ATLAS_PX, atlas::ATLAS_PX) {
                 eprintln!("[client] atlas upload failed: {e}");
             }
@@ -368,21 +389,34 @@ impl App {
         let occlusion = mesh::visible_flood(eye_sub, &|k| self.face_masks.get(&k).copied());
 
         // Build the draw list.
-        let mut draws = Vec::with_capacity(self.sub_meshes.len() * 8 + self.region_meshes.len());
+        let mut draws =
+            Vec::with_capacity(self.sub_meshes.len() + self.region_meshes.len());
         let mut occluded = 0u32;
-        for (key, subs) in &self.sub_meshes {
-            for (sub, (id, aabb)) in subs {
+        for ((col, sub, translucent), (id, aabb)) in &self.sub_meshes {
+            // Only opaque sub-chunk meshes participate in occlusion data
+            // (water carries none — see mesh.rs); don't cull water on it.
+            if !translucent {
                 if let Some(vis) = &occlusion {
-                    if !vis.contains(&(*key, *sub)) {
+                    if !vis.contains(&(*col, *sub)) {
                         occluded += 1;
                         continue;
                     }
                 }
-                draws.push(DrawCmd { mesh: *id, aabb: *aabb, lod: false });
             }
+            draws.push(DrawCmd {
+                mesh: *id,
+                aabb: *aabb,
+                lod: false,
+                translucent: *translucent,
+            });
         }
         for (_r, (id, aabb)) in &self.region_meshes {
-            draws.push(DrawCmd { mesh: *id, aabb: *aabb, lod: true });
+            draws.push(DrawCmd {
+                mesh: *id,
+                aabb: *aabb,
+                lod: true,
+                translucent: false,
+            });
         }
 
         // Camera: interpolate the last two server states over one tick.
@@ -411,22 +445,25 @@ impl App {
             let secs = since.as_secs_f32();
             let fps = self.frames as f32 / secs;
             if std::env::var("SSC_DEBUG").map(|v| v == "1").unwrap_or(false) {
-                let has_spawn_col = self.sub_meshes.contains_key(&(0, 0));
+                let has_spawn_col = self.sub_meshes.keys().any(|k| k.0 == (0, 0));
                 eprintln!(
-                    "[dbg] sub_mesh_cols={} lod_regions={} queued_cols={} queued_regions={} spawn_col_mesh={}",
+                    "[dbg] sub_meshes={} lod_regions={} queued_cols={} queued_regions={} spawn_col_mesh={}",
                     self.sub_meshes.len(),
                     self.region_meshes.len(),
                     self.queued_cols.len(),
                     self.queued_regions.len(),
                     has_spawn_col
                 );
-                if let Some(subs) = self.sub_meshes.get(&(0, 0)) {
-                    for (sub, (id, aabb)) in subs.iter() {
-                        eprintln!(
-                            "[dbg] col(0,0) sub={sub} id={id} aabb=({:.1},{:.1},{:.1})-({:.1},{:.1},{:.1})",
-                            aabb.min.x, aabb.min.y, aabb.min.z, aabb.max.x, aabb.max.y, aabb.max.z
-                        );
-                    }
+                if let Some((k, (id, aabb))) = self
+                    .sub_meshes
+                    .iter()
+                    .find(|(k, _)| k.0 == (0, 0) && !k.2)
+                {
+                    eprintln!(
+                        "[dbg] col(0,0) sub={} id={} aabb=({:.1},{:.1},{:.1})-({:.1},{:.1},{:.1})",
+                        k.1, id,
+                        aabb.min.x, aabb.min.y, aabb.min.z, aabb.max.x, aabb.max.y, aabb.max.z
+                    );
                 }
             }
             println!(
@@ -490,10 +527,15 @@ impl App {
                     w.apply_unload(cx, cz);
                 }
                 // Drop GPU meshes for that column.
-                if let Some(subs) = self.sub_meshes.remove(&(cx, cz)) {
-                    for (_sub, (id, _aabb)) in subs {
-                        frame.remove_mesh(id);
-                    }
+                let stale: Vec<((ColumnKey, usize, bool), MeshId)> = self
+                    .sub_meshes
+                    .iter()
+                    .filter(|(k, _)| k.0 == (cx, cz))
+                    .map(|(k, (id, _))| (*k, *id))
+                    .collect();
+                for (k, id) in stale {
+                    self.sub_meshes.remove(&k);
+                    frame.remove_mesh(id);
                 }
                 // Drop its occlusion masks too.
                 for sub in 0..ssc_world::SUBCHUNKS_PER_COLUMN {
@@ -584,12 +626,12 @@ impl App {
                     for (sub, m) in masks {
                         self.face_masks.insert((key, sub), m);
                     }
-                    let entry = self.sub_meshes.entry(key).or_default();
-                    // Upload every produced sub-chunk mesh.
-                    let mut produced: Vec<usize> = Vec::new();
+                    // Upload every produced mesh (solid + water separately).
+                    let mut produced: HashSet<(usize, bool)> = HashSet::new();
                     for m in meshes {
-                        produced.push(m.sub);
-                        let id = match entry.get(&m.sub) {
+                        produced.insert((m.sub, m.translucent));
+                        let mesh_key = (key, m.sub, m.translucent);
+                        let id = match self.sub_meshes.get(&mesh_key) {
                             Some((id, _)) => *id,
                             None => {
                                 let id = self.next_mesh_id;
@@ -598,27 +640,23 @@ impl App {
                             }
                         };
                         let aabb = ssc_math::Aabb::new(m.min, m.max);
-                        if let Err(e) =
-                            frame.upload_mesh(id, &m.verts, &m.indices)
-                        {
+                        if let Err(e) = frame.upload_mesh(id, &m.verts, &m.indices) {
                             eprintln!("[client] mesh upload failed: {e}");
                         } else {
-                            entry.insert(m.sub, (id, aabb));
+                            self.sub_meshes.insert(mesh_key, (id, aabb));
                         }
                     }
-                    // Remove stale sub-chunk meshes emptied by edits.
-                    let stale: Vec<usize> = entry
-                        .keys()
-                        .copied()
-                        .filter(|s| !produced.contains(s))
+                    // Remove stale meshes emptied by edits (same sub, same
+                    // pass, no longer produced).
+                    let stale: Vec<((ColumnKey, usize, bool), MeshId)> = self
+                        .sub_meshes
+                        .iter()
+                        .filter(|(k, _)| k.0 == key && !produced.contains(&(k.1, k.2)))
+                        .map(|(k, (id, _))| (*k, *id))
                         .collect();
-                    for s in stale {
-                        if let Some((id, _)) = entry.remove(&s) {
-                            frame.remove_mesh(id);
-                        }
-                    }
-                    if entry.is_empty() {
-                        self.sub_meshes.remove(&key);
+                    for (k, id) in stale {
+                        self.sub_meshes.remove(&k);
+                        frame.remove_mesh(id);
                     }
                 }
                 JobResult::Region { rx, rz, mesh } => {
@@ -671,6 +709,7 @@ impl App {
 
 fn main() {
     let mut connect: Option<String> = None;
+    let mut textures: Option<std::path::PathBuf> = None;
     let mut cfg = ServerConfig::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -678,6 +717,11 @@ fn main() {
             "--connect" => {
                 if let Some(v) = args.next() {
                     connect = Some(v);
+                }
+            }
+            "--textures" => {
+                if let Some(v) = args.next() {
+                    textures = Some(std::path::PathBuf::from(v));
                 }
             }
             "--seed" => {
@@ -720,7 +764,7 @@ fn main() {
     let shared = Arc::new(RwLock::new(ClientWorld::new()));
     let (job_tx, job_rx) = spawn_worker(shared.clone());
 
-    let mut app = App::new(wire, shared, job_tx, job_rx);
+    let mut app = App::new(wire, shared, job_tx, job_rx, textures);
 
     let settings = EngineSettings {
         title: "Super Simple Cubes".into(),

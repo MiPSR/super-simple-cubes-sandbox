@@ -8,11 +8,11 @@
 //! extension is logged in `implemented-features.md`.
 
 use ssc_world::{
-    Column, SubChunk, AIR, BEDROCK, DIRT, GRASS_BLOCK, SAND, SANDSTONE, SNOW_BLOCK, STONE, MAX_Y,
-    MIN_Y, SUBCHUNKS_PER_COLUMN,
+    Column, SubChunk, AIR, BEDROCK, DIRT, GRASS_BLOCK, OAK_LEAVES, OAK_LOG, SAND, SANDSTONE,
+    SNOW_BLOCK, STONE, WATER, MAX_Y, MIN_Y, SUBCHUNKS_PER_COLUMN,
 };
 
-/// Sea level (used for sand beaches; water itself is a later feature).
+/// Sea level (water surfaces sit at the top of this block).
 pub const SEA_LEVEL: i32 = 63;
 
 /// World generator (deterministic for a seed).
@@ -20,6 +20,7 @@ pub struct WorldGen {
     seed: u64,
     noise: Simplex2,
     noise_d: Simplex2, // second field for material variation
+    noise3: Simplex3,  // cave carving
 }
 
 impl WorldGen {
@@ -28,6 +29,7 @@ impl WorldGen {
             seed,
             noise: Simplex2::new(seed),
             noise_d: Simplex2::new(seed ^ 0x9E37_79B9_7F4A_7C15),
+            noise3: Simplex3::new(seed ^ 0xD1B5_4A32_D192_ED5),
         }
     }
 
@@ -56,6 +58,18 @@ impl WorldGen {
         h.clamp(MIN_Y + 8, MAX_Y - 40)
     }
 
+    /// Cave carve test: blobby tunnels through the stone body, kept away
+    /// from the surface crust and the bedrock floor.
+    fn is_cave(&self, x: i32, y: i32, z: i32, surface_h: i32, bedrock_h: i32) -> bool {
+        if y <= bedrock_h + 3 || y >= surface_h - 5 {
+            return false;
+        }
+        let v = self
+            .noise3
+            .value(x as f32 / 56.0, y as f32 / 28.0, z as f32 / 56.0);
+        v > 0.58
+    }
+
     /// Top block at (x, z) for the given terrain height.
     fn top_block(&self, _x: i32, _z: i32, h: i32) -> u16 {
         if h <= SEA_LEVEL + 1 {
@@ -65,6 +79,24 @@ impl WorldGen {
         } else {
             GRASS_BLOCK
         }
+    }
+
+    /// Deterministic tree candidate hosted by column `(cx, cz)`:
+    /// `Some((local_x, local_z, base_y, trunk_h))`.
+    fn tree_at(&self, cx: i32, cz: i32) -> Option<(i32, i32, i32, i32)> {
+        let h = hash3(cx, cz, self.seed ^ 0x7EE5_0000_0000_0001);
+        if h % 16 != 0 {
+            return None; // ~1 column in 16 hosts a tree.
+        }
+        let base_h = self.height(cx * 16 + 8, cz * 16 + 8);
+        // Only on dry land (grass columns).
+        if base_h <= SEA_LEVEL + 1 {
+            return None;
+        }
+        let lx = (4 + (h >> 8) % 8) as i32;
+        let lz = (4 + (h >> 16) % 8) as i32;
+        let trunk_h = 4 + ((h >> 24) % 3) as i32;
+        Some((lx, lz, base_h + 1, trunk_h))
     }
 
     /// Generate one full 16×16 column.
@@ -77,13 +109,14 @@ impl WorldGen {
                 let h = self.height(wx, wz);
                 let top = self.top_block(wx, wz, h);
                 // Material variation in the dirt band.
-                let dirt_noise =
-                    self.noise_d.value(wx as f32 * 0.06, wz as f32 * 0.06);
+                let dirt_noise = self.noise_d.value(wx as f32 * 0.06, wz as f32 * 0.06);
 
                 let bedrock_h = MIN_Y + (hash3(wx, wz, self.seed) % 4) as i32;
                 for y in MIN_Y..=h {
                     let id = if y <= bedrock_h {
                         BEDROCK
+                    } else if self.is_cave(wx, y, wz, h, bedrock_h) {
+                        AIR // carved
                     } else if y == h {
                         top
                     } else if y > h - 4 {
@@ -101,14 +134,25 @@ impl WorldGen {
                         STONE
                     };
                     if id != AIR {
-                        let (ci, ly) = sub_of(y);
-                        if let Some(slot) = column.subchunks.get_mut(ci) {
-                            if slot.is_none() {
-                                *slot = Some(Box::new(SubChunk::default()));
-                            }
-                            slot.as_mut().unwrap().set(lx, ly, lz, id);
-                        }
+                        set_col_block(&mut column, lx, y, lz, id);
                     }
+                }
+                // Water: fill the basin above the terrain surface up to
+                // sea level. Cave pockets stay dry (no flood simulation).
+                if h < SEA_LEVEL {
+                    for y in (h + 1)..=SEA_LEVEL {
+                        set_col_block(&mut column, lx, y, lz, WATER);
+                    }
+                }
+            }
+        }
+        // Trees: scan this column plus its ±2 neighborhood so canopies
+        // crossing column borders are placed consistently (each tree is
+        // owned by its host column, deterministically).
+        for dcx in -2i32..=2 {
+            for dcz in -2i32..=2 {
+                if let Some((tlx, tlz, base, trunk_h)) = self.tree_at(cx + dcx, cz + dcz) {
+                    self.place_tree(&mut column, cx, cz, dcx, dcz, tlx, tlz, base, trunk_h);
                 }
             }
         }
@@ -121,11 +165,69 @@ impl WorldGen {
         column
     }
 
+    /// Place the parts of a tree (owned by a neighbor column) that fall
+    /// inside the column being generated.
+    #[allow(clippy::too_many_arguments)]
+    fn place_tree(
+        &self,
+        column: &mut Column,
+        cx: i32,
+        cz: i32,
+        dcx: i32,
+        dcz: i32,
+        tlx: i32,
+        tlz: i32,
+        base: i32,
+        trunk_h: i32,
+    ) {
+        // World position of the trunk center.
+        let twx = (cx + dcx) * 16 + tlx;
+        let twz = (cz + dcz) * 16 + tlz;
+        // Trunk (only inside the host column; also draw when this column
+        // IS the host).
+        for i in 0..trunk_h {
+            let wy = base + i;
+            let lx = twx - cx * 16;
+            let lz = twz - cz * 16;
+            if (0..16).contains(&lx) && (0..16).contains(&lz) {
+                set_col_block(column, lx, wy, lz, OAK_LOG);
+            }
+        }
+        // Canopy: two 5×5-ish layers around the trunk top, one 3×3 cap,
+        // corner leaves trimmed semi-randomly (deterministic per corner).
+        let top = base + trunk_h - 1;
+        for dy in -2i32..=1 {
+            let r = if dy <= -1 { 2 } else { 1 };
+            for dx in -r..=r {
+                for dz in -r..=r {
+                    let lx = twx + dx - cx * 16;
+                    let lz = twz + dz - cz * 16;
+                    if !(0..16).contains(&lx) || !(0..16).contains(&lz) {
+                        continue;
+                    }
+                    let wy = top + dy + 1;
+                    // Cap corners always trimmed; lower-layer corners
+                    // trimmed deterministically per position.
+                    let is_corner = dx.abs() == r && dz.abs() == r;
+                    if is_corner
+                        && (dy == 1
+                            || hash3(twx + dx, twz + dz, self.seed ^ (dy as u64)) % 2 == 0)
+                    {
+                        continue;
+                    }
+                    if get_col_block(column, lx, wy, lz) == AIR {
+                        set_col_block(column, lx, wy, lz, OAK_LEAVES);
+                    }
+                }
+            }
+        }
+    }
+
     /// LOD summary for one column as streamed to the client
     /// (Distant Horizons-style far data): 4×4 cells of (height, top tile).
-    /// For unmodified columns this is computed from the height function
-    /// directly — no column materialization needed. `world` is consulted
-    /// for edited columns.
+    /// Water is ignored by LOD v0 (lake beds read as sand pits) — noted
+    /// in implemented-features.md. `world` is consulted for edited
+    /// columns.
     pub fn lod_summary(
         &self,
         cx: i32,
@@ -184,10 +286,12 @@ impl WorldGen {
     }
 }
 
-/// Sub-chunk index and local Y for a world Y.
-fn sub_of(y: i32) -> (usize, i32) {
-    let rel = y - MIN_Y;
-    ((rel / 16) as usize, rel % 16)
+fn set_col_block(column: &mut Column, lx: i32, y: i32, lz: i32, id: u16) {
+    column.set(lx, y, lz, id);
+}
+
+fn get_col_block(column: &Column, lx: i32, y: i32, lz: i32) -> u16 {
+    column.get(lx, y, lz)
 }
 
 /// Deterministic integer hash for small decoration decisions.
@@ -244,7 +348,6 @@ impl Simplex2 {
         full[256..].copy_from_slice(&perm);
         Self { perm: Box::new(full) }
     }
-
     /// Noise value in about −1..1.
     pub fn value(&self, x: f32, y: f32) -> f32 {
         let s = (x + y) * F2;
@@ -280,5 +383,210 @@ impl Simplex2 {
         let gi2 = self.perm[ii + 1 + self.perm[jj + 1] as usize] as usize;
 
         70.0 * (n(x0, y0, gi0) + n(x1, y1, gi1) + n(x2, y2, gi2))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 3D simplex noise (Gustavson-style, seeded, no dependencies) — cave carving.
+// ---------------------------------------------------------------------------
+
+pub struct Simplex3 {
+    perm: Box<[u8; 512]>,
+}
+
+/// Skewing factors for 3D simplex.
+const F3: f32 = 1.0 / 3.0;
+const G3: f32 = 1.0 / 6.0;
+
+/// The classic 12 simplex gradients.
+const GRAD3: [(f32, f32, f32); 12] = [
+    (1.0, 1.0, 0.0),
+    (-1.0, 1.0, 0.0),
+    (1.0, -1.0, 0.0),
+    (-1.0, -1.0, 0.0),
+    (1.0, 0.0, 1.0),
+    (-1.0, 0.0, 1.0),
+    (1.0, 0.0, -1.0),
+    (-1.0, 0.0, -1.0),
+    (0.0, 1.0, 1.0),
+    (0.0, -1.0, 1.0),
+    (0.0, 1.0, -1.0),
+    (0.0, -1.0, -1.0),
+];
+
+impl Simplex3 {
+    pub fn new(seed: u64) -> Self {
+        let mut rng = seed | 1;
+        let mut perm = [0u8; 256];
+        for (i, p) in perm.iter_mut().enumerate() {
+            *p = i as u8;
+        }
+        for i in (1..256).rev() {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            let j = (rng % (i as u64 + 1)) as usize;
+            perm.swap(i, j);
+        }
+        let mut full = [0u8; 512];
+        full[..256].copy_from_slice(&perm);
+        full[256..].copy_from_slice(&perm);
+        Self { perm: Box::new(full) }
+    }
+
+    /// Noise value in about −1..1.
+    pub fn value(&self, x: f32, y: f32, z: f32) -> f32 {
+        let s = (x + y + z) * F3;
+        let i = (x + s).floor();
+        let j = (y + s).floor();
+        let k = (z + s).floor();
+        let t = (i + j + k) * G3;
+        let x0 = x - (i - t);
+        let y0 = y - (j - t);
+        let z0 = z - (k - t);
+
+        // Rank the coordinates to pick the simplex ordering.
+        let (i1, j1, k1, i2, j2, k2) = if x0 >= y0 {
+            if y0 >= z0 {
+                (1, 0, 0, 1, 1, 0)
+            } else if x0 >= z0 {
+                (1, 0, 0, 1, 0, 1)
+            } else {
+                (0, 0, 1, 1, 0, 1)
+            }
+        } else if y0 < z0 {
+            (0, 0, 1, 0, 1, 1)
+        } else if x0 < z0 {
+            (0, 1, 0, 0, 1, 1)
+        } else {
+            (0, 1, 0, 1, 1, 0)
+        };
+
+        let x1 = x0 - i1 as f32 + G3;
+        let y1 = y0 - j1 as f32 + G3;
+        let z1 = z0 - k1 as f32 + G3;
+        let x2 = x0 - i2 as f32 + 2.0 * G3;
+        let y2 = y0 - j2 as f32 + 2.0 * G3;
+        let z2 = z0 - k2 as f32 + 2.0 * G3;
+        let x3 = x0 - 1.0 + 3.0 * G3;
+        let y3 = y0 - 1.0 + 3.0 * G3;
+        let z3 = z0 - 1.0 + 3.0 * G3;
+
+        let ii = (i as i64 & 255) as usize;
+        let jj = (j as i64 & 255) as usize;
+        let kk = (k as i64 & 255) as usize;
+
+        let corner = |dx: f32, dy: f32, dz: f32, gi: usize| -> f32 {
+            let t = 0.6 - dx * dx - dy * dy - dz * dz;
+            if t <= 0.0 {
+                return 0.0;
+            }
+            let t2 = t * t;
+            let (gx, gy, gz) = GRAD3[gi % 12];
+            t2 * t2 * (gx * dx + gy * dy + gz * dz)
+        };
+
+        let gi0 = self.perm[ii + self.perm[jj + self.perm[kk] as usize] as usize] as usize;
+        let gi1 = self.perm
+            [(ii + i1 as usize)
+                + self.perm[(jj + j1 as usize) + self.perm[kk + k1 as usize] as usize] as usize]
+            as usize;
+        let gi2 = self.perm
+            [(ii + i2 as usize)
+                + self.perm[(jj + j2 as usize) + self.perm[kk + k2 as usize] as usize] as usize]
+            as usize;
+        let gi3 = self.perm
+            [(ii + 1) + self.perm[(jj + 1) + self.perm[kk + 1] as usize] as usize] as usize;
+
+        32.0
+            * (corner(x0, y0, z0, gi0)
+                + corner(x1, y1, z1, gi1)
+                + corner(x2, y2, z2, gi2)
+                + corner(x3, y3, z3, gi3))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn caves_carve_air_below_the_surface() {
+        let gen = WorldGen::new(1234);
+        // Scan a few columns for carved cells strictly below the surface.
+        let mut carved = 0usize;
+        for cx in 0..8 {
+            for cz in 0..8 {
+                let col = gen.generate_column(cx, cz);
+                let h = gen.height(cx * 16, cz * 16);
+                for y in (MIN_Y + 10)..(h - 5) {
+                    for lz in 0..16 {
+                        for lx in 0..16 {
+                            if col.get(lx, y, lz) == AIR {
+                                carved += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(carved > 200, "expected substantial cave carving, got {carved} air cells");
+    }
+
+    #[test]
+    fn water_fills_basins_up_to_sea_level() {
+        let gen = WorldGen::new(42);
+        // Find a column below sea level (the seed-42 spawn basin is one).
+        let mut found = false;
+        for cx in -8..8 {
+            for cz in -8..8 {
+                let h = gen.height(cx * 16, cz * 16);
+                if h >= SEA_LEVEL {
+                    continue;
+                }
+                found = true;
+                let col = gen.generate_column(cx, cz);
+                // The top of the water body sits at sea level and the
+                // surface block right above the terrain is water.
+                assert_eq!(col.get(0, SEA_LEVEL, 0), WATER);
+                assert_eq!(col.get(0, h + 1, 0), WATER);
+                // No water above sea level.
+                assert_eq!(col.get(0, SEA_LEVEL + 1, 0), AIR);
+            }
+        }
+        assert!(found, "seed 42 should have a basin below sea level");
+    }
+
+    #[test]
+    fn trees_are_deterministic_and_have_trunks() {
+        let gen = WorldGen::new(7);
+        // Deterministic: identical columns on repeated generation.
+        let a = gen.generate_column(3, 5);
+        let b = gen.generate_column(3, 5);
+        for sub in 0..SUBCHUNKS_PER_COLUMN {
+            let (sa, sb) = (a.subchunks[sub].as_ref(), b.subchunks[sub].as_ref());
+            match (sa, sb) {
+                (None, None) => continue,
+                (Some(x), Some(y)) => assert_eq!(
+                    x.blocks[..], y.blocks[..],
+                    "column (3,5) must generate identically"
+                ),
+                _ => panic!("sub-chunk presence must match"),
+            }
+        }
+        // Somewhere in a reasonable area there is at least one oak trunk.
+        let mut trunk = false;
+        'outer: for cx in -12..12 {
+            for cz in -12..12 {
+                if let Some((lx, lz, base, _)) = gen.tree_at(cx, cz) {
+                    let col = gen.generate_column(cx, cz);
+                    if col.get(lx, base, lz) == OAK_LOG {
+                        trunk = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        assert!(trunk, "expected at least one generated oak trunk");
     }
 }
