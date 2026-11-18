@@ -21,7 +21,7 @@ pub trait Wire: Send {
     fn try_recv(&mut self) -> Option<Vec<u8>>;
 
     /// Whether the remote side is still connected (best-effort).
-    fn is_alive(&mut self) -> bool;
+    fn is_alive(&self) -> bool;
 }
 
 // ---------------------------------------------------------------------------
@@ -32,13 +32,19 @@ pub trait Wire: Send {
 pub struct MemoryWire {
     out: Sender<Vec<u8>>,
     inbox: Receiver<Vec<u8>>,
+    /// Set when the remote end dropped its channel (checked via send).
+    dead: std::cell::Cell<bool>,
 }
 
 impl Wire for MemoryWire {
     fn send(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.out
-            .send(bytes.to_vec())
-            .map_err(|_| "local wire: remote end dropped".to_string())
+        match self.out.send(bytes.to_vec()) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                self.dead.set(true);
+                Err("local wire: remote end dropped".to_string())
+            }
+        }
     }
 
     fn try_recv(&mut self) -> Option<Vec<u8>> {
@@ -48,8 +54,8 @@ impl Wire for MemoryWire {
         }
     }
 
-    fn is_alive(&mut self) -> bool {
-        true
+    fn is_alive(&self) -> bool {
+        !self.dead.get()
     }
 }
 
@@ -58,8 +64,8 @@ pub fn memory_pair() -> (MemoryWire, MemoryWire) {
     let (a_to_b, b_inbox) = mpsc::channel::<Vec<u8>>();
     let (b_to_a, a_inbox) = mpsc::channel::<Vec<u8>>();
     (
-        MemoryWire { out: a_to_b, inbox: a_inbox },
-        MemoryWire { out: b_to_a, inbox: b_inbox },
+        MemoryWire { out: a_to_b, inbox: a_inbox, dead: std::cell::Cell::new(false) },
+        MemoryWire { out: b_to_a, inbox: b_inbox, dead: std::cell::Cell::new(false) },
     )
 }
 
@@ -132,7 +138,7 @@ impl Wire for TcpWire {
         }
     }
 
-    fn is_alive(&mut self) -> bool {
+    fn is_alive(&self) -> bool {
         self.reader_alive.load(Ordering::Acquire)
     }
 }

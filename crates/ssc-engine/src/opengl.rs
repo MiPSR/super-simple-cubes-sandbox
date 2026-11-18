@@ -282,8 +282,20 @@ impl Renderer for Backend {
 
             let draw_all = |list: &[&DrawCmd], gl: &Gl| {
                 let mut calls = 0u32;
+                let mut last_model: Option<Mat4> = None;
                 for d in list {
                     let Some(m) = self.meshes.get(&d.mesh) else { continue };
+                    // Model matrix: set the composed MVP only when it
+                    // changes (terrain runs identity, entities move).
+                    if last_model != Some(d.model) {
+                        let mvp = *view_proj * d.model;
+                        gl.uniform_matrix_4_f32_slice(
+                            self.loc_mvp.as_ref(),
+                            false,
+                            mvp.to_cols_array().as_slice(),
+                        );
+                        last_model = Some(d.model);
+                    }
                     gl.bind_vertex_array(Some(m.vao));
                     gl.draw_elements(glow::TRIANGLES, m.count, glow::UNSIGNED_INT, 0);
                     calls += 1;

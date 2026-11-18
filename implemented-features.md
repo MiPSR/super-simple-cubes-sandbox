@@ -22,6 +22,13 @@ Every implemented wiki feature gets a line here. Status legend:
   ash Vulkan backend planned.
 - `1:1` (infra) — Local play (in-process server, memory wire) and dedicated
   server (TCP wire) from the same server library.
+- `partial` — Multi-player: one shared authoritative world, one session
+  per client (dedicated accepts clients on a background thread), 20 Hz
+  entity-state broadcast (own id included), per-player streaming and LOD
+  areas, placement rejected inside any player, EntityRemove on
+  disconnect. Placeholder box avatars (legs/body/head) placed by per-draw
+  model matrices; player skins, name tags and entity culling granularity
+  pending.
 
 ## World & Terrain
 

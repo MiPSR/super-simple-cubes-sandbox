@@ -1,11 +1,11 @@
 //! `ssc-server` — dedicated (headless) server entry point.
 //!
-//! The game logic itself lives in the library part of this crate; this
-//! binary accepts TCP clients and runs one authoritative session per
-//! client, sequentially (v0: single client at a time; multi-player comes
-//! with the entity system).
+//! The game logic lives in the library part of this crate; this binary
+//! accepts TCP clients on a background thread and feeds them into one
+//! authoritative shared-world server session set.
 
 use std::net::TcpListener;
+use std::sync::mpsc;
 
 use ssc_protocol::wire::TcpWire;
 use ssc_server::{Server, ServerConfig};
@@ -63,30 +63,47 @@ fn main() {
 
     let version = env!("CARGO_PKG_VERSION");
     println!("ssc-server {version} (dedicated) — Super Simple Cubes");
-    println!("seed: {}, render distance: {}, lod distance: {}",
-        cfg.seed, cfg.render_distance, cfg.lod_distance);
+    println!(
+        "seed: {}, render distance: {}, lod distance: {}",
+        cfg.seed, cfg.render_distance, cfg.lod_distance
+    );
 
     let listener = TcpListener::bind(("0.0.0.0", port))
         .unwrap_or_else(|e| panic!("cannot bind 0.0.0.0:{port}: {e}"));
-    println!("listening on 0.0.0.0:{port}");
+    println!("listening on 0.0.0.0:{port} (multi-player)");
 
-    loop {
-        let (stream, peer) = match listener.accept() {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("accept error: {e}");
-                continue;
+    // Accept clients in the background; the server attaches them on tick.
+    let (accept_tx, accept_rx) = mpsc::channel::<Box<dyn ssc_protocol::wire::Wire>>();
+    std::thread::Builder::new()
+        .name("tcp-accept".into())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => {
+                        let peer = stream
+                            .peer_addr()
+                            .map(|a| a.to_string())
+                            .unwrap_or_else(|_| "?".into());
+                        match TcpWire::new(stream) {
+                            Ok(w) => {
+                                println!("client connected: {peer}");
+                                if accept_tx.send(Box::new(w)).is_err() {
+                                    return; // server gone
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("wire setup failed for {peer}: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("accept error: {e}"),
+                }
             }
-        };
-        println!("client connected: {peer}");
-        let wire = match TcpWire::new(stream) {
-            Ok(w) => Box::new(w) as Box<dyn ssc_protocol::wire::Wire>,
-            Err(e) => {
-                eprintln!("wire setup failed for {peer}: {e}");
-                continue;
-            }
-        };
-        Server::new(cfg.clone(), wire).run();
-        println!("client disconnected: {peer}");
-    }
+        })
+        .expect("spawn accept thread");
+
+    let mut server = Server::empty_for_dedicated(cfg);
+    server.set_accept_channel(accept_rx);
+    server.run();
+    println!("all clients gone, shutting down");
 }

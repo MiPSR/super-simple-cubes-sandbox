@@ -15,6 +15,63 @@ use ssc_world::{
     is_opaque, Column, World, CHUNK_W, ColumnKey, MIN_Y, SUBCHUNKS_PER_COLUMN,
 };
 
+/// A local-space box for entity avatars: min/max corners + per-face tile.
+struct BoxDef {
+    min: [f32; 3],
+    max: [f32; 3],
+    tiles: [u16; 6],
+}
+
+/// Placeholder player avatar: three boxes (legs, body, head) in local
+/// space, feet at y=0. Minecraft proportions; placeholder atlas tiles
+/// until real player skins exist (`implemented-features.md`).
+pub fn build_avatar() -> (Vec<Vertex>, Vec<u32>) {
+    let boxes = [
+        // legs
+        BoxDef {
+            min: [-0.125, 0.0, -0.125],
+            max: [0.125, 0.7, 0.125],
+            tiles: [ssc_world::TILE_BRICKS; 6],
+        },
+        // body
+        BoxDef {
+            min: [-0.25, 0.7, -0.125],
+            max: [0.25, 1.4, 0.125],
+            tiles: [ssc_world::TILE_PLANKS; 6],
+        },
+        // head
+        BoxDef {
+            min: [-0.25, 1.4, -0.25],
+            max: [0.25, 1.8, 0.25],
+            tiles: [ssc_world::TILE_SNOW; 6],
+        },
+    ];
+    let mut verts = Vec::new();
+    let mut indices = Vec::new();
+    for b in &boxes {
+        push_box(&mut verts, &mut indices, b);
+    }
+    (verts, indices)
+}
+
+/// Emit all six faces of one local-space box.
+fn push_box(verts: &mut Vec<Vertex>, indices: &mut Vec<u32>, b: &BoxDef) {
+    for f in &FACES {
+        let [u0, v0, u1, v1] = atlas_tile_uv(b.tiles[f.face]);
+        let base = verts.len() as u32;
+        for (i, corner) in f.corners.iter().enumerate() {
+            let px = if corner[0] == 0 { b.min[0] } else { b.max[0] };
+            let py = if corner[1] == 0 { b.min[1] } else { b.max[1] };
+            let pz = if corner[2] == 0 { b.min[2] } else { b.max[2] };
+            let (us, vs) = f.uv_sel[i];
+            let u = if us == 0 { u0 } else { u1 };
+            let v = if vs == 0 { v0 } else { v1 };
+            verts.push(Vertex { pos: [px, py, pz], uv: [u, v] });
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+}
+
 /// A built sub-chunk mesh with tight bounds (tight AABBs cull better).
 /// `translucent` marks water (drawn in the blend pass).
 #[derive(Debug, Default)]

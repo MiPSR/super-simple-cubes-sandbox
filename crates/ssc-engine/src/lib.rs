@@ -77,6 +77,16 @@ pub struct DrawCmd {
     /// Translucent geometry (water): drawn in the blend pass after all
     /// opaque geometry, back-to-front, without depth writes.
     pub translucent: bool,
+    /// Model matrix (identity for world-space meshes). Entities place
+    /// local-space meshes into the world with translation + yaw.
+    pub model: Mat4,
+}
+
+impl DrawCmd {
+    /// World-space submission with identity model transform.
+    pub fn world(mesh: MeshId, aabb: Aabb) -> Self {
+        Self { mesh, aabb, lod: false, translucent: false, model: Mat4::IDENTITY }
+    }
 }
 
 /// Per-frame render statistics.

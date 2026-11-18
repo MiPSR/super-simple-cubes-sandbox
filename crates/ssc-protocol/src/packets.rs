@@ -128,8 +128,10 @@ impl ClientPacket {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerPacket {
-    /// Join acceptance: spawn position, render distance, hotbar contents.
+    /// Join acceptance: your entity id, spawn position, render distance,
+    /// hotbar contents.
     Welcome {
+        entity_id: u16,
         spawn: [f32; 3],
         render_distance: u8,
         hotbar: [u16; 9],
@@ -155,14 +157,18 @@ pub enum ServerPacket {
     },
     /// Drop the LOD summary of a column.
     UnloadLod { cx: i32, cz: i32 },
-    /// Authoritative player state, 20 Hz.
-    PlayerState {
+    /// Authoritative entity state (all players, 20 Hz, own id included;
+    /// clients interpolate everything the same way).
+    EntityState {
+        id: u16,
         x: f32,
         y: f32,
         z: f32,
         yaw: f32,
         pitch: f32,
     },
+    /// An entity left the world.
+    EntityRemove { id: u16 },
     /// A single block changed.
     BlockUpdate {
         x: i32,
@@ -180,8 +186,9 @@ impl ServerPacket {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = ByteWriter::new();
         match self {
-            ServerPacket::Welcome { spawn, render_distance, hotbar } => {
+            ServerPacket::Welcome { entity_id, spawn, render_distance, hotbar } => {
                 w.put_u8(0);
+                w.put_u16(*entity_id);
                 for v in spawn {
                     w.put_f32(*v);
                 }
@@ -220,30 +227,35 @@ impl ServerPacket {
                 w.put_i32(*cx);
                 w.put_i32(*cz);
             }
-            ServerPacket::PlayerState { x, y, z, yaw, pitch } => {
+            ServerPacket::EntityState { id, x, y, z, yaw, pitch } => {
                 w.put_u8(6);
+                w.put_u16(*id);
                 w.put_f32(*x);
                 w.put_f32(*y);
                 w.put_f32(*z);
                 w.put_f32(*yaw);
                 w.put_f32(*pitch);
             }
-            ServerPacket::BlockUpdate { x, y, z, block } => {
+            ServerPacket::EntityRemove { id } => {
                 w.put_u8(7);
+                w.put_u16(*id);
+            }
+            ServerPacket::BlockUpdate { x, y, z, block } => {
+                w.put_u8(8);
                 w.put_i32(*x);
                 w.put_i32(*y);
                 w.put_i32(*z);
                 w.put_u16(*block);
             }
             ServerPacket::Sound { sound, x, y, z } => {
-                w.put_u8(8);
+                w.put_u8(9);
                 w.put_u16(*sound);
                 w.put_f32(*x);
                 w.put_f32(*y);
                 w.put_f32(*z);
             }
             ServerPacket::Goodbye { reason } => {
-                w.put_u8(9);
+                w.put_u8(10);
                 w.put_string(reason);
             }
         }
@@ -255,6 +267,7 @@ impl ServerPacket {
         let tag = r.get_u8()?;
         let pkt = match tag {
             0 => {
+                let entity_id = r.get_u16()?;
                 let spawn = [
                     r.get_f32()?,
                     r.get_f32()?,
@@ -265,7 +278,7 @@ impl ServerPacket {
                 for b in &mut hotbar {
                     *b = r.get_u16()?;
                 }
-                ServerPacket::Welcome { spawn, render_distance, hotbar }
+                ServerPacket::Welcome { entity_id, spawn, render_distance, hotbar }
             }
             1 => ServerPacket::Subchunk {
                 cx: r.get_i32()?,
@@ -285,26 +298,28 @@ impl ServerPacket {
                 ServerPacket::LodColumn { cx, cz, cells }
             }
             5 => ServerPacket::UnloadLod { cx: r.get_i32()?, cz: r.get_i32()? },
-            6 => ServerPacket::PlayerState {
+            6 => ServerPacket::EntityState {
+                id: r.get_u16()?,
                 x: r.get_f32()?,
                 y: r.get_f32()?,
                 z: r.get_f32()?,
                 yaw: r.get_f32()?,
                 pitch: r.get_f32()?,
             },
-            7 => ServerPacket::BlockUpdate {
+            7 => ServerPacket::EntityRemove { id: r.get_u16()? },
+            8 => ServerPacket::BlockUpdate {
                 x: r.get_i32()?,
                 y: r.get_i32()?,
                 z: r.get_i32()?,
                 block: r.get_u16()?,
             },
-            8 => ServerPacket::Sound {
+            9 => ServerPacket::Sound {
                 sound: r.get_u16()?,
                 x: r.get_f32()?,
                 y: r.get_f32()?,
                 z: r.get_f32()?,
             },
-            9 => ServerPacket::Goodbye { reason: r.get_string()? },
+            10 => ServerPacket::Goodbye { reason: r.get_string()? },
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad server packet tag {tag}"

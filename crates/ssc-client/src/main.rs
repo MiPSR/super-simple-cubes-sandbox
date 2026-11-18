@@ -99,6 +99,15 @@ fn spawn_worker(shared: Arc<RwLock<ClientWorld>>) -> (Sender<Job>, Receiver<JobR
 // The client application
 // ---------------------------------------------------------------------------
 
+/// Interpolated view of another player.
+struct EntityView {
+    prev: Vec3,
+    cur: Vec3,
+    time: Instant,
+    yaw: f32,
+    mesh: MeshId,
+}
+
 struct App {
     wire: Box<dyn Wire>,
     shared: Arc<RwLock<ClientWorld>>,
@@ -113,6 +122,13 @@ struct App {
     /// Per-sub-chunk border masks for occlusion culling.
     face_masks: HashMap<mesh::SubKey, mesh::FaceMasks>,
     next_mesh_id: MeshId,
+    /// Own server-assigned entity id.
+    own_id: Option<u16>,
+    /// Other players.
+    entities: HashMap<u16, EntityView>,
+    /// Placeholder avatar geometry (uploaded per entity, built once).
+    avatar_verts: Vec<ssc_engine::Vertex>,
+    avatar_indices: Vec<u32>,
     // Player presentation state.
     pos_prev: Vec3,
     pos_cur: Vec3,
@@ -156,6 +172,7 @@ impl App {
         // Debug camera overrides (orientation testing / screenshots).
         let yaw = std::env::var("SSC_YAW").ok().and_then(|v| v.parse().ok());
         let pitch = std::env::var("SSC_PITCH").ok().and_then(|v| v.parse().ok());
+        let (avatar_verts, avatar_indices) = mesh::build_avatar();
         Self {
             wire,
             shared,
@@ -167,9 +184,13 @@ impl App {
             region_meshes: HashMap::new(),
             face_masks: HashMap::new(),
             next_mesh_id: 1,
+            own_id: None,
+            entities: HashMap::new(),
             pos_prev: Vec3::new(8.5, 128.0, 8.5),
             pos_cur: Vec3::new(8.5, 128.0, 8.5),
             state_time: now,
+            avatar_verts,
+            avatar_indices,
             yaw: yaw.unwrap_or(0.0),
             pitch: pitch.unwrap_or(0.0),
             keys: 0,
@@ -408,6 +429,7 @@ impl App {
                 aabb: *aabb,
                 lod: false,
                 translucent: *translucent,
+                model: ssc_math::Mat4::IDENTITY,
             });
         }
         for (_r, (id, aabb)) in &self.region_meshes {
@@ -416,6 +438,26 @@ impl App {
                 aabb: *aabb,
                 lod: true,
                 translucent: false,
+                model: ssc_math::Mat4::IDENTITY,
+            });
+        }
+        // Other players: placeholder box avatars, placed by model matrix.
+        for e in self.entities.values() {
+            let alpha =
+                ((Instant::now() - e.time).as_secs_f32() / 0.05).clamp(0.0, 1.0);
+            let pos = e.prev.lerp(e.cur, alpha);
+            let aabb = ssc_math::Aabb::new(
+                Vec3::new(pos.x - 0.35, pos.y - 0.05, pos.z - 0.35),
+                Vec3::new(pos.x + 0.35, pos.y + 1.9, pos.z + 0.35),
+            );
+            let model = ssc_math::Mat4::from_translation(pos)
+                * ssc_math::Mat4::from_rotation_y(-e.yaw);
+            draws.push(DrawCmd {
+                mesh: e.mesh,
+                aabb,
+                lod: false,
+                translucent: false,
+                model,
             });
         }
 
@@ -467,13 +509,14 @@ impl App {
                 }
             }
             println!(
-                "[stats] {:5.1} fps | render {:4.2} ms | draws {:4} (frust {:4} occ {:4}) | calls {:4} | pos ({:7.2},{:7.2},{:7.2})",
+                "[stats] {:5.1} fps | render {:4.2} ms | draws {:4} (frust {:4} occ {:4}) | calls {:4} | ents {} | pos ({:7.2},{:7.2},{:7.2})",
                 fps,
                 self.stat_ms / self.frames as f32,
                 self.stat_drawn / self.frames,
                 self.stat_culled / self.frames,
                 self.stat_occluded / self.frames,
                 self.stat_calls / self.frames,
+                self.entities.len(),
                 self.pos_cur.x,
                 self.pos_cur.y,
                 self.pos_cur.z
@@ -492,7 +535,8 @@ impl App {
 
     fn handle_packet(&mut self, frame: &mut Frame, p: ServerPacket) -> Flow {
         match p {
-            ServerPacket::Welcome { spawn, render_distance, hotbar } => {
+            ServerPacket::Welcome { entity_id, spawn, render_distance, hotbar } => {
+                self.own_id = Some(entity_id);
                 self.hotbar = hotbar;
                 self.render_distance = render_distance as i32;
                 let s = Vec3::new(spawn[0], spawn[1], spawn[2]);
@@ -502,7 +546,7 @@ impl App {
                 self.joined = true;
                 frame.set_mouse_locked(true);
                 eprintln!(
-                    "[client] joined: render distance {render_distance}, spawn {s:?}"
+                    "[client] joined as entity {entity_id}: rd {render_distance}, spawn {s:?}"
                 );
             }
             ServerPacket::Subchunk { cx, cz, sub, blocks } => {
@@ -550,10 +594,52 @@ impl App {
                 let mut w = self.shared.write().unwrap_or_else(|e| e.into_inner());
                 w.apply_lod_unload(cx, cz);
             }
-            ServerPacket::PlayerState { x, y, z, yaw: _yaw, pitch: _pitch } => {
-                self.pos_prev = self.pos_cur;
-                self.pos_cur = Vec3::new(x, y, z);
-                self.state_time = Instant::now();
+            ServerPacket::EntityState { id, x, y, z, yaw, pitch } => {
+                if Some(id) == self.own_id {
+                    // Own authoritative state: interpolate for smooth
+                    // rendering (the server owns the logic, specs.md §2).
+                    self.pos_prev = self.pos_cur;
+                    self.pos_cur = Vec3::new(x, y, z);
+                    self.state_time = Instant::now();
+                    let _ = (yaw, pitch);
+                } else {
+                    match self.entities.get_mut(&id) {
+                        Some(e) => {
+                            e.prev = e.cur;
+                            e.cur = Vec3::new(x, y, z);
+                            e.time = Instant::now();
+                            e.yaw = yaw;
+                        }
+                        None => {
+                            // First sighting: upload a placeholder avatar.
+                            let mesh_id = self.next_mesh_id;
+                            self.next_mesh_id += 1;
+                            if let Err(e) = frame.upload_mesh(
+                                mesh_id,
+                                &self.avatar_verts,
+                                &self.avatar_indices,
+                            ) {
+                                eprintln!("[client] avatar upload failed: {e}");
+                            }
+                            let p = Vec3::new(x, y, z);
+                            self.entities.insert(
+                                id,
+                                EntityView {
+                                    prev: p,
+                                    cur: p,
+                                    time: Instant::now(),
+                                    yaw,
+                                    mesh: mesh_id,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+            ServerPacket::EntityRemove { id } => {
+                if let Some(e) = self.entities.remove(&id) {
+                    frame.remove_mesh(e.mesh);
+                }
             }
             ServerPacket::BlockUpdate { x, y, z, block } => {
                 if !valid_id(block) {
