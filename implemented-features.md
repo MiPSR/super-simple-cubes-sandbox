@@ -70,6 +70,19 @@ Every implemented wiki feature gets a line here. Status legend:
 - `partial` — Client-side view interpolation of the 20 Hz authoritative state
   and local look smoothing (presentation only, no client logic).
 - `partial` — Chunk streaming sends raw u16 blocks (8 KiB/sub-chunk);
-  palette + compression pending.
+  palette + compression pending. The wire layout itself is single-sourced
+  in `SubChunk::to_wire/from_wire` (no duplicated index math).
+- `1:1` (infra) — Sub-chunk wire format defined once in `ssc-world`, used
+  by both server encoder and client decoder (fixes the class of bug where
+  two hand-written index orders drift apart).
+- `1:1` (infra) — `ssc-lod` is atlas-layout-agnostic: tile→UV mapping is
+  injected by the presentation layer (`ssc-engine::atlas_tile_uv`), the
+  only place atlas layout exists.
+- `1:1` (infra) — Dig/place/miss interaction paths pinned by server unit
+  tests over the real wire codec (update + sound packets asserted).
+- `dev` — Block dig/place fire on the press *event* (not held-state
+  polling) with hold-repeat at 4 Hz: quick clicks never reach a held-state
+  snapshot in a single frame, so event-driven was required; Minecraft's
+  exact dig-timing model (progress, tools) is not implemented yet.
 - `partial` — 128-144 block gap ring between the near ring edge and LOD
   skip-margin; to be closed with an overlapping margin.

@@ -81,8 +81,11 @@ pub enum LodBuild {
 /// considered near).
 ///
 /// `lookup` gives the [`LodColumn`] for any world column (returns `None`
-/// when not streamed yet). Skirts are only emitted between cells of the
-/// same region — region borders may show hairline gaps for now.
+/// when not streamed yet). `tile_uv` maps an atlas tile id to its
+/// `[u0, v0, u1, v1]` UV rect — the atlas layout is owned by the
+/// presentation layer (engine/client), NOT this crate. Skirts are only
+/// emitted between cells of the same region; region borders may show
+/// hairline gaps for now.
 pub fn build_region_mesh(
     rx: i32,
     rz: i32,
@@ -90,6 +93,7 @@ pub fn build_region_mesh(
     pcz: i32,
     near_margin: i32,
     lookup: &dyn Fn(i32, i32) -> Option<LodColumn>,
+    tile_uv: &dyn Fn(u16) -> [f32; 4],
 ) -> LodBuild {
     let origin_cx = rx * REGION_COLS;
     let origin_cz = rz * REGION_COLS;
@@ -130,9 +134,9 @@ pub fn build_region_mesh(
             let x1 = x0 + CELL_STRIDE as f32;
             let z1 = z0 + CELL_STRIDE as f32;
 
-            let uv = TileUV::new(tile);
+            let uv = tile_uv(tile);
             push_top_quad(&mut mesh, x0, z0, x1, z1, hf, uv);
-            push_skirts(&mut mesh, rx, rz, lx, lz, x0, z0, hf, tile, lookup);
+            push_skirts(&mut mesh, rx, rz, lx, lz, x0, z0, hf, tile, lookup, tile_uv);
         }
     }
 
@@ -142,41 +146,13 @@ pub fn build_region_mesh(
     LodBuild::Mesh(mesh)
 }
 
-// Atlas layout must match the client's atlas (16×16 tiles of 16 px).
-const ATLAS_TILES: f32 = 16.0;
-const ATLAS_PX: f32 = 256.0;
-
-#[derive(Clone, Copy)]
-struct TileUV {
-    u0: f32,
-    v0: f32,
-    u1: f32,
-    v1: f32,
-}
-
-impl TileUV {
-    /// GL-convention UV rect for a tile id, inset by half a texel to avoid
-    /// bleeding between neighboring atlas tiles.
-    fn new(tile: u16) -> Self {
-        let tx = (tile % 16) as f32;
-        let ty = (tile / 16) as f32;
-        let inset = 0.5 / ATLAS_PX;
-        let u0 = tx / ATLAS_TILES + inset;
-        let u1 = (tx + 1.0) / ATLAS_TILES - inset;
-        // Image row 0 is the top; GL v grows upward → flip.
-        let v1 = 1.0 - ty / ATLAS_TILES - inset;
-        let v0 = 1.0 - (ty + 1.0) / ATLAS_TILES + inset;
-        Self { u0, v0, u1, v1 }
-    }
-}
-
-fn push_top_quad(mesh: &mut LodMesh, x0: f32, z0: f32, x1: f32, z1: f32, y: f32, uv: TileUV) {
+fn push_top_quad(mesh: &mut LodMesh, x0: f32, z0: f32, x1: f32, z1: f32, y: f32, uv: [f32; 4]) {
     let base = mesh.verts.len() as u32;
     // CCW viewed from above.
-    mesh.verts.push([x0, y, z1, uv.u0, uv.v0]);
-    mesh.verts.push([x1, y, z1, uv.u1, uv.v0]);
-    mesh.verts.push([x1, y, z0, uv.u1, uv.v1]);
-    mesh.verts.push([x0, y, z0, uv.u0, uv.v1]);
+    mesh.verts.push([x0, y, z1, uv[0], uv[1]]);
+    mesh.verts.push([x1, y, z1, uv[2], uv[1]]);
+    mesh.verts.push([x1, y, z0, uv[2], uv[3]]);
+    mesh.verts.push([x0, y, z0, uv[0], uv[3]]);
     mesh.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
@@ -193,10 +169,11 @@ fn push_skirts(
     h: f32,
     tile: u16,
     lookup: &dyn Fn(i32, i32) -> Option<LodColumn>,
+    tile_uv: &dyn Fn(u16) -> [f32; 4],
 ) {
     let x1 = x0 + CELL_STRIDE as f32;
     let z1 = z0 + CELL_STRIDE as f32;
-    let uv = TileUV::new(tile);
+    let uv = tile_uv(tile);
     let origin_cx = _rx * REGION_COLS;
     let origin_cz = _rz * REGION_COLS;
 
@@ -230,11 +207,11 @@ fn push_skirts(
 }
 
 /// Quad given in CCW order viewed from outside; `[..]` = [x, y, z].
-fn push_side_quad(mesh: &mut LodMesh, a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], uv: TileUV) {
+fn push_side_quad(mesh: &mut LodMesh, a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], uv: [f32; 4]) {
     let base = mesh.verts.len() as u32;
-    mesh.verts.push([a[0], a[1], a[2], uv.u0, uv.v1]);
-    mesh.verts.push([b[0], b[1], b[2], uv.u1, uv.v1]);
-    mesh.verts.push([c[0], c[1], c[2], uv.u1, uv.v0]);
-    mesh.verts.push([d[0], d[1], d[2], uv.u0, uv.v0]);
+    mesh.verts.push([a[0], a[1], a[2], uv[0], uv[3]]);
+    mesh.verts.push([b[0], b[1], b[2], uv[2], uv[3]]);
+    mesh.verts.push([c[0], c[1], c[2], uv[2], uv[1]]);
+    mesh.verts.push([d[0], d[1], d[2], uv[0], uv[1]]);
     mesh.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }

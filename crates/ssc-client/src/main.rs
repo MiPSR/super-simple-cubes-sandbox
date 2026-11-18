@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use ssc_engine::{
     Camera, DrawCmd, EngineEvent, EngineSettings, Flow, Frame, Key, KeyState, MeshId,
+    MouseButton,
 };
 use ssc_math::{MOUSE_SENS, PLAYER_EYE_HEIGHT, Vec3};
 use ssc_protocol::packets::{keys, ClientPacket, ServerPacket, SoundId};
@@ -211,14 +212,24 @@ impl App {
                         self.send(&ClientPacket::SelectSlot { slot: self.selected_slot });
                     }
                 }
-                EngineEvent::MouseButton { button, state: KeyState::Pressed } => {
-                    // While unlocked, the first click grabs the mouse
-                    // instead of interacting (classic FPS UX).
-                    if !frame.mouse_locked() {
-                        self.ui_click = true;
+                // Immediate action on the press event: a quick click never
+                // shows up in the held-state snapshot (press and release
+                // land in the same frame's event batch).
+                EngineEvent::MouseButton { button: MouseButton::Left, state: KeyState::Pressed } => {
+                    if frame.mouse_locked() {
+                        self.send(&ClientPacket::Dig);
+                        self.last_dig = Instant::now();
+                    } else {
+                        // While unlocked, the first click grabs the mouse
+                        // instead of interacting (classic FPS UX).
                         frame.set_mouse_locked(true);
                     }
-                    let _ = button;
+                }
+                EngineEvent::MouseButton { button: MouseButton::Right, state: KeyState::Pressed } => {
+                    if frame.mouse_locked() {
+                        self.send(&ClientPacket::Place);
+                        self.last_place = Instant::now();
+                    }
                 }
                 EngineEvent::Focused(false) => frame.set_mouse_locked(false),
                 _ => {}
@@ -273,8 +284,8 @@ impl App {
             self.send(&ClientPacket::Input { keys: self.keys, yaw: self.yaw, pitch: self.pitch });
         }
 
-        // Held dig/place (no action consumed by UI clicks).
-        if !self.ui_click {
+        // Held dig/place: repeat while the button stays down.
+        {
             let now = Instant::now();
             if i.mouse_left && frame.mouse_locked() && now - self.last_dig >= ACTION_REPEAT {
                 self.last_dig = now;

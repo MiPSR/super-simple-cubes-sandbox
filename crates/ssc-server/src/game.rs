@@ -348,21 +348,14 @@ impl Server {
             self.world.columns.insert(key, col);
         }
         // Collect sub-chunk payloads first (immutable borrow of the world),
-        // then send (mutable borrow of self).
+        // then send (mutable borrow of self). Wire layout: SubChunk::to_wire
+        // — the single source of truth.
         let payloads: Vec<(u8, Vec<u16>)> = {
             let column = self.world.column(key.0, key.1).unwrap();
             let mut out = Vec::new();
             for (sub, slot) in column.subchunks.iter().enumerate() {
                 if let Some(sc) = slot {
-                    let mut blocks = Vec::with_capacity(ssc_world::SUBCHUNK_VOLUME);
-                    for y in 0..16 {
-                        for z in 0..16 {
-                            for x in 0..16 {
-                                blocks.push(sc.get(x, y, z));
-                            }
-                        }
-                    }
-                    out.push((sub as u8, blocks));
+                    out.push((sub as u8, sc.to_wire()));
                 }
             }
             out
@@ -530,4 +523,107 @@ pub fn spawn_local(cfg: ServerConfig) -> (MemoryWire, std::thread::JoinHandle<()
         })
         .expect("spawn server thread");
     (client_wire, handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ssc_protocol::packets::ServerPacket;
+    use ssc_protocol::wire::Wire;
+
+    /// A test rig: server over an in-memory wire, one player joined and
+    /// standing on a known flat floor.
+    struct Rig {
+        server: Server,
+        client: MemoryWire,
+    }
+
+    impl Rig {
+        /// Player at `(8.5, floor + 1, 8.5)` looking with `yaw`/`pitch`.
+        fn new(yaw: f32, pitch: f32) -> Self {
+            let (client, server_wire) = memory_pair();
+            let mut cfg = ServerConfig::default();
+            // Flat world: seed chosen so spawn is a flat beach basin.
+            cfg.seed = 42;
+            let mut server = Server::new(cfg, Box::new(server_wire));
+            server.player.joined = true;
+            server.player.pos = Vec3::new(8.5, 55.02, 8.5);
+            server.player.vel = Vec3::ZERO;
+            server.player.yaw = yaw;
+            server.player.pitch = pitch;
+            // Materialize the spawn column so dig/place have real data.
+            let col = server.gen.generate_column(0, 0);
+            server.world.columns.insert((0, 0), col);
+            Self { server, client }
+        }
+
+        /// Decode all packets currently queued on the client end.
+        fn drain(&mut self) -> Vec<ServerPacket> {
+            let mut out = Vec::new();
+            while let Some(bytes) = self.client.try_recv() {
+                if let Ok(p) = ServerPacket::decode(&bytes) {
+                    out.push(p);
+                }
+            }
+            out
+        }
+    }
+
+    #[test]
+    fn dig_removes_block_and_emits_update_and_sound() {
+        // Straight down: the block under the player's feet is always in
+        // reach (eye 1.62 above ground < REACH 4.5).
+        let mut rig = Rig::new(0.0, -1.5);
+        rig.server.handle_dig();
+
+        let packets = rig.drain();
+        let updates = packets
+            .iter()
+            .filter(|p| matches!(p, ServerPacket::BlockUpdate { block: 0, .. }))
+            .count();
+        let sounds = packets
+            .iter()
+            .filter(|p| matches!(p, ServerPacket::Sound { .. }))
+            .count();
+        assert_eq!(updates, 1, "expected exactly one BlockUpdate(AIR), got {packets:?}");
+        assert_eq!(sounds, 1, "expected exactly one dig Sound, got {packets:?}");
+    }
+
+    #[test]
+    fn place_puts_selected_block_with_sound() {
+        // Down-forward diagonal: the ray hits the floor a block away, so
+        // the placement target sits beside the player (a straight-down
+        // aim would target the player's own cell and be rejected, like
+        // real Minecraft).
+        let mut rig = Rig::new(0.0, -1.2);
+        rig.server.handle_place();
+
+        let packets = rig.drain();
+        let updates = packets
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p,
+                    ServerPacket::BlockUpdate { block: ssc_world::BRICKS, .. }
+                )
+            })
+            .count();
+        let sounds = packets
+            .iter()
+            .filter(|p| matches!(p, ServerPacket::Sound { .. }))
+            .count();
+        assert_eq!(updates, 1, "expected exactly one BlockUpdate(BRICKS), got {packets:?}");
+        assert_eq!(sounds, 1, "expected exactly one place Sound, got {packets:?}");
+    }
+
+    #[test]
+    fn dig_at_sky_hits_nothing() {
+        let mut rig = Rig::new(0.0, 1.5); // looking straight up
+        rig.server.handle_dig();
+        let packets = rig.drain();
+        assert!(
+            packets.is_empty(),
+            "dig at the sky must change nothing: {packets:?}"
+        );
+    }
 }

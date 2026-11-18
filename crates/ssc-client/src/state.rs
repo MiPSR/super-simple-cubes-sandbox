@@ -30,21 +30,10 @@ impl ClientWorld {
     }
 
     pub fn apply_subchunk(&mut self, cx: i32, cz: i32, sub: u8, blocks: &[BlockId]) {
-        let col = self.world.column_mut(cx, cz);
         let Some(sub_idx) = subchunk_slot(sub) else { return };
-        // Replace the sub-chunk wholesale. Index order must match the
-        // server's serializer: y * 256 + z * 16 + x.
-        let mut sc = ssc_world::SubChunk::default();
-        for y in 0..16 {
-            for z in 0..16 {
-                for x in 0..16 {
-                    let i = (y * 16 * 16 + z * 16 + x) as usize;
-                    if i < blocks.len() {
-                        sc.set(x, y, z, blocks[i]);
-                    }
-                }
-            }
-        }
+        // Wire layout: SubChunk::from_wire — the single source of truth.
+        let Some(sc) = ssc_world::SubChunk::from_wire(blocks) else { return };
+        let col = self.world.column_mut(cx, cz);
         col.subchunks[sub_idx] = Some(Box::new(sc));
     }
 
@@ -144,9 +133,17 @@ impl ClientWorld {
     /// Build a region LOD mesh snapshot (for the mesh worker).
     pub fn build_region(&self, rx: i32, rz: i32, pcx: i32, pcz: i32, near_margin: i32) -> Option<LodMesh> {
         let lod = self.lod.clone(); // small (32 bytes per column)
-        let built = ssc_lod::build_region_mesh(rx, rz, pcx, pcz, near_margin, &|cx, cz| {
-            lod.get(&(cx, cz)).copied()
-        });
+        // Tile→UV mapping is presentation: owned by the engine's atlas
+        // layout, passed in so ssc-lod stays layout-agnostic.
+        let built = ssc_lod::build_region_mesh(
+            rx,
+            rz,
+            pcx,
+            pcz,
+            near_margin,
+            &|cx, cz| lod.get(&(cx, cz)).copied(),
+            &|tile| ssc_engine::atlas_tile_uv(tile),
+        );
         match built {
             ssc_lod::LodBuild::Mesh(m) => Some(m),
             ssc_lod::LodBuild::Empty => None,

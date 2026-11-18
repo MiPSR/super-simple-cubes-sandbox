@@ -70,6 +70,38 @@ impl SubChunk {
     pub fn has_content(&self) -> bool {
         self.blocks.iter().any(|&b| b != AIR)
     }
+
+    /// Flatten to the wire layout — the single source of truth for the
+    /// sub-chunk stream format (`y*256 + z*16 + x`). Both the server
+    /// encoder and client decoder must use this; never re-implement it.
+    pub fn to_wire(&self) -> Vec<BlockId> {
+        let mut out = Vec::with_capacity(SUBCHUNK_VOLUME);
+        for y in 0..SUBCHUNK_H {
+            for z in 0..CHUNK_W {
+                for x in 0..CHUNK_W {
+                    out.push(self.get(x, y, z));
+                }
+            }
+        }
+        out
+    }
+
+    /// Parse the wire layout produced by [`SubChunk::to_wire`].
+    /// Returns `None` if the payload has the wrong length.
+    pub fn from_wire(blocks: &[BlockId]) -> Option<Self> {
+        if blocks.len() != SUBCHUNK_VOLUME {
+            return None;
+        }
+        let mut sc = Self::default();
+        for y in 0..SUBCHUNK_H {
+            for z in 0..CHUNK_W {
+                for x in 0..CHUNK_W {
+                    sc.set(x, y, z, blocks[(y * CHUNK_W * CHUNK_W + z * CHUNK_W + x) as usize]);
+                }
+            }
+        }
+        Some(sc)
+    }
 }
 
 impl Default for SubChunk {
