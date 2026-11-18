@@ -55,10 +55,13 @@ impl LodColumn {
     }
 }
 
-/// A built LOD mesh: interleaved `[x, y, z, u, v]` floats + indices.
+/// A built LOD mesh: interleaved `[x, y, z, u, v, tile]` floats — `u/v`
+/// are local repeating coordinates (0..1 per cell) and `tile` is the
+/// atlas tile **id**; the presentation layer (engine) maps ids to atlas
+/// UVs. This crate stays atlas-layout-agnostic.
 #[derive(Debug, Default)]
 pub struct LodMesh {
-    pub verts: Vec<[f32; 5]>,
+    pub verts: Vec<[f32; 6]>,
     pub indices: Vec<u32>,
     /// Vertical extent of the emitted geometry (world coords).
     pub min_y: f32,
@@ -81,11 +84,10 @@ pub enum LodBuild {
 /// considered near).
 ///
 /// `lookup` gives the [`LodColumn`] for any world column (returns `None`
-/// when not streamed yet). `tile_uv` maps an atlas tile id to its
-/// `[u0, v0, u1, v1]` UV rect — the atlas layout is owned by the
-/// presentation layer (engine/client), NOT this crate. Skirts are only
-/// emitted between cells of the same region; region borders may show
-/// hairline gaps for now.
+/// when not streamed yet). Vertices carry atlas tile **ids**; the atlas
+/// layout is owned by the presentation layer (engine/client), NOT this
+/// crate. Skirts are only emitted between cells of the same region;
+/// region borders may show hairline gaps for now.
 pub fn build_region_mesh(
     rx: i32,
     rz: i32,
@@ -93,7 +95,6 @@ pub fn build_region_mesh(
     pcz: i32,
     near_margin: i32,
     lookup: &dyn Fn(i32, i32) -> Option<LodColumn>,
-    tile_uv: &dyn Fn(u16) -> [f32; 4],
 ) -> LodBuild {
     let origin_cx = rx * REGION_COLS;
     let origin_cz = rz * REGION_COLS;
@@ -134,9 +135,9 @@ pub fn build_region_mesh(
             let x1 = x0 + CELL_STRIDE as f32;
             let z1 = z0 + CELL_STRIDE as f32;
 
-            let uv = tile_uv(tile);
+            let uv = tile;
             push_top_quad(&mut mesh, x0, z0, x1, z1, hf, uv);
-            push_skirts(&mut mesh, rx, rz, lx, lz, x0, z0, hf, tile, lookup, tile_uv);
+            push_skirts(&mut mesh, rx, rz, lx, lz, x0, z0, hf, tile, lookup);
         }
     }
 
@@ -146,13 +147,13 @@ pub fn build_region_mesh(
     LodBuild::Mesh(mesh)
 }
 
-fn push_top_quad(mesh: &mut LodMesh, x0: f32, z0: f32, x1: f32, z1: f32, y: f32, uv: [f32; 4]) {
+fn push_top_quad(mesh: &mut LodMesh, x0: f32, z0: f32, x1: f32, z1: f32, y: f32, tile: u16) {
     let base = mesh.verts.len() as u32;
-    // CCW viewed from above.
-    mesh.verts.push([x0, y, z1, uv[0], uv[1]]);
-    mesh.verts.push([x1, y, z1, uv[2], uv[1]]);
-    mesh.verts.push([x1, y, z0, uv[2], uv[3]]);
-    mesh.verts.push([x0, y, z0, uv[0], uv[3]]);
+    // CCW viewed from above; one full texture per LOD cell.
+    mesh.verts.push([x0, y, z1, 0.0, 0.0, tile as f32]);
+    mesh.verts.push([x1, y, z1, 1.0, 0.0, tile as f32]);
+    mesh.verts.push([x1, y, z0, 1.0, 1.0, tile as f32]);
+    mesh.verts.push([x0, y, z0, 0.0, 1.0, tile as f32]);
     mesh.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
@@ -169,11 +170,10 @@ fn push_skirts(
     h: f32,
     tile: u16,
     lookup: &dyn Fn(i32, i32) -> Option<LodColumn>,
-    tile_uv: &dyn Fn(u16) -> [f32; 4],
 ) {
     let x1 = x0 + CELL_STRIDE as f32;
     let z1 = z0 + CELL_STRIDE as f32;
-    let uv = tile_uv(tile);
+    let uv = tile;
     let origin_cx = _rx * REGION_COLS;
     let origin_cz = _rz * REGION_COLS;
 
@@ -207,11 +207,12 @@ fn push_skirts(
 }
 
 /// Quad given in CCW order viewed from outside; `[..]` = [x, y, z].
-fn push_side_quad(mesh: &mut LodMesh, a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], uv: [f32; 4]) {
+fn push_side_quad(mesh: &mut LodMesh, a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3], tile: u16) {
     let base = mesh.verts.len() as u32;
-    mesh.verts.push([a[0], a[1], a[2], uv[0], uv[3]]);
-    mesh.verts.push([b[0], b[1], b[2], uv[2], uv[3]]);
-    mesh.verts.push([c[0], c[1], c[2], uv[2], uv[1]]);
-    mesh.verts.push([d[0], d[1], d[2], uv[0], uv[1]]);
+    let t = tile as f32;
+    mesh.verts.push([a[0], a[1], a[2], 0.0, 1.0, t]);
+    mesh.verts.push([b[0], b[1], b[2], 1.0, 1.0, t]);
+    mesh.verts.push([c[0], c[1], c[2], 1.0, 0.0, t]);
+    mesh.verts.push([d[0], d[1], d[2], 0.0, 0.0, t]);
     mesh.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }

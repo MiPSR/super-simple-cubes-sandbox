@@ -809,7 +809,11 @@ impl App {
                             let verts: Vec<ssc_engine::Vertex> = m
                                 .verts
                                 .iter()
-                                .map(|v| ssc_engine::Vertex { pos: [v[0], v[1], v[2]], uv: [v[3], v[4]] })
+                                .map(|v| ssc_engine::Vertex {
+                                    pos: [v[0], v[1], v[2]],
+                                    uv: [v[3], v[4]],
+                                    tile: ssc_engine::atlas_tile_origin(v[5] as u16),
+                                })
                                 .collect();
                             if let Err(e) = frame.upload_mesh(id, &verts, &m.indices) {
                                 eprintln!("[client] lod upload failed: {e}");

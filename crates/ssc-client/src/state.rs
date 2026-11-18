@@ -133,17 +133,10 @@ impl ClientWorld {
     /// Build a region LOD mesh snapshot (for the mesh worker).
     pub fn build_region(&self, rx: i32, rz: i32, pcx: i32, pcz: i32, near_margin: i32) -> Option<LodMesh> {
         let lod = self.lod.clone(); // small (32 bytes per column)
-        // Tile→UV mapping is presentation: owned by the engine's atlas
-        // layout, passed in so ssc-lod stays layout-agnostic.
-        let built = ssc_lod::build_region_mesh(
-            rx,
-            rz,
-            pcx,
-            pcz,
-            near_margin,
-            &|cx, cz| lod.get(&(cx, cz)).copied(),
-            &|tile| ssc_engine::atlas_tile_uv(tile),
-        );
+        // LOD emits atlas tile ids; the engine owns the atlas layout.
+        let built = ssc_lod::build_region_mesh(rx, rz, pcx, pcz, near_margin, &|cx, cz| {
+            lod.get(&(cx, cz)).copied()
+        });
         match built {
             ssc_lod::LodBuild::Mesh(m) => Some(m),
             ssc_lod::LodBuild::Empty => None,

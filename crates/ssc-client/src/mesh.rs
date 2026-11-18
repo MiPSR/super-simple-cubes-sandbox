@@ -1,76 +1,24 @@
 //! Chunk meshing for the client renderer.
 //!
-//! Emits one mesh per 16³ sub-chunk, containing only the **exposed** faces:
-//! a face is emitted when the neighboring block is not opaque. Neighbor
-//! lookups cross column borders (3×3 column neighborhood), and meshing is
-//! only scheduled once a column and its four neighbors are fully streamed
-//! (see `state.rs`), so borders are always correct — this is the "proper
-//! culling" foundation of `specs.md` §3.
+//! Two-stage culling per sub-chunk:
+//! 1. **Face culling**: a face exists only where the neighboring block is
+//!    neither opaque nor the same block type (no internal water faces).
+//!    Neighbor lookups cross column borders (3×3 column neighborhood);
+//!    meshing waits for the 4 side neighbors to be streamed.
+//! 2. **Greedy meshing**: identical faces on a slice are merged into
+//!    maximal rectangles — vertex counts drop several-fold on flat
+//!    terrain. Merged quads keep per-block texture repeat through the
+//!    engine's atlas-aware shader (local repeating UVs + tile origin).
+//!
+//! Occlusion data ([`FaceMasks`], [`visible_flood`]) is computed here too.
 
 use std::collections::{HashSet, VecDeque};
 
-use ssc_engine::{atlas_tile_uv, Vertex};
+use ssc_engine::{atlas_tile_origin, Vertex};
 use ssc_math::Vec3;
 use ssc_world::{
     is_opaque, Column, World, CHUNK_W, ColumnKey, MIN_Y, SUBCHUNKS_PER_COLUMN,
 };
-
-/// A local-space box for entity avatars: min/max corners + per-face tile.
-struct BoxDef {
-    min: [f32; 3],
-    max: [f32; 3],
-    tiles: [u16; 6],
-}
-
-/// Placeholder player avatar: three boxes (legs, body, head) in local
-/// space, feet at y=0. Minecraft proportions; placeholder atlas tiles
-/// until real player skins exist (`implemented-features.md`).
-pub fn build_avatar() -> (Vec<Vertex>, Vec<u32>) {
-    let boxes = [
-        // legs
-        BoxDef {
-            min: [-0.125, 0.0, -0.125],
-            max: [0.125, 0.7, 0.125],
-            tiles: [ssc_world::TILE_BRICKS; 6],
-        },
-        // body
-        BoxDef {
-            min: [-0.25, 0.7, -0.125],
-            max: [0.25, 1.4, 0.125],
-            tiles: [ssc_world::TILE_PLANKS; 6],
-        },
-        // head
-        BoxDef {
-            min: [-0.25, 1.4, -0.25],
-            max: [0.25, 1.8, 0.25],
-            tiles: [ssc_world::TILE_SNOW; 6],
-        },
-    ];
-    let mut verts = Vec::new();
-    let mut indices = Vec::new();
-    for b in &boxes {
-        push_box(&mut verts, &mut indices, b);
-    }
-    (verts, indices)
-}
-
-/// Emit all six faces of one local-space box.
-fn push_box(verts: &mut Vec<Vertex>, indices: &mut Vec<u32>, b: &BoxDef) {
-    for f in &FACES {
-        let [u0, v0, u1, v1] = atlas_tile_uv(b.tiles[f.face]);
-        let base = verts.len() as u32;
-        for (i, corner) in f.corners.iter().enumerate() {
-            let px = if corner[0] == 0 { b.min[0] } else { b.max[0] };
-            let py = if corner[1] == 0 { b.min[1] } else { b.max[1] };
-            let pz = if corner[2] == 0 { b.min[2] } else { b.max[2] };
-            let (us, vs) = f.uv_sel[i];
-            let u = if us == 0 { u0 } else { u1 };
-            let v = if vs == 0 { v0 } else { v1 };
-            verts.push(Vertex { pos: [px, py, pz], uv: [u, v] });
-        }
-        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
-}
 
 /// A built sub-chunk mesh with tight bounds (tight AABBs cull better).
 /// `translucent` marks water (drawn in the blend pass).
@@ -183,6 +131,10 @@ pub fn compute_face_masks(sc: &ssc_world::SubChunk) -> FaceMasks {
 /// Key of a sub-chunk in visibility terms.
 pub type SubKey = (ColumnKey, usize);
 
+// ---------------------------------------------------------------------------
+// Occlusion flood
+// ---------------------------------------------------------------------------
+
 /// The six axis-aligned neighbor relations with their opposing mask
 /// slices. X neighbors pair `x_pos` (slices over y) with `x_neg`.
 fn connects_x(a: &FaceMasks, b: &FaceMasks) -> bool {
@@ -213,15 +165,16 @@ fn connects_z_neg(a: &FaceMasks, b: &FaceMasks) -> bool {
 ///
 /// `get` returns the [`FaceMasks`] of a sub-chunk (world column coords,
 /// sub index) or `None` when the sub-chunk isn't streamed/meshed — such
-/// nodes are treated as open and pass-through (never false-cull during
-/// streaming). Returns `None` when `start` itself is unknown (caller
-/// should skip filtering).
+/// nodes are never traversed (they carry no meshes, and walking into
+/// unknown space would be an unbounded flood). Returns `None` when
+/// `start` itself is unknown (caller should skip filtering).
 ///
-/// The result is the **draw set**: sub-chunks reachable by light *plus one
-/// ring around them*. A fully solid sub-chunk is not traversable (no light
-/// passes through it), but its faces are visible from any adjacent
-/// lit sub-chunk — hence the dilation. The dilation is applied only to
-/// flood nodes, never cascaded, so stone behind stone stays culled.
+/// The result is the **draw set**: sub-chunks reachable by light *plus
+/// one ring around them*. A fully solid sub-chunk is not traversable
+/// (no light passes through it), but its faces are visible from any
+/// adjacent lit sub-chunk — hence the dilation. The dilation is applied
+/// only to flood nodes, never cascaded, so stone behind stone stays
+/// culled.
 pub fn visible_flood(
     start: SubKey,
     get: &dyn Fn(SubKey) -> Option<FaceMasks>,
@@ -300,66 +253,96 @@ pub fn visible_flood(
     Some(draw)
 }
 
-/// Face definition: 4 corners (CCW from outside) + per-corner UV selection
-/// in tile units (`0`/`1` within the tile rect) + the neighbor offset.
-struct FaceDef {
-    corners: [[i32; 3]; 4],
-    /// (u_sel, v_sel) per corner: 0 = left/bottom of tile, 1 = right/top.
-    uv_sel: [(u8, u8); 4],
-    neighbor: [i32; 3],
-    face: usize,
+// ---------------------------------------------------------------------------
+// Greedy meshing
+// ---------------------------------------------------------------------------
+
+/// Axis selector for a face's u/v plane coordinates.
+#[derive(Clone, Copy)]
+struct PlaneAxis {
+    /// 0 = x, 1 = y, 2 = z.
+    axis: usize,
+    /// Whether face-plane coordinate u maps inverted onto the block axis
+    /// (block axis = 15 − u).
+    invert: bool,
 }
 
-/// The six cube faces, verified CCW when viewed from outside (GL front).
-const FACES: [FaceDef; 6] = [
-    // +Y (top)
-    FaceDef {
-        corners: [[0, 1, 1], [1, 1, 1], [1, 1, 0], [0, 1, 0]],
-        uv_sel: [(0, 0), (1, 0), (1, 1), (0, 1)],
-        neighbor: [0, 1, 0],
-        face: ssc_world::FACE_TOP,
-    },
-    // -Y (bottom)
-    FaceDef {
-        corners: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]],
-        uv_sel: [(0, 0), (1, 0), (1, 1), (0, 1)],
-        neighbor: [0, -1, 0],
-        face: ssc_world::FACE_BOTTOM,
-    },
-    // -X
-    FaceDef {
-        corners: [[0, 0, 1], [0, 1, 1], [0, 1, 0], [0, 0, 0]],
-        uv_sel: [(0, 0), (0, 1), (1, 1), (1, 0)],
-        neighbor: [-1, 0, 0],
-        face: ssc_world::FACE_NX,
-    },
-    // +X
-    FaceDef {
-        corners: [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]],
-        uv_sel: [(0, 0), (0, 1), (1, 1), (1, 0)],
-        neighbor: [1, 0, 0],
-        face: ssc_world::FACE_PX,
-    },
-    // -Z
-    FaceDef {
-        corners: [[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0]],
-        uv_sel: [(0, 0), (1, 0), (1, 1), (0, 1)],
-        neighbor: [0, 0, -1],
-        face: ssc_world::FACE_NZ,
-    },
-    // +Z
-    FaceDef {
-        corners: [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]],
-        uv_sel: [(0, 0), (1, 0), (1, 1), (0, 1)],
-        neighbor: [0, 0, 1],
-        face: ssc_world::FACE_PZ,
-    },
+/// The six cube faces: CCW corner winding + local (u,v) per corner +
+/// the plane-axis mapping. Corner positions are reconstructed as
+/// `pos[normal] = slice + corner[normal]` and
+/// `pos[u] = invert ? 16 − pu : pu` (same for v).
+struct GreedyFace {
+    /// Axis index of the face normal (x=0, y=1, z=2).
+    normal: usize,
+    /// Sign of the face normal (+1/−1).
+    normal_sign: i32,
+    u: PlaneAxis,
+    v: PlaneAxis,
+    /// Registry face index for tile lookup.
+    face: usize,
+    /// Corner local (u_sel, v_sel) in CCW order.
+    uv_sel: [(u8, u8); 4],
+    /// Corner normal-axis offset (0/1) in CCW order.
+    normal_off: [i32; 4],
+}
+
+const GREEDY_FACES: [GreedyFace; 6] = [
+    // +Y (top): u = x, v = −z
+    GreedyFace { normal: 1, normal_sign: 1, u: PlaneAxis { axis: 0, invert: false }, v: PlaneAxis { axis: 2, invert: true }, face: ssc_world::FACE_TOP, uv_sel: [(0, 0), (1, 0), (1, 1), (0, 1)], normal_off: [1, 1, 1, 1] },
+    // −Y (bottom): u = x, v = z
+    GreedyFace { normal: 1, normal_sign: -1, u: PlaneAxis { axis: 0, invert: false }, v: PlaneAxis { axis: 2, invert: false }, face: ssc_world::FACE_BOTTOM, uv_sel: [(0, 0), (1, 0), (1, 1), (0, 1)], normal_off: [0, 0, 0, 0] },
+    // −X: u = −z, v = y
+    GreedyFace { normal: 0, normal_sign: -1, u: PlaneAxis { axis: 2, invert: true }, v: PlaneAxis { axis: 1, invert: false }, face: ssc_world::FACE_NX, uv_sel: [(0, 0), (0, 1), (1, 1), (1, 0)], normal_off: [0, 0, 0, 0] },
+    // +X: u = z, v = y
+    GreedyFace { normal: 0, normal_sign: 1, u: PlaneAxis { axis: 2, invert: false }, v: PlaneAxis { axis: 1, invert: false }, face: ssc_world::FACE_PX, uv_sel: [(0, 0), (0, 1), (1, 1), (1, 0)], normal_off: [1, 1, 1, 1] },
+    // −Z: u = −x, v = y
+    GreedyFace { normal: 2, normal_sign: -1, u: PlaneAxis { axis: 0, invert: true }, v: PlaneAxis { axis: 1, invert: false }, face: ssc_world::FACE_NZ, uv_sel: [(0, 0), (1, 0), (1, 1), (0, 1)], normal_off: [0, 0, 0, 0] },
+    // +Z: u = x, v = y
+    GreedyFace { normal: 2, normal_sign: 1, u: PlaneAxis { axis: 0, invert: false }, v: PlaneAxis { axis: 1, invert: false }, face: ssc_world::FACE_PZ, uv_sel: [(0, 0), (1, 0), (1, 1), (0, 1)], normal_off: [1, 1, 1, 1] },
 ];
 
-/// Build all sub-chunk meshes of one column. Only emits meshes for
-/// sub-chunks that produce geometry. Also returns visibility masks for
-/// **every** sub-chunk of the column (empty ones get all-open masks —
-/// they are pass-through nodes for occlusion culling).
+/// Emit one greedy quad. `(u0, v0, w, h)` are face-plane coordinates of
+/// the merged rectangle.
+#[allow(clippy::too_many_arguments)]
+fn emit_greedy_quad(
+    f: &GreedyFace,
+    base: [i32; 3],
+    slice: i32,
+    u0: usize,
+    v0: usize,
+    w: usize,
+    h: usize,
+    tile: u16,
+    mesh: &mut SubchunkMesh,
+) {
+    let origin = atlas_tile_origin(tile);
+    let base_idx = mesh.verts.len() as u32;
+    for k in 0..4 {
+        let (us, vs) = f.uv_sel[k];
+        // Continuous plane coordinates → repeating local UVs.
+        let pu = (u0 + w * (us as usize)) as i32;
+        let pv = (v0 + h * (vs as usize)) as i32;
+        let mut pos = [0i32; 3];
+        pos[f.normal] = base[f.normal] + slice + f.normal_off[k];
+        pos[f.u.axis] = base[f.u.axis] + if f.u.invert { 16 - pu } else { pu };
+        pos[f.v.axis] = base[f.v.axis] + if f.v.invert { 16 - pv } else { pv };
+        let p = Vec3::new(pos[0] as f32, pos[1] as f32, pos[2] as f32);
+        mesh.verts.push(Vertex {
+            pos: [p.x, p.y, p.z],
+            uv: [pu as f32, pv as f32],
+            tile: origin,
+        });
+        mesh.min = mesh.min.min(p);
+        mesh.max = mesh.max.max(p);
+    }
+    mesh.indices
+        .extend_from_slice(&[base_idx, base_idx + 1, base_idx + 2, base_idx, base_idx + 2, base_idx + 3]);
+}
+
+/// Build all sub-chunk meshes of one column with greedy meshing. Only
+/// emits meshes for sub-chunks that produce geometry. Also returns
+/// visibility masks for **every** sub-chunk of the column (empty ones get
+/// all-open masks — they are pass-through nodes for occlusion culling).
 pub fn build_column_meshes(world: &World, cx: i32, cz: i32) -> (Vec<SubchunkMesh>, Vec<(usize, FaceMasks)>) {
     // Cache the 3×3 column neighborhood for fast cross-border lookups.
     let mut cols: [Option<&Column>; 9] = [None; 9];
@@ -403,63 +386,107 @@ pub fn build_column_meshes(world: &World, cx: i32, cz: i32) -> (Vec<SubchunkMesh
         };
         masks_out.push((sub, compute_face_masks(sc)));
         let base_y = MIN_Y + (sub as i32) * 16;
+        let base = [base_x, base_y, base_z];
 
         // Two buffers per sub-chunk: opaque and translucent (water).
         let mut solid = SubchunkMesh {
             sub,
             translucent: false,
-            verts: Vec::new(),
-            indices: Vec::new(),
-            min: Vec3::splat(f32::MAX),
-            max: Vec3::splat(f32::MIN),
+            ..Default::default()
         };
         let mut water = SubchunkMesh {
             sub,
             translucent: true,
-            verts: Vec::new(),
-            indices: Vec::new(),
-            min: Vec3::splat(f32::MAX),
-            max: Vec3::splat(f32::MIN),
+            ..Default::default()
         };
 
-        for y in 0..16 {
-            for z in 0..16 {
-                for x in 0..16 {
-                    let id = sc.get(x, y, z);
-                    if id == ssc_world::AIR {
+        // Face-slice masks per direction, per pass. mask[v][u] = block id
+        // whose face exists there (0 = no face).
+        let mut mask_opaque = [[0u16; 16]; 16];
+        let mut mask_water = [[0u16; 16]; 16];
+
+        for f in &GREEDY_FACES {
+            for pass_water in [false, true] {
+                // Build the slice mask for every slice along the normal.
+                for slice in 0..16i32 {
+                    let mut any = false;
+                    for v in 0..16usize {
+                        for u in 0..16usize {
+                            // Face-plane coords → block cell coords.
+                            let cu = if f.u.invert { 15 - u as i32 } else { u as i32 };
+                            let cv = if f.v.invert { 15 - v as i32 } else { v as i32 };
+                            let mut cell = [0i32; 3];
+                            cell[f.u.axis] = cu;
+                            cell[f.v.axis] = cv;
+                            cell[f.normal] = slice;
+                            let id = sc.get(cell[0], cell[1], cell[2]);
+                            if id == ssc_world::AIR {
+                                continue;
+                            }
+                            let info = ssc_world::info(id);
+                            if pass_water != !info.opaque {
+                                continue; // wrong pass
+                            }
+                            // Neighbor across the face (world coords).
+                            let nb = get(
+                                base[0] + cell[0] + f.normal_sign * (f.normal == 0) as i32,
+                                base[1] + cell[1] + f.normal_sign * (f.normal == 1) as i32,
+                                base[2] + cell[2] + f.normal_sign * (f.normal == 2) as i32,
+                            );
+                            // Hidden face — culled at mesh time: either the
+                            // neighbor occludes (opaque) or it is the same
+                            // block type (no internal water faces).
+                            if is_opaque(nb) || nb == id {
+                                continue;
+                            }
+                            if pass_water {
+                                mask_water[v][u] = id;
+                            } else {
+                                mask_opaque[v][u] = id;
+                            }
+                            any = true;
+                        }
+                    }
+                    if !any {
                         continue;
                     }
-                    let info = ssc_world::info(id);
-                    let (wx, wy, wz) = (base_x + x, base_y + y, base_z + z);
-                    let mesh = if info.opaque { &mut solid } else { &mut water };
-
-                    for f in &FACES {
-                        let nb = get(
-                            wx + f.neighbor[0],
-                            wy + f.neighbor[1],
-                            wz + f.neighbor[2],
-                        );
-                        // Hidden face — culled at mesh time: either the
-                        // neighbor occludes (opaque) or it is the same
-                        // block type (no internal water/leaves faces).
-                        if is_opaque(nb) || nb == id {
-                            continue;
+                    // Greedy merge on this slice.
+                    let mask = if pass_water { &mut mask_water } else { &mut mask_opaque };
+                    for v in 0..16usize {
+                        let mut u = 0usize;
+                        while u < 16 {
+                            let id = mask[v][u];
+                            if id == 0 {
+                                u += 1;
+                                continue;
+                            }
+                            // Width: extend while same id.
+                            let mut w = 1usize;
+                            while u + w < 16 && mask[v][u + w] == id {
+                                w += 1;
+                            }
+                            // Height: extend while the whole strip matches.
+                            let mut h = 1usize;
+                            'h: while v + h < 16 {
+                                for k in 0..w {
+                                    if mask[v + h][u + k] != id {
+                                        break 'h;
+                                    }
+                                }
+                                h += 1;
+                            }
+                            // Emit.
+                            let tile = ssc_world::info(id).tiles[f.face];
+                            let target = if pass_water { &mut water } else { &mut solid };
+                            emit_greedy_quad(f, base, slice, u, v, w, h, tile, target);
+                            // Clear the merged rectangle.
+                            for dv in 0..h {
+                                for du in 0..w {
+                                    mask[v + dv][u + du] = 0;
+                                }
+                            }
+                            u += w;
                         }
-                        let [u0, v0, u1, v1] = atlas_tile_uv(info.tiles[f.face]);
-                        let base = mesh.verts.len() as u32;
-                        for (i, corner) in f.corners.iter().enumerate() {
-                            let px = (wx + corner[0]) as f32;
-                            let py = (wy + corner[1]) as f32;
-                            let pz = (wz + corner[2]) as f32;
-                            let (us, vs) = f.uv_sel[i];
-                            let u = if us == 0 { u0 } else { u1 };
-                            let v = if vs == 0 { v0 } else { v1 };
-                            mesh.verts.push(Vertex { pos: [px, py, pz], uv: [u, v] });
-                            mesh.min = mesh.min.min(Vec3::new(px, py, pz));
-                            mesh.max = mesh.max.max(Vec3::new(px, py, pz));
-                        }
-                        mesh.indices
-                            .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
                     }
                 }
             }
@@ -473,6 +500,87 @@ pub fn build_column_meshes(world: &World, cx: i32, cz: i32) -> (Vec<SubchunkMesh
         }
     }
     (out, masks_out)
+}
+
+// ---------------------------------------------------------------------------
+// Entity avatars: three boxes in local space, feet at y=0.
+// ---------------------------------------------------------------------------
+
+/// A local-space box for entity avatars: min/max corners + per-face tile.
+struct BoxDef {
+    min: [f32; 3],
+    max: [f32; 3],
+    tiles: [u16; 6],
+}
+
+/// Placeholder player avatar: three boxes (legs, body, head) in local
+/// space. Minecraft proportions; placeholder atlas tiles until real
+/// player skins exist (`implemented-features.md`).
+pub fn build_avatar() -> (Vec<Vertex>, Vec<u32>) {
+    let boxes = [
+        // legs
+        BoxDef {
+            min: [-0.125, 0.0, -0.125],
+            max: [0.125, 0.7, 0.125],
+            tiles: [ssc_world::TILE_BRICKS; 6],
+        },
+        // body
+        BoxDef {
+            min: [-0.25, 0.7, -0.125],
+            max: [0.25, 1.4, 0.125],
+            tiles: [ssc_world::TILE_PLANKS; 6],
+        },
+        // head
+        BoxDef {
+            min: [-0.25, 1.4, -0.25],
+            max: [0.25, 1.8, 0.25],
+            tiles: [ssc_world::TILE_SNOW; 6],
+        },
+    ];
+    let mut verts = Vec::new();
+    let mut indices = Vec::new();
+    for b in &boxes {
+        push_box(&mut verts, &mut indices, b);
+    }
+    (verts, indices)
+}
+
+/// Emit all six faces of one local-space box (unit-UV per face, so the
+/// tile maps once across the face — the right look for avatar parts).
+fn push_box(verts: &mut Vec<Vertex>, indices: &mut Vec<u32>, b: &BoxDef) {
+    for f in &GREEDY_FACES {
+        let tile = b.tiles[f.face];
+        let origin = atlas_tile_origin(tile);
+        let base_idx = verts.len() as u32;
+        for k in 0..4 {
+            let (us, vs) = f.uv_sel[k];
+            let pu = us as i32;
+            let pv = vs as i32;
+            let mut pos = [0f32; 3];
+            // Unit box: normal offset selects min(0) / max(1).
+            pos[f.u.axis] = if f.u.invert { 1.0 - pu as f32 } else { pu as f32 };
+            pos[f.v.axis] = if f.v.invert { 1.0 - pv as f32 } else { pv as f32 };
+            pos[f.normal] = f.normal_off[k] as f32;
+            let p = [
+                b.min[0] + pos[0] * (b.max[0] - b.min[0]),
+                b.min[1] + pos[1] * (b.max[1] - b.min[1]),
+                b.min[2] + pos[2] * (b.max[2] - b.min[2]),
+            ];
+            verts.push(Vertex {
+                pos: p,
+                uv: [pu as f32, pv as f32],
+                tile: origin,
+            });
+        }
+        indices.extend_from_slice(&[
+            base_idx,
+            base_idx + 1,
+            base_idx + 2,
+            base_idx,
+            base_idx + 2,
+            base_idx + 3,
+        ]);
+    }
 }
 
 #[cfg(test)]
@@ -531,9 +639,6 @@ mod tests {
     #[test]
     fn unknown_start_disables_filtering() {
         let (_world, masks) = world_with_solid_wall();
-        // A camera in an unknown sub-chunk (sub 2 has no mask entry —
-        // wait, it does: absent sub-chunks get all-open masks) — use an
-        // unknown COLUMN instead.
         assert!(visible_flood(((9, 9), 5), &mask_lookup(&masks)).is_none());
     }
 
@@ -549,74 +654,97 @@ mod tests {
         assert_eq!(m.z_neg, [u16::MAX; 16]);
     }
 
-    #[test]
-    fn water_merges_with_itself_but_surfaces_against_air() {
-        // 3×3 world; every column: stone floor (sub 6), water y 48..53
-        // (sub 7 local 0..5), air above. Only the water top faces remain.
+    fn column_with(f: impl Fn(&mut ssc_world::SubChunk)) -> World {
         let mut world = World::default();
         for cx in -1..=1 {
             for cz in -1..=1 {
                 let mut col = Column::default();
-                let mut floor = Box::new(SubChunk::default());
-                for z in 0..16 {
-                    for x in 0..16 {
-                        // Top layer of sub 6 = world y 47, right below the
-                        // water (sub 7 starts at world y 48).
-                        floor.set(x, 15, z, STONE);
-                    }
-                }
-                col.subchunks[6] = Some(floor);
                 let mut sc = Box::new(SubChunk::default());
-                for y in 0..6 {
-                    for z in 0..16 {
-                        for x in 0..16 {
-                            sc.set(x, y, z, ssc_world::WATER);
-                        }
-                    }
-                }
+                f(&mut sc);
                 col.subchunks[7] = Some(sc);
                 world.columns.insert((cx, cz), col);
             }
         }
+        world
+    }
+
+    #[test]
+    fn greedy_merges_flat_stone_floor() {
+        let world = column_with(|sc| {
+            for z in 0..16 {
+                for x in 0..16 {
+                    sc.set(x, 0, z, STONE);
+                }
+            }
+        });
+        let (meshes, _) = build_column_meshes(&world, 0, 0);
+        let solid = meshes.iter().find(|m| !m.translucent).expect("solid mesh");
+        // Top + bottom faces, each merged to a single 16×16 quad.
+        assert_eq!(solid.verts.len(), 8, "greedy should merge the flat floor");
+        // Local repeating UVs span the whole merged face.
+        assert_eq!(solid.verts[2].uv, [16.0, 16.0]);
+    }
+
+    #[test]
+    fn water_merges_with_itself_but_surfaces_against_air() {
+        // Stone floor at the top of sub 6, water y 48..53 (sub 7 local
+        // 0..5), air above: one greedy quad for the water surface.
+        let world = column_with(|sc| {
+            for y in 0..6 {
+                for z in 0..16 {
+                    for x in 0..16 {
+                        sc.set(x, y, z, ssc_world::WATER);
+                    }
+                }
+            }
+        });
+        // The floor under the water lives in sub 6 of every column.
+        let world = {
+            let mut w = world;
+            for cx in -1..=1 {
+                for cz in -1..=1 {
+                    let col = w.columns.get_mut(&(cx, cz)).unwrap();
+                    let mut floor = Box::new(SubChunk::default());
+                    for z in 0..16 {
+                        for x in 0..16 {
+                            floor.set(x, 15, z, STONE);
+                        }
+                    }
+                    col.subchunks[6] = Some(floor);
+                }
+            }
+            w
+        };
 
         let (meshes, _masks) = build_column_meshes(&world, 0, 0);
         let water = meshes.iter().find(|m| m.translucent).expect("water mesh");
-        // 16×16 top quads only: sides merge with same-id water, the bottom
-        // is hidden by the stone floor.
-        assert_eq!(water.verts.len(), 4 * 16 * 16);
+        // One greedy quad for the whole surface: sides merge with
+        // same-id water, the bottom is hidden by the stone floor.
+        assert_eq!(water.verts.len(), 4);
     }
 
     #[test]
     fn solid_faces_below_water_surface_are_drawn() {
-        // 3×3 world; every column: stone at y=48 (sub 7 local 0), water
-        // above it (local 1..5). The stone top face must exist (visible
-        // through the translucent water); its sides merge with the
-        // neighboring stone, its bottom is hidden by nothing below.
-        let mut world = World::default();
-        for cx in -1..=1 {
-            for cz in -1..=1 {
-                let mut col = Column::default();
-                let mut sc = Box::new(SubChunk::default());
-                for z in 0..16 {
-                    for x in 0..16 {
-                        sc.set(x, 0, z, STONE);
-                        for y in 1..6 {
-                            sc.set(x, y, z, ssc_world::WATER);
-                        }
+        // Stone at y=48 (sub 7 local 0), water above (local 1..5): the
+        // stone top must exist (visible through the translucent water).
+        let world = column_with(|sc| {
+            for z in 0..16 {
+                for x in 0..16 {
+                    sc.set(x, 0, z, STONE);
+                    for y in 1..6 {
+                        sc.set(x, y, z, ssc_world::WATER);
                     }
                 }
-                col.subchunks[7] = Some(sc);
-                world.columns.insert((cx, cz), col);
             }
-        }
+        });
 
         let (meshes, _masks) = build_column_meshes(&world, 0, 0);
         let solid = meshes.iter().find(|m| !m.translucent).expect("solid mesh");
-        // Stone top faces (water is not opaque → drawn) plus the stone
-        // bottom faces (below is nothing). Sides merge with same-id stone.
-        assert_eq!(solid.verts.len(), 4 * 16 * 16 * 2);
-        // Water: top faces only (sides are against same-id water).
+        // Stone top (drawn through water) + stone bottom, one greedy quad
+        // each; sides merge with the neighboring stone.
+        assert_eq!(solid.verts.len(), 8);
+        // Water: top faces only, one merged quad.
         let water = meshes.iter().find(|m| m.translucent).expect("water mesh");
-        assert_eq!(water.verts.len(), 4 * 16 * 16);
+        assert_eq!(water.verts.len(), 4);
     }
 }

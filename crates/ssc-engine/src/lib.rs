@@ -31,11 +31,18 @@ use ssc_math::{look_dir, Aabb, Frustum, Mat4, Vec3};
 // ---------------------------------------------------------------------------
 
 /// A textured-cube vertex: position + atlas UV.
+///
+/// `uv` are **local, repeating** coordinates (block units along the face
+/// plane): a quad spanning 4 blocks uses 0..4, and the shader tiles the
+/// atlas texture per unit via `fract`. `tile` is the atlas UV origin
+/// (GL convention) of the block's face tile. This lets greedy meshing
+/// merge same-block faces without stretching textures.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct Vertex {
     pub pos: [f32; 3],
     pub uv: [f32; 2],
+    pub tile: [f32; 2],
 }
 
 /// Client-assigned mesh handle.
@@ -683,17 +690,15 @@ pub const ATLAS_TILE_PX: u32 = 16;
 /// Tiles per atlas edge this project's atlases use.
 pub const ATLAS_TILES: u32 = 16;
 
-/// UV rect `[u0, v0, u1, v1]` for a tile in a square atlas, GL convention
-/// (v grows upward; image row 0 is the *top* of the image). Half-texel
-/// inset prevents bleeding between neighboring tiles.
-pub fn atlas_tile_uv(tile: u16) -> [f32; 4] {
+/// Atlas UV **origin** (bottom-left, GL convention) of a tile — pairs with
+/// [`Vertex::uv`] local coordinates; the shader computes
+/// `tile_origin + fract(local_uv) * (1/ATLAS_TILES)` with a half-texel
+/// inset. Replaces up-front UV rects (which cannot tile across merged
+/// greedy quads).
+pub fn atlas_tile_origin(tile: u16) -> [f32; 2] {
     let n = ATLAS_TILES as f32;
     let tx = (tile % ATLAS_TILES as u16) as f32;
     let ty = (tile / ATLAS_TILES as u16) as f32;
-    let half = 0.5 / ATLAS_TILE_PX as f32; // in tile units
-    let u0 = (tx + half) / n;
-    let u1 = (tx + 1.0 - half) / n;
-    let v_top = 1.0 - (ty + half) / n;
-    let v_bottom = 1.0 - (ty + 1.0 - half) / n;
-    [u0, v_bottom, u1, v_top]
+    // Image row 0 is the top; GL v grows upward → flip.
+    [tx / n, 1.0 - (ty + 1.0) / n]
 }

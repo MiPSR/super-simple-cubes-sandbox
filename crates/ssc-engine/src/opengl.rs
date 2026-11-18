@@ -24,21 +24,33 @@ const VS_SRC: &str = r#"
 #version 330 core
 layout(location = 0) in vec3 a_pos;
 layout(location = 1) in vec2 a_uv;
+layout(location = 2) in vec2 a_tile;
 uniform mat4 u_mvp;
 out vec2 v_uv;
+out vec2 v_tile;
 void main() {
     gl_Position = u_mvp * vec4(a_pos, 1.0);
     v_uv = a_uv;
+    v_tile = a_tile;
 }
 "#;
 
 const FS_SRC: &str = r#"
 #version 330 core
 in vec2 v_uv;
+in vec2 v_tile;
 out vec4 frag;
 uniform sampler2D u_atlas;
+
+// Atlas-aware texture tiling: local (repeating) UVs are wrapped per
+// block unit and mapped into the block's tile with a half-texel inset.
+// This is what lets greedy-merged quads keep per-block texture repeat.
 void main() {
-    frag = texture(u_atlas, v_uv);
+    vec2 tile_size = vec2(1.0 / 16.0);
+    // Half-texel inset in tile units (0.5 px of a 16 px tile).
+    vec2 inset = vec2(1.0 / 32.0);
+    vec2 local = clamp(fract(v_uv), inset, 1.0 - inset);
+    frag = texture(u_atlas, v_tile + local * tile_size);
 }
 "#;
 
@@ -227,12 +239,16 @@ impl Renderer for Backend {
             );
             gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, idx_bytes, glow::STATIC_DRAW);
 
+            const STRIDE: i32 = 28; // pos(3f) + uv(2f) + tile(2f)
             // position: location 0, 3 floats
             gl.enable_vertex_attrib_array(0);
-            gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, 20, 0);
-            // uv: location 1, 2 floats
+            gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, STRIDE, 0);
+            // local uv: location 1, 2 floats
             gl.enable_vertex_attrib_array(1);
-            gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 20, 12);
+            gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, STRIDE, 12);
+            // atlas tile origin: location 2, 2 floats
+            gl.enable_vertex_attrib_array(2);
+            gl.vertex_attrib_pointer_f32(2, 2, glow::FLOAT, false, STRIDE, 20);
 
             gl.bind_vertex_array(None);
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
