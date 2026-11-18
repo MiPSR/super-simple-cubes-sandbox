@@ -19,7 +19,7 @@ pub mod keys {
 
 /// Sound trigger ids — chosen by the *server*; the client only plays them
 /// (or logs them until audio playback is approved and wired, `specs.md` §2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SoundId {
     Dig,
     Place,

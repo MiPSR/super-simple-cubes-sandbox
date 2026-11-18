@@ -196,6 +196,10 @@ pub struct InputState {
     pub mouse_dy: f32,
     pub mouse_left: bool,
     pub mouse_right: bool,
+    /// Left stick movement (x right, y forward), already dead-zoned.
+    pub pad_left: (f32, f32),
+    /// Right stick look (x right, y up), already dead-zoned.
+    pub pad_right: (f32, f32),
 }
 
 impl InputState {
@@ -385,6 +389,8 @@ where
         input: InputState,
         mouse_locked: bool,
         init_error: Option<String>,
+        #[cfg(feature = "gamepad")]
+        gilrs: Option<gilrs::Gilrs>,
         frame_fn: F,
     }
 
@@ -505,6 +511,9 @@ where
                                 KeyState::Pressed => self.input.keys.insert(key),
                                 KeyState::Released => self.input.keys.remove(&key),
                             };
+                            if std::env::var("SSC_DEBUG").map(|v| v == "1").unwrap_or(false) {
+                                eprintln!("[engine-dbg] key {key:?} {state:?}");
+                            }
                             self.pending.push(EngineEvent::Key { key, state });
                         }
                     }
@@ -544,6 +553,11 @@ where
         }
 
         fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+            // Poll gamepads first so the frame sees fresh stick state
+            // (feature-gated: gilrs, owner-approved).
+            #[cfg(feature = "gamepad")]
+            self.poll_gamepads();
+
             let Some(renderer) = self.renderer.as_mut() else { return };
             let Some(window) = self.window.as_ref() else { return };
 
@@ -566,8 +580,79 @@ where
         }
     }
 
+    // Gamepad input mapping (gilrs): sticks fill the InputState snapshot,
+    // buttons reuse the keyboard/mouse state so clients don't need
+    // controller-specific code. Bedrock-style: A jumps, right trigger
+    // digs, left trigger places, Start behaves like Escape.
+    #[cfg(feature = "gamepad")]
+    impl<F: FnMut(&mut Frame, &[EngineEvent]) -> Flow> App<F> {
+        fn poll_gamepads(&mut self) {
+            use gilrs::{Axis, Button, EventType};
+
+            const DEADZONE: f32 = 0.15;
+            fn dz(v: f32) -> f32 {
+                let v = v.clamp(-1.0, 1.0);
+                if v.abs() < DEADZONE {
+                    0.0
+                } else {
+                    // Rescale so the usable range starts at zero.
+                    let sign = v.signum();
+                    sign * ((v.abs() - DEADZONE) / (1.0 - DEADZONE))
+                }
+            }
+
+            let mut jump_down = None;
+            let mut dig = None;
+            let mut place = None;
+            while let Some(ev) = self.gilrs.as_mut().and_then(|g| g.next_event()) {
+                match ev.event {
+                    EventType::AxisChanged(axis, value, _code) => match axis {
+                        Axis::LeftStickX => self.input.pad_left.0 = dz(value),
+                        // Raw stick up is negative; we want +y = forward.
+                        Axis::LeftStickY => self.input.pad_left.1 = dz(-value),
+                        Axis::RightStickX => self.input.pad_right.0 = dz(value),
+                        Axis::RightStickY => self.input.pad_right.1 = dz(-value),
+                        _ => {}
+                    },
+                    EventType::ButtonChanged(btn, value, _code) => match btn {
+                        Button::South => jump_down = Some(value > 0.5),
+                        Button::RightTrigger2 => dig = Some(value > 0.5),
+                        Button::LeftTrigger2 => place = Some(value > 0.5),
+                        _ => {}
+                    },
+                    EventType::ButtonPressed(btn, _code) => {
+                        if btn == Button::Start {
+                            self.pending.push(EngineEvent::Key {
+                                key: Key::Escape,
+                                state: KeyState::Pressed,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(down) = jump_down {
+                if down {
+                    self.input.keys.insert(Key::Space);
+                } else {
+                    self.input.keys.remove(&Key::Space);
+                }
+            }
+            if let Some(down) = dig {
+                self.input.mouse_left = down;
+            }
+            if let Some(down) = place {
+                self.input.mouse_right = down;
+            }
+        }
+    }
+
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     event_loop.set_control_flow(ControlFlow::Poll); // high framerate (specs.md §3)
+    #[cfg(feature = "gamepad")]
+    let gilrs = gilrs::Gilrs::new()
+        .map_err(|e| eprintln!("[engine] gamepad support unavailable: {e}"))
+        .ok();
     let mut app = App {
         settings,
         window: None,
@@ -577,6 +662,8 @@ where
         input: InputState::default(),
         mouse_locked: false,
         init_error: None,
+        #[cfg(feature = "gamepad")]
+        gilrs,
         frame_fn,
     };
     event_loop

@@ -16,6 +16,8 @@ ssc-lod = { path = "../ssc-lod" }
 ssc-server = { path = "../ssc-server" }
 # Texture-pack (PNG atlas) loading — owner-approved.
 png.workspace = true
+# Sound playback (server-triggered) — owner-approved kira.
+kira.workspace = true
 
 [features]
 default = ["opengl"]

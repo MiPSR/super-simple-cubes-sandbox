@@ -15,11 +15,14 @@ winit = { version = "0.30", optional = true }
 glutin = { version = "0.32", optional = true }
 glow = { version = "0.16", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
+# Gamepad input behind the `gamepad` feature (owner-approved: gilrs).
+gilrs = { version = "0.11", optional = true }
 
 # Backend selection (specs.md §3): OpenGL is the default; Vulkan is opt-in.
 # Backends are implemented inside this crate only; the client never sees a
 # raw GFX API.
 [features]
-default = ["opengl"]
+default = ["opengl", "gamepad"]
 opengl = ["dep:winit", "dep:glutin", "dep:glow", "dep:raw-window-handle"]
 vulkan = [] # planned: ash
+gamepad = ["dep:gilrs"]

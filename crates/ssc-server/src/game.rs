@@ -253,6 +253,27 @@ impl Server {
                 step_player(&self.world, &mut session.player, dt);
             }
         }
+        // Footsteps: server-triggered like every other sound (specs.md §2).
+        if self.tick % 4 == 0 {
+            let mut steps: Vec<(f32, f32, f32)> = Vec::new();
+            for session in self.sessions.values() {
+                let p = &session.player;
+                let moving = p.keys
+                    & (keys::FORWARD | keys::BACKWARD | keys::LEFT | keys::RIGHT)
+                    != 0;
+                if p.joined && p.on_ground && moving {
+                    steps.push((p.pos.x, p.pos.y, p.pos.z));
+                }
+            }
+            for (x, y, z) in steps {
+                let _ = self.broadcast(&ServerPacket::Sound {
+                    sound: SoundId::Step.to_u16(),
+                    x,
+                    y,
+                    z,
+                });
+            }
+        }
         let states: Vec<ServerPacket> = self
             .sessions
             .iter()

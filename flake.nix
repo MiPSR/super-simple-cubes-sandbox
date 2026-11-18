@@ -11,9 +11,8 @@
 
       version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
 
-      # Libraries the client loads at runtime (dlopen'd by the windowing/GL
-      # crates); wrapped into LD_LIBRARY_PATH so the client is runnable on a
-      # bare NixOS system.
+      # Libraries the client links and/or loads at runtime (ALSA for cpal,
+      # udev for gilrs, the rest dlopen'd by the windowing/GL crates).
       clientRuntimeDeps = pkgs: with pkgs; [
         libGL
         libxkbcommon
@@ -24,12 +23,15 @@
         libxcursor
         libxrandr
         libxi
+        alsa-lib
+        udev
       ];
 
       mkRustPackage = pkgs:
         { pname # also the binary name
         , package # cargo package (-p) to build
         , runtimeDeps ? [ ]
+        , linkDeps ? [ ] # link-time libraries (alsa, udev, ...)
         }:
         pkgs.rustPlatform.buildRustPackage {
           inherit pname version;
@@ -43,7 +45,8 @@
           # every build of this large workspace.
           doCheck = false;
 
-          nativeBuildInputs = [ pkgs.makeWrapper ];
+          nativeBuildInputs = [ pkgs.makeWrapper pkgs.pkg-config ];
+          buildInputs = linkDeps;
 
           postInstall = pkgs.lib.optionalString (runtimeDeps != [ ]) ''
             wrapProgram "$out/bin/${pname}" \
@@ -65,6 +68,8 @@
             pname = "ssc-client";
             package = "ssc-client";
             runtimeDeps = clientRuntimeDeps pkgs;
+            # cpal links ALSA, gilrs links udev.
+            linkDeps = with pkgs; [ alsa-lib udev ];
           };
           ssc-server = mkRustPackage pkgs {
             pname = "ssc-server";
@@ -100,6 +105,10 @@
               rust-analyzer
               pkg-config
             ];
+            # Link-time libraries for cargo builds in the shell (ALSA/udev),
+            # plus runtime dlopen paths for the client.
+            NIX_LDFLAGS = "-L${pkgs.alsa-lib}/lib -L${pkgs.udev}/lib";
+            PKG_CONFIG_PATH = "${pkgs.alsa-lib.dev or pkgs.alsa-lib}/lib/pkgconfig:${pkgs.udev.dev or pkgs.udev}/lib/pkgconfig";
             # rust-analyzer needs the rust sources of the exact toolchain.
             RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
             # Let the client run directly from the dev shell.

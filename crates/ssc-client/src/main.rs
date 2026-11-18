@@ -8,6 +8,7 @@
 //! the `ssc-server` library in-process.
 
 mod atlas;
+mod audio;
 mod mesh;
 mod state;
 
@@ -158,6 +159,10 @@ struct App {
     atlas_uploaded: bool,
     /// Optional texture-pack atlas (PNG) given via `--textures`.
     texture_path: Option<std::path::PathBuf>,
+    /// Sound playback (server-triggered).
+    audio: audio::AudioSystem,
+    /// Timestamp of the previous frame (stick look rate normalization).
+    last_stick_tick: Instant,
 }
 
 impl App {
@@ -167,6 +172,7 @@ impl App {
         job_tx: Sender<Job>,
         job_rx: Receiver<JobResult>,
         texture_path: Option<std::path::PathBuf>,
+        sounds_dir: Option<std::path::PathBuf>,
     ) -> Self {
         let now = Instant::now();
         // Debug camera overrides (orientation testing / screenshots).
@@ -213,6 +219,8 @@ impl App {
             last_report: now,
             atlas_uploaded: false,
             texture_path,
+            audio: audio::AudioSystem::new(sounds_dir.as_deref()),
+            last_stick_tick: now,
         }
     }
 
@@ -322,6 +330,37 @@ impl App {
         }
         if i.key(Key::Ctrl) {
             mask |= keys::SPRINT;
+        }
+        // Gamepad (engine-fed stick state): left stick drives movement,
+        // right stick drives look at a fixed rate. Dead-zoned upstream.
+        {
+            const STICK_MOVE_THRESHOLD: f32 = 0.35;
+            const STICK_LOOK_RATE: f32 = 3.5; // rad/s at full deflection
+            let now = Instant::now();
+            let dt = now
+                .duration_since(self.last_stick_tick)
+                .as_secs_f32()
+                .clamp(0.0, 0.1);
+            self.last_stick_tick = now;
+            if i.pad_left.1 > STICK_MOVE_THRESHOLD {
+                mask |= keys::FORWARD;
+            }
+            if i.pad_left.1 < -STICK_MOVE_THRESHOLD {
+                mask |= keys::BACKWARD;
+            }
+            if i.pad_left.0 > STICK_MOVE_THRESHOLD {
+                mask |= keys::RIGHT;
+            }
+            if i.pad_left.0 < -STICK_MOVE_THRESHOLD {
+                mask |= keys::LEFT;
+            }
+            if i.pad_right.0 != 0.0 {
+                self.yaw += i.pad_right.0 * STICK_LOOK_RATE * dt;
+            }
+            if i.pad_right.1 != 0.0 {
+                self.pitch = (self.pitch + i.pad_right.1 * STICK_LOOK_RATE * dt)
+                    .clamp(-1.5697, 1.5697);
+            }
         }
         self.keys = mask;
 
@@ -650,13 +689,14 @@ impl App {
             }
             ServerPacket::Sound { sound, x, y, z } => {
                 let id = SoundId::from_u16(sound);
-                // Audio playback awaits the audio dependency approval
-                // (specs.md §4); the trigger itself is server-driven and
-                // already flows end to end.
-                println!(
-                    "[sound] {} at ({x:.1}, {y:.1}, {z:.1})",
-                    id.name()
-                );
+                let pos = Vec3::new(x, y, z);
+                let cam_pos = self.pos_cur + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0);
+                self.audio.play(id, pos, cam_pos, self.yaw);
+                if self.audio.is_silent() {
+                    // No audio device (headless): keep the log line so the
+                    // server-driven trigger is still observable.
+                    println!("[sound] {} at ({x:.1}, {y:.1}, {z:.1})", id.name());
+                }
             }
             ServerPacket::Goodbye { reason } => {
                 eprintln!("[client] server said goodbye: {reason}");
@@ -796,6 +836,7 @@ impl App {
 fn main() {
     let mut connect: Option<String> = None;
     let mut textures: Option<std::path::PathBuf> = None;
+    let mut sounds: Option<std::path::PathBuf> = None;
     let mut cfg = ServerConfig::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -808,6 +849,11 @@ fn main() {
             "--textures" => {
                 if let Some(v) = args.next() {
                     textures = Some(std::path::PathBuf::from(v));
+                }
+            }
+            "--sounds" => {
+                if let Some(v) = args.next() {
+                    sounds = Some(std::path::PathBuf::from(v));
                 }
             }
             "--seed" => {
@@ -850,7 +896,7 @@ fn main() {
     let shared = Arc::new(RwLock::new(ClientWorld::new()));
     let (job_tx, job_rx) = spawn_worker(shared.clone());
 
-    let mut app = App::new(wire, shared, job_tx, job_rx, textures);
+    let mut app = App::new(wire, shared, job_tx, job_rx, textures, sounds);
 
     let settings = EngineSettings {
         title: "Super Simple Cubes".into(),

@@ -62,13 +62,22 @@ Every implemented wiki feature gets a line here. Status legend:
 - `partial` — Block interaction: creative-style instant dig/place, reach 4.5,
   server-side DDA voxel raycast, placement rejected inside the player AABB;
   no survival dig timing, tools, drops or block-specific behaviors yet.
-- `dev` — Sound triggers (dig/place) are chosen and sent by the server and
-  flow end-to-end; the client logs them until an audio backend is approved
-  (specs §4).
+- `dev` — Sound triggers (dig/place/step) are chosen and sent by the server
+  and flow end-to-end; playback via owner-approved **kira** with distance
+  attenuation + stereo panning; `--sounds DIR` loads real OGG/WAV packs
+  (`dig|place|step.*`), procedural placeholder WAVs are synthesized in
+  code otherwise (no Mojang assets, specs §1). Headless machines fall
+  back to log-only. Per-block/per-surface sound variety, kira spatial
+  listeners and underwater muffling pending.
 - `partial` — Spawn search: spirals out from the origin for dry land
   (≥2 blocks above sea level); real MC spawn is biome-aware.
 - `partial` — Fixed 9-slot hotbar with server-defined blocks; full inventory,
   survival mode, hunger and health pending.
+- `partial` — Gamepad (owner-approved gilrs, engine-side input abstraction):
+  left stick moves, right stick looks (rate-normalized), A jumps, RT digs,
+  LT places, Start = Escape; dead-zoned, works alongside keyboard/mouse.
+  Button remapping/UI, haptics and analog movement (protocol is digital
+  keys) pending.
 
 ## Client
 
@@ -104,7 +113,9 @@ Every implemented wiki feature gets a line here. Status legend:
   injected by the presentation layer (`ssc-engine::atlas_tile_uv`), the
   only place atlas layout exists.
 - `1:1` (infra) — Dig/place/miss interaction paths pinned by server unit
-  tests over the real wire codec (update + sound packets asserted).
+  tests over the real wire codec (update + sound packets asserted);
+  entity-state broadcast to every client and placement-inside-any-player
+  rejection are pinned too.
 - `dev` — Block dig/place fire on the press *event* (not held-state
   polling) with hold-repeat at 4 Hz: quick clicks never reach a held-state
   snapshot in a single frame, so event-driven was required; Minecraft's
