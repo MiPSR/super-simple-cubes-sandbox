@@ -30,9 +30,11 @@ use ssc_world::{valid_id, BlockId, ColumnKey};
 use mesh::SubchunkMesh;
 use state::ClientWorld;
 
-/// Extra Chebyshev margin (columns) around the near area where LOD cells
-/// are skipped in favor of full-detail meshes.
-const NEAR_MARGIN_EXTRA: i32 = 1;
+/// LOD cells are skipped within this many columns of the player (cheby).
+/// Near meshes only exist for *interior* columns (a column's 4 neighbors
+/// must be streamed), i.e. cheb ≤ rd−1 — so the skip margin must be rd−1
+/// too: any wider and a sky gap ring opens between near terrain and LOD.
+const NEAR_MARGIN_TRIM: i32 = 1;
 
 /// Far plane: must cover the LOD ring.
 const Z_FAR: f32 = 1800.0;
@@ -59,7 +61,12 @@ enum Job {
 }
 
 enum JobResult {
-    Column { key: ColumnKey, meshes: Vec<SubchunkMesh> },
+    Column {
+        key: ColumnKey,
+        meshes: Vec<SubchunkMesh>,
+        /// Visibility masks for all 24 sub-chunks (occlusion culling data).
+        masks: Vec<(usize, mesh::FaceMasks)>,
+    },
     Region { rx: i32, rz: i32, mesh: Option<ssc_lod::LodMesh> },
 }
 
@@ -73,8 +80,8 @@ fn spawn_worker(shared: Arc<RwLock<ClientWorld>>) -> (Sender<Job>, Receiver<JobR
                 match job {
                     Job::Column(key) => {
                         let guard = shared.read().unwrap_or_else(|e| e.into_inner());
-                        let meshes = mesh::build_column_meshes(&guard.world, key.0, key.1);
-                        let _ = res_tx.send(JobResult::Column { key, meshes });
+                        let (meshes, masks) = mesh::build_column_meshes(&guard.world, key.0, key.1);
+                        let _ = res_tx.send(JobResult::Column { key, meshes, masks });
                     }
                     Job::Region { rx, rz, pcx, pcz, near_margin } => {
                         let guard = shared.read().unwrap_or_else(|e| e.into_inner());
@@ -103,6 +110,8 @@ struct App {
     /// Live GPU meshes: key → (mesh id, bounds).
     sub_meshes: HashMap<ColumnKey, HashMap<usize, (MeshId, ssc_math::Aabb)>>,
     region_meshes: HashMap<(i32, i32), (MeshId, ssc_math::Aabb)>,
+    /// Per-sub-chunk border masks for occlusion culling.
+    face_masks: HashMap<mesh::SubKey, mesh::FaceMasks>,
     next_mesh_id: MeshId,
     // Player presentation state.
     pos_prev: Vec3,
@@ -127,6 +136,7 @@ struct App {
     stat_ms: f32,
     stat_drawn: u32,
     stat_culled: u32,
+    stat_occluded: u32,
     stat_calls: u32,
     last_report: Instant,
     atlas_uploaded: bool,
@@ -147,6 +157,7 @@ impl App {
             queued_regions: HashMap::new(),
             sub_meshes: HashMap::new(),
             region_meshes: HashMap::new(),
+            face_masks: HashMap::new(),
             next_mesh_id: 1,
             pos_prev: Vec3::new(8.5, 128.0, 8.5),
             pos_cur: Vec3::new(8.5, 128.0, 8.5),
@@ -168,6 +179,7 @@ impl App {
             stat_ms: 0.0,
             stat_drawn: 0,
             stat_culled: 0,
+            stat_occluded: 0,
             stat_calls: 0,
             last_report: now,
             atlas_uploaded: false,
@@ -340,10 +352,32 @@ impl App {
             }
         }
 
+        // Occlusion ("cave") culling: flood visibility from the camera's
+        // sub-chunk through open borders. Missing masks (still streaming)
+        // are treated as open; a missing camera node disables filtering.
+        let eye_sub: mesh::SubKey = {
+            let px = self.pos_cur.x as i32;
+            let pz = self.pos_cur.z as i32;
+            let py = (self.pos_cur.y as i32 + ssc_math::PLAYER_EYE_HEIGHT as i32)
+                .clamp(ssc_world::MIN_Y, ssc_world::MAX_Y - 1);
+            (
+                (px.div_euclid(16), pz.div_euclid(16)),
+                ssc_world::subchunk_index(py).unwrap_or(0),
+            )
+        };
+        let occlusion = mesh::visible_flood(eye_sub, &|k| self.face_masks.get(&k).copied());
+
         // Build the draw list.
         let mut draws = Vec::with_capacity(self.sub_meshes.len() * 8 + self.region_meshes.len());
-        for (_key, subs) in &self.sub_meshes {
-            for (_sub, (id, aabb)) in subs {
+        let mut occluded = 0u32;
+        for (key, subs) in &self.sub_meshes {
+            for (sub, (id, aabb)) in subs {
+                if let Some(vis) = &occlusion {
+                    if !vis.contains(&(*key, *sub)) {
+                        occluded += 1;
+                        continue;
+                    }
+                }
                 draws.push(DrawCmd { mesh: *id, aabb: *aabb, lod: false });
             }
         }
@@ -370,6 +404,7 @@ impl App {
         self.stat_ms += stats.frame_ms;
         self.stat_drawn += stats.drawn;
         self.stat_culled += stats.culled_frustum;
+        self.stat_occluded += occluded;
         self.stat_calls += stats.draw_calls;
         let since = Instant::now() - self.last_report;
         if since >= Duration::from_secs(1) {
@@ -395,11 +430,12 @@ impl App {
                 }
             }
             println!(
-                "[stats] {:5.1} fps | render {:4.2} ms | draws {:4} ({:4} culled) | calls {:4} | pos ({:7.2},{:7.2},{:7.2})",
+                "[stats] {:5.1} fps | render {:4.2} ms | draws {:4} (frust {:4} occ {:4}) | calls {:4} | pos ({:7.2},{:7.2},{:7.2})",
                 fps,
                 self.stat_ms / self.frames as f32,
                 self.stat_drawn / self.frames,
                 self.stat_culled / self.frames,
+                self.stat_occluded / self.frames,
                 self.stat_calls / self.frames,
                 self.pos_cur.x,
                 self.pos_cur.y,
@@ -409,6 +445,7 @@ impl App {
             self.stat_ms = 0.0;
             self.stat_drawn = 0;
             self.stat_culled = 0;
+            self.stat_occluded = 0;
             self.stat_calls = 0;
             self.last_report = Instant::now();
         }
@@ -457,6 +494,10 @@ impl App {
                     for (_sub, (id, _aabb)) in subs {
                         frame.remove_mesh(id);
                     }
+                }
+                // Drop its occlusion masks too.
+                for sub in 0..ssc_world::SUBCHUNKS_PER_COLUMN {
+                    self.face_masks.remove(&((cx, cz), sub));
                 }
             }
             ServerPacket::LodColumn { cx, cz, cells } => {
@@ -524,7 +565,7 @@ impl App {
         }
         let pcx = (self.pos_cur.x as i32).div_euclid(16);
         let pcz = (self.pos_cur.z as i32).div_euclid(16);
-        let near_margin = self.render_distance + NEAR_MARGIN_EXTRA;
+        let near_margin = (self.render_distance - NEAR_MARGIN_TRIM).max(0);
         for (rx, rz) in regions {
             if !self.queued_regions.contains_key(&(rx, rz)) {
                 self.queued_regions.insert((rx, rz), Instant::now());
@@ -536,8 +577,13 @@ impl App {
     fn upload_finished_meshes(&mut self, frame: &mut Frame) {
         while let Ok(res) = self.job_rx.try_recv() {
             match res {
-                JobResult::Column { key, meshes } => {
+                JobResult::Column { key, meshes, masks } => {
                     self.queued_cols.remove(&key);
+                    // Store occlusion masks for every sub-chunk (including
+                    // all-air ones — they are pass-through nodes).
+                    for (sub, m) in masks {
+                        self.face_masks.insert((key, sub), m);
+                    }
                     let entry = self.sub_meshes.entry(key).or_default();
                     // Upload every produced sub-chunk mesh.
                     let mut produced: Vec<usize> = Vec::new();

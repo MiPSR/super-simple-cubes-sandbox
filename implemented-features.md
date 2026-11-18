@@ -60,13 +60,21 @@ Every implemented wiki feature gets a line here. Status legend:
   borders are correct (meshing gated on 4 neighbors being streamed).
 - `1:1` (infra) — Frustum culling per tight sub-chunk AABB (p/n-vertex,
   Gribb–Hartmann extraction), conservative (never culls visible geometry).
+- `1:1` (infra) — Occlusion ("cave") culling, Minecraft-style: per-sub-chunk
+  border masks (16-bit slices), BFS visibility flood from the camera's
+  sub-chunk through open border pairs, plus a one-ring dilation so solid
+  geometry adjacent to lit air still draws. Unknown sub-chunks are never
+  traversed (bounded flood, no false culling during streaming). Verified
+  on the surface: ~31% of near meshes occluded with a pixel-identical
+  frame.
 - `1:1` (infra) — Near meshes drawn front-to-back; GL back-face culling.
 - `partial` — One draw call per 16³ sub-chunk mesh; batching/merging pending
   (Sodium-style tricks are ours to design better, not copy, specs §3).
 - `partial` — LOD (Distant Horizons-style, integrated from day one):
   server-streamed per-column summaries (4×4 cells of height+tile), region
-  heightfield meshes with side skirts, near-cell skip to avoid z-fighting;
-  richer LOD levels and fade pending.
+  heightfield meshes with side skirts, near-cell skip matching the actual
+  meshed extent (rd−1, no sky gap ring); richer LOD levels and fade
+  pending.
 - `partial` — Client-side view interpolation of the 20 Hz authoritative state
   and local look smoothing (presentation only, no client logic).
 - `partial` — Chunk streaming sends raw u16 blocks (8 KiB/sub-chunk);
@@ -85,4 +93,5 @@ Every implemented wiki feature gets a line here. Status legend:
   snapshot in a single frame, so event-driven was required; Minecraft's
   exact dig-timing model (progress, tools) is not implemented yet.
 - `partial` — 128-144 block gap ring between the near ring edge and LOD
-  skip-margin; to be closed with an overlapping margin.
+  skip-margin — CLOSED: the LOD skip margin now matches the actual meshed
+  extent (interior columns, cheb ≤ rd−1).
