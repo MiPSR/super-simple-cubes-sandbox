@@ -20,7 +20,8 @@ png.workspace = true
 kira.workspace = true
 
 [features]
-default = ["opengl"]
+default = ["opengl", "text"]
 opengl = ["ssc-engine/opengl"]
+text = ["ssc-engine/text"]
 # The vulkan backend is engine-side and not fully implemented yet; it is
 # deliberately not selectable from the client until it works.

@@ -163,6 +163,14 @@ struct App {
     audio: audio::AudioSystem,
     /// Timestamp of the previous frame (stick look rate normalization).
     last_stick_tick: Instant,
+    /// F3 debug overlay.
+    debug_hud: bool,
+    // Latest 1 Hz stats for the HUD.
+    last_fps: f32,
+    last_render_ms: f32,
+    last_drawn: u32,
+    last_culled: u32,
+    last_occluded: u32,
 }
 
 impl App {
@@ -221,6 +229,12 @@ impl App {
             texture_path,
             audio: audio::AudioSystem::new(sounds_dir.as_deref()),
             last_stick_tick: now,
+            debug_hud: false,
+            last_fps: 0.0,
+            last_render_ms: 0.0,
+            last_drawn: 0,
+            last_culled: 0,
+            last_occluded: 0,
         }
     }
 
@@ -273,6 +287,9 @@ impl App {
                         );
                         self.send(&ClientPacket::SelectSlot { slot: self.selected_slot });
                     }
+                }
+                EngineEvent::Key { key: Key::F3, state: KeyState::Pressed } => {
+                    self.debug_hud = !self.debug_hud;
                 }
                 // Immediate action on the press event: a quick click never
                 // shows up in the held-state snapshot (press and release
@@ -436,6 +453,52 @@ impl App {
         // Occlusion ("cave") culling: flood visibility from the camera's
         // sub-chunk through open borders. Missing masks (still streaming)
         // are treated as open; a missing camera node disables filtering.
+        let (w, h) = frame.size();
+        let (wf, hf) = (w as f32, h as f32);
+
+        // HUD (server-driven content where gameplay data is shown).
+        // Crosshair.
+        frame.hud_text("+".into(), wf / 2.0 - 5.0, hf / 2.0 - 9.0, 18.0, [1.0, 1.0, 1.0, 0.9]);
+        // Hotbar: server-defined blocks (names only until icons land).
+        if self.joined {
+            for (i, id) in self.hotbar.iter().enumerate() {
+                let name = ssc_world::info(*id).name;
+                let selected = i == self.selected_slot as usize;
+                let label = if selected {
+                    format!(">{}. {}", i + 1, name)
+                } else {
+                    format!(" {}. {}", i + 1, name)
+                };
+                let color = if selected {
+                    [1.0, 0.85, 0.3, 1.0]
+                } else {
+                    [0.85, 0.85, 0.85, 0.55]
+                };
+                frame.hud_text(label, 16.0, hf - 30.0 - i as f32 * 20.0, 16.0, color);
+            }
+        }
+        // F3-style debug overlay.
+        if self.debug_hud && self.joined {
+            let lines = [
+                format!(
+                    "ssc {:.1} fps (render {:.2} ms)",
+                    self.last_fps, self.last_render_ms
+                ),
+                format!(
+                    "draws {} (frustum {} occluded {})",
+                    self.last_drawn, self.last_culled, self.last_occluded
+                ),
+                format!(
+                    "pos {:.2} / {:.2} / {:.2}",
+                    self.pos_cur.x, self.pos_cur.y, self.pos_cur.z
+                ),
+                format!("ents {} rd {}", self.entities.len(), self.render_distance),
+            ];
+            for (i, line) in lines.iter().enumerate() {
+                frame.hud_text(line.clone(), 16.0, 8.0 + i as f32 * 18.0, 16.0, [1.0, 1.0, 1.0, 0.9]);
+            }
+        }
+
         let eye_sub: mesh::SubKey = {
             let px = self.pos_cur.x as i32;
             let pz = self.pos_cur.z as i32;
@@ -560,6 +623,13 @@ impl App {
                 self.pos_cur.y,
                 self.pos_cur.z
             );
+            // Remember the latest stats for the F3 overlay.
+            let frames = self.frames.max(1);
+            self.last_fps = fps;
+            self.last_render_ms = self.stat_ms / frames as f32;
+            self.last_drawn = self.stat_drawn / frames;
+            self.last_culled = self.stat_culled / frames;
+            self.last_occluded = self.stat_occluded / frames;
             self.frames = 0;
             self.stat_ms = 0.0;
             self.stat_drawn = 0;

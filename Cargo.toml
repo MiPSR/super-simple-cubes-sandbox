@@ -29,6 +29,7 @@ raw-window-handle = "0.6" # window handle traits (same crate winit/glutin use)
 png = "0.17"           # PNG decode for Minecraft-format texture atlases (image-rs org)
 kira = "0.10"           # game audio engine (spatial mixer, cpal backend)
 gilrs = "0.11"           # gamepad input (pure Rust, evdev on Linux)
+glyph_brush = "0.7"     # glyph batching for the HUD (owner-approved, + Monocraft OFL font)
 
 [profile.dev]
 # Keep debug builds usable for perf-sensitive voxel work.

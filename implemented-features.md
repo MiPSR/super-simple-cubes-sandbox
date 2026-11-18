@@ -94,6 +94,12 @@ Every implemented wiki feature gets a line here. Status legend:
   on the surface: ~31% of near meshes occluded with a pixel-identical
   frame.
 - `1:1` (infra) — Near meshes drawn front-to-back; GL back-face culling.
+- `1:1` (infra) — HUD text rendering (owner-approved glyph_brush + embedded
+  Monocraft OFL font): pixel-coordinate API, crosshair, server-driven
+  hotbar labels, F3 debug overlay; depth-off, cull-off, blend pass after
+  the world. glyph_brush's tex_coords are already-normalized UVs (the
+  double-normalization bug made glyphs sample sub-texels — fixed and
+  verified by pixel-probing).
 - `partial` — One draw call per 16³ sub-chunk mesh; batching/merging pending
   (Sodium-style tricks are ours to design better, not copy, specs §3).
 - `partial` — LOD (Distant Horizons-style, integrated from day one):

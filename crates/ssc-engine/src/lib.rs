@@ -129,13 +129,22 @@ pub trait Renderer {
     fn upload_mesh(&mut self, id: MeshId, verts: &[Vertex], indices: &[u32]) -> Result<(), String>;
     fn remove_mesh(&mut self, id: MeshId);
     /// Draw the given (already culled) commands: opaque pass, then the
-    /// translucent blend pass.
+    /// translucent blend pass. Does **not** present — the engine draws
+    /// the HUD afterwards and calls [`Renderer::present`].
     fn render(
         &mut self,
         view_proj: &Mat4,
         opaque: &[&DrawCmd],
         translucent: &[&DrawCmd],
     ) -> DrawStats;
+
+    /// Draw HUD text (pixel coordinates, top-left origin, y down).
+    /// Backends without the `text` feature no-op here.
+    fn render_hud(&mut self, texts: &[HudText], width: u32, height: u32);
+
+    /// Present the frame (swap buffers).
+    fn present(&mut self);
+
     fn backend_name(&self) -> &'static str;
 }
 
@@ -252,6 +261,7 @@ pub struct Frame<'a> {
     window: &'a winit::window::Window,
     input: &'a InputState,
     mouse_locked: &'a mut bool,
+    hud: &'a mut Vec<HudText>,
     size: (u32, u32),
 }
 
@@ -294,6 +304,12 @@ impl Frame<'_> {
 
     pub fn remove_mesh(&mut self, id: MeshId) {
         self.renderer.remove_mesh(id)
+    }
+
+    /// Queue one line of HUD text for this frame (pixel coordinates,
+    /// top-left origin, y down; drawn after the world, depth-test off).
+    pub fn hud_text(&mut self, text: String, x: f32, y: f32, scale: f32, color: [f32; 4]) {
+        self.hud.push(HudText { text, x, y, scale, color });
     }
 
     /// Build the view-projection, frustum-cull + sort the draw list, render
@@ -340,6 +356,10 @@ impl Frame<'_> {
             translucent.into_iter().map(|(_, d)| d).collect();
 
         let stats = self.renderer.render(&vp, &opaque_list, &translucent_list);
+        // HUD on top, then present.
+        self.renderer.render_hud(&self.hud, w, h);
+        self.hud.clear();
+        self.renderer.present();
         let frame_ms = t0.elapsed().as_secs_f32() * 1000.0;
 
         // Debug: dump projected mesh positions once per second.
@@ -395,6 +415,7 @@ where
         pending: Vec<EngineEvent>,
         input: InputState,
         mouse_locked: bool,
+        hud: Vec<HudText>,
         init_error: Option<String>,
         #[cfg(feature = "gamepad")]
         gilrs: Option<gilrs::Gilrs>,
@@ -574,6 +595,7 @@ where
                 window,
                 input: &self.input,
                 mouse_locked: &mut self.mouse_locked,
+                hud: &mut self.hud,
                 size: self.size,
             };
             let flow = (self.frame_fn)(&mut frame, &events);
@@ -668,6 +690,7 @@ where
         pending: Vec::new(),
         input: InputState::default(),
         mouse_locked: false,
+        hud: Vec::new(),
         init_error: None,
         #[cfg(feature = "gamepad")]
         gilrs,
@@ -684,6 +707,18 @@ where
 
 /// Default vertical field of view (radians).
 pub const DEFAULT_FOV_Y: f32 = 70f32.to_radians();
+
+/// One line of HUD text, top-left origin, pixel coordinates.
+#[derive(Debug, Clone)]
+pub struct HudText {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    /// Font size in pixels (Monocraft is a pixel font — integer scales
+    /// stay crisp).
+    pub scale: f32,
+    pub color: [f32; 4],
+}
 
 /// Pixels per atlas tile edge (the Minecraft texture convention).
 pub const ATLAS_TILE_PX: u32 = 16;
