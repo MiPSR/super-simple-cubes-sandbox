@@ -127,6 +127,8 @@ pub trait Renderer {
     fn upload_atlas(&mut self, rgba: &[u8], width: u32, height: u32) -> Result<(), String>;
     /// Upload (or replace) a mesh.
     fn upload_mesh(&mut self, id: MeshId, verts: &[Vertex], indices: &[u32]) -> Result<(), String>;
+    /// Dynamic sky/clear color (RGBA). Defaults to a bright blue.
+    fn set_sky(&mut self, color: [f32; 4]);
     fn remove_mesh(&mut self, id: MeshId);
     /// Draw the given (already culled) commands: opaque pass, then the
     /// translucent blend pass. Does **not** present — the engine draws
@@ -306,6 +308,12 @@ impl Frame<'_> {
 
     pub fn remove_mesh(&mut self, id: MeshId) {
         self.renderer.remove_mesh(id)
+    }
+
+    /// Set the sky (clear) color, e.g. from the server-driven time of
+    /// day. Pure presentation — no lighting (specs.md §3).
+    pub fn set_sky(&mut self, color: [f32; 4]) {
+        self.renderer.set_sky(color);
     }
 
     /// Queue one line of HUD text for this frame (pixel coordinates,

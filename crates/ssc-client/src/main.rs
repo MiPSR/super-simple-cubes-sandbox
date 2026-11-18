@@ -175,6 +175,38 @@ struct App {
     last_drawn: u32,
     last_culled: u32,
     last_occluded: u32,
+    /// Server-driven time of day (0..1, 0 = dawn).
+    day_time: f32,
+}
+
+/// Sky color for a time of day (0..1): dawn → day → dusk → night.
+/// Pure function — unit-tested. No lighting changes (specs.md §3),
+/// only the clear color.
+fn sky_color(t: f32) -> [f32; 4] {
+    const DAWN: [f32; 3] = [0.95, 0.55, 0.35];
+    const DAY: [f32; 3] = [0.55, 0.75, 0.95];
+    const DUSK: [f32; 3] = [0.85, 0.45, 0.30];
+    const NIGHT: [f32; 3] = [0.02, 0.03, 0.08];
+    // Key times: dawn 0.0, day 0.25..0.6, dusk 0.75, night 0.85..0.98.
+    let (a, b, f) = if t < 0.25 {
+        (DAWN, DAY, t / 0.25)
+    } else if t < 0.6 {
+        (DAY, DAY, 0.0)
+    } else if t < 0.75 {
+        (DAY, DUSK, (t - 0.6) / 0.15)
+    } else if t < 0.85 {
+        (DUSK, NIGHT, (t - 0.75) / 0.10)
+    } else if t < 0.98 {
+        (NIGHT, NIGHT, 0.0)
+    } else {
+        (NIGHT, DAWN, (t - 0.98) / 0.02)
+    };
+    [
+        a[0] + (b[0] - a[0]) * f,
+        a[1] + (b[1] - a[1]) * f,
+        a[2] + (b[2] - a[2]) * f,
+        1.0,
+    ]
 }
 
 impl App {
@@ -241,6 +273,7 @@ impl App {
             last_drawn: 0,
             last_culled: 0,
             last_occluded: 0,
+            day_time: 0.3,
         }
     }
 
@@ -584,6 +617,9 @@ impl App {
             }
         }
 
+        // Server-driven time of day → sky color (presentation only).
+        frame.set_sky(sky_color(self.day_time));
+
         let eye_sub: mesh::SubKey = {
             let px = self.pos_cur.x as i32;
             let pz = self.pos_cur.z as i32;
@@ -862,6 +898,9 @@ impl App {
                 let id = self.hotbar[self.selected_slot as usize];
                 println!("[hotbar] slot {}: {}", self.selected_slot, ssc_world::info(id).name);
             }
+            ServerPacket::TimeOfDay { t } => {
+                self.day_time = t.clamp(0.0, 1.0);
+            }
             ServerPacket::Goodbye { reason } => {
                 eprintln!("[client] server said goodbye: {reason}");
                 return Flow::Exit;
@@ -1079,4 +1118,19 @@ fn main() {
         std::process::exit(1);
     }
     eprintln!("[client] bye");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sky_is_blue_at_midday_and_dark_at_night() {
+        let day = sky_color(0.4);
+        assert!(day[2] > 0.7 && day[2] > day[0], "midday should be blue: {day:?}");
+        let night = sky_color(0.9);
+        assert!(night[0] < 0.1 && night[1] < 0.1, "night should be dark: {night:?}");
+        let dawn = sky_color(0.05);
+        assert!(dawn[0] > day[0] && dawn[0] > 0.6, "dawn should be warm: {dawn:?}");
+    }
 }

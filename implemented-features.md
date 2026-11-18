@@ -71,6 +71,10 @@ Every implemented wiki feature gets a line here. Status legend:
   listeners and underwater muffling pending.
 - `partial` — Spawn search: spirals out from the origin for dry land
   (≥2 blocks above sea level); real MC spawn is biome-aware.
+- `partial` — Day/night cycle: server clock at Minecraft pace (24000
+  ticks ≈ 20 min per cycle), broadcast once per second; the client maps
+  time to a sky color (dawn/day/dusk/night keys — no lighting changes,
+  per specs §3). No sun/moon rendering, sleep or clock item yet.
 - `partial` — Creative basics: E opens a server-sent block picker (all
   registered blocks); clicking assigns the block to the selected hotbar
   slot (server validates and confirms). No inventory persistence,

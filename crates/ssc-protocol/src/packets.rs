@@ -192,6 +192,9 @@ pub enum ServerPacket {
     CreativeBlocks { ids: Vec<u16> },
     /// The player's hotbar contents (after a creative assignment).
     Hotbar { slots: [u16; 9] },
+    /// Time of day, 0..1 (0 = dawn). Minecraft pace: a full cycle is
+    /// 24000 ticks (~20 minutes at 20 TPS).
+    TimeOfDay { t: f32 },
 }
 
 impl ServerPacket {
@@ -280,6 +283,10 @@ impl ServerPacket {
                     w.put_u16(*b);
                 }
             }
+            ServerPacket::TimeOfDay { t } => {
+                w.put_u8(13);
+                w.put_f32(*t);
+            }
         }
         w.into_bytes()
     }
@@ -350,6 +357,7 @@ impl ServerPacket {
                 }
                 ServerPacket::Hotbar { slots }
             }
+            13 => ServerPacket::TimeOfDay { t: r.get_f32()? },
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad server packet tag {tag}"

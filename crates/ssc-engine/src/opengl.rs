@@ -91,7 +91,7 @@ void main() {
 "#;
 
 /// Sky color until world visuals land.
-const SKY: (f32, f32, f32, f32) = (0.55, 0.75, 0.95, 1.0);
+const SKY: [f32; 4] = [0.55, 0.75, 0.95, 1.0];
 
 pub struct Backend {
     #[allow(dead_code)] // keeps the EGL/GLX display alive for the context.
@@ -105,6 +105,8 @@ pub struct Backend {
     meshes: HashMap<MeshId, Mesh>,
     width: u32,
     height: u32,
+    /// Dynamic sky/clear color.
+    sky: [f32; 4],
     /// HUD text layer (feature `text`).
     text: Option<TextLayer>,
 }
@@ -236,8 +238,13 @@ impl Renderer for Backend {
             meshes: HashMap::new(),
             width: size.0,
             height: size.1,
+            sky: SKY,
             text,
         })
+    }
+
+    fn set_sky(&mut self, color: [f32; 4]) {
+        self.sky = color;
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -350,7 +357,7 @@ impl Renderer for Backend {
         let mut draw_calls = 0u32;
         unsafe {
             gl.viewport(0, 0, self.width as i32, self.height as i32);
-            gl.clear_color(SKY.0, SKY.1, SKY.2, SKY.3);
+            gl.clear_color(self.sky[0], self.sky[1], self.sky[2], self.sky[3]);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
 
             gl.use_program(Some(self.program));

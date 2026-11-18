@@ -135,6 +135,8 @@ pub struct Server {
     /// Dedicated mode: accepted wires land here and are attached on tick.
     accept_rx: Option<std::sync::mpsc::Receiver<Box<dyn Wire>>>,
     tick: u64,
+    /// Time of day, 0..1 (0 = dawn).
+    time_of_day: f32,
     running: bool,
 }
 
@@ -161,6 +163,7 @@ impl Server {
             next_id: 1,
             accept_rx: None,
             tick: 0,
+            time_of_day: 0.3, // start in the morning
             running: true,
         }
     }
@@ -176,6 +179,12 @@ impl Server {
     /// Dedicated mode: hook the accept channel; new wires become sessions.
     pub fn set_accept_channel(&mut self, rx: std::sync::mpsc::Receiver<Box<dyn Wire>>) {
         self.accept_rx = Some(rx);
+    }
+
+    /// Current time of day, 0..1 (0 = dawn). Minecraft pace: 24000
+    /// ticks per cycle (~20 min at 20 TPS).
+    pub fn time_of_day(&self) -> f32 {
+        self.time_of_day
     }
 
     /// Run until every client is gone. Call from a dedicated thread.
@@ -293,6 +302,15 @@ impl Server {
             let cols_this_tick = if self.cfg.local { usize::MAX } else { 4 };
             let lods_this_tick = if self.cfg.local { usize::MAX } else { 48 };
             self.stream_to(id, cols_this_tick, lods_this_tick);
+        }
+
+        // Time advances every tick; broadcast once a second.
+        self.time_of_day += 1.0 / 24000.0;
+        if self.time_of_day >= 1.0 {
+            self.time_of_day -= 1.0;
+        }
+        if self.tick % 20 == 0 {
+            let _ = self.broadcast(&ServerPacket::TimeOfDay { t: self.time_of_day });
         }
 
         // Refresh streaming sets periodically (and right after joins).
