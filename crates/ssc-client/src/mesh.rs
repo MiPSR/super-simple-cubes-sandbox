@@ -423,7 +423,7 @@ pub fn build_column_meshes(world: &World, cx: i32, cz: i32) -> (Vec<SubchunkMesh
                             if id == ssc_world::AIR {
                                 continue;
                             }
-                            let info = ssc_world::info(id);
+                            let info = ssc_world::block_info(id);
                             if pass_water != !info.opaque {
                                 continue; // wrong pass
                             }
@@ -476,7 +476,7 @@ pub fn build_column_meshes(world: &World, cx: i32, cz: i32) -> (Vec<SubchunkMesh
                                 h += 1;
                             }
                             // Emit.
-                            let tile = ssc_world::info(id).tiles[f.face];
+                            let tile = ssc_world::block_info(id).tiles[f.face];
                             let target = if pass_water { &mut water } else { &mut solid };
                             emit_greedy_quad(f, base, slice, u, v, w, h, tile, target);
                             // Clear the merged rectangle.

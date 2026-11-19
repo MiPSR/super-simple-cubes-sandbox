@@ -50,6 +50,14 @@ fn main() {
                     }
                 }
             }
+            "--mode" => {
+                if let Some(v) = args.next() {
+                    match ssc_server::GameMode::parse(&v) {
+                        Some(m) => cfg.game_mode = m,
+                        None => eprintln!("bad --mode {v:?} (survival|creative), using survival"),
+                    }
+                }
+            }
             other => eprintln!("unknown argument {other:?}"),
         }
     }

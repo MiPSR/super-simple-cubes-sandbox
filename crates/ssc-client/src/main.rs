@@ -26,7 +26,7 @@ use ssc_protocol::packets::{keys, ClientPacket, ServerPacket, SoundId};
 use ssc_protocol::wire::{TcpWire, Wire};
 use ssc_protocol::PROTOCOL_VERSION;
 use ssc_server::{spawn_local, ServerConfig};
-use ssc_world::{valid_id, BlockId, ColumnKey};
+use ssc_world::{valid_block_id, BlockId, ColumnKey};
 
 use mesh::SubchunkMesh;
 use state::ClientWorld;
@@ -138,7 +138,19 @@ struct App {
     pitch: f32,
     keys: u16,
     selected_slot: u8,
-    hotbar: [BlockId; 9],
+    hotbar: [u16; 9],
+    /// Full inventory from the server (36 slots: (item, count)).
+    inventory: Vec<(u16, u8)>,
+    /// Game mode (0 survival / 1 creative).
+    mode: u8,
+    /// Survival vitals.
+    health: f32,
+    hunger: u8,
+    air: u16,
+    /// Dig progress broadcast ((x,y,z), percent) + expiry.
+    dig_progress: Option<((i32, i32, i32), u8, Instant)>,
+    /// First clicked slot in the inventory screen (swap interaction).
+    inv_pick: Option<u8>,
     joined: bool,
     render_distance: i32,
     last_player_col: ColumnKey,
@@ -246,6 +258,13 @@ impl App {
             keys: 0,
             selected_slot: 0,
             hotbar: [0; 9],
+            inventory: Vec::new(),
+            mode: 0,
+            health: 20.0,
+            hunger: 20,
+            air: 300,
+            dig_progress: None,
+            inv_pick: None,
             joined: false,
             render_distance: 8,
             last_player_col: (0, 0),
@@ -281,6 +300,60 @@ impl App {
         if let Err(e) = self.wire.send(&pkt.encode()) {
             eprintln!("[client] send failed: {e}");
         }
+    }
+
+    /// Survival inventory screen click: two clicks swap the slots
+    /// (server-side validation via SwapSlots).
+    fn inventory_click(&mut self, frame: &mut Frame) {
+        let Some((mx, my)) = frame.input().cursor else { return };
+        let (w, h) = frame.size();
+        let slot = match self.inventory_hit(mx, my, w as f32, h as f32) {
+            Some(s) => s,
+            None => return,
+        };
+        match self.inv_pick {
+            Some(a) => {
+                if a != slot {
+                    self.send(&ClientPacket::SwapSlots { a, b: slot });
+                }
+                self.inv_pick = None;
+            }
+            None => {
+                // Only start a pick on non-empty slots.
+                if self
+                    .inventory
+                    .get(slot as usize)
+                    .is_some_and(|(i, _)| *i != 0)
+                {
+                    self.inv_pick = Some(slot);
+                }
+            }
+        }
+    }
+
+    /// Inventory screen layout: 9 columns × 4 rows of slots.
+    fn inventory_layout(&self, w: f32, h: f32) -> (f32, f32, f32, f32) {
+        const COL_W: f32 = 135.0;
+        const ROW_H: f32 = 22.0;
+        const COLS: f32 = 9.0;
+        let panel_w = COL_W * COLS + 30.0;
+        let panel_h = 4.0 * ROW_H + 64.0;
+        let x0 = ((w - panel_w) / 2.0).max(10.0);
+        let y0 = (h - panel_h) / 2.0;
+        (x0, y0, COL_W, ROW_H)
+    }
+
+    fn inventory_hit(&self, mx: f32, my: f32, w: f32, h: f32) -> Option<u8> {
+        let (x0, y0, col_w, row_h) = self.inventory_layout(w, h);
+        if mx < x0 || my < y0 + 40.0 {
+            return None;
+        }
+        let col = ((mx - x0) / col_w).floor() as i32;
+        let row = ((my - y0 - 40.0) / row_h).floor() as i32;
+        if !(0..9).contains(&col) || !(0..4).contains(&row) {
+            return None;
+        }
+        Some((row * 9 + col) as u8)
     }
 
     /// Handle a click while the creative picker is open: assign the
@@ -361,12 +434,19 @@ impl App {
                 EngineEvent::Key { key: Key::Digit(n), state: KeyState::Pressed } => {
                     self.selected_slot = n - 1;
                     if self.joined {
-                        let id = self.hotbar[self.selected_slot as usize];
-                        println!(
-                            "[hotbar] slot {}: {}",
-                            self.selected_slot,
-                            ssc_world::info(id).name
-                        );
+                        let item = self
+                            .inventory
+                            .get(self.selected_slot as usize)
+                            .copied()
+                            .unwrap_or((0, 0))
+                            .0;
+                        if item != 0 {
+                            println!(
+                                "[hotbar] slot {}: {}",
+                                self.selected_slot,
+                                ssc_world::item_info(item).name
+                            );
+                        }
                         self.send(&ClientPacket::SelectSlot { slot: self.selected_slot });
                     }
                 }
@@ -374,8 +454,10 @@ impl App {
                     self.debug_hud = !self.debug_hud;
                 }
                 EngineEvent::Key { key: Key::E, state: KeyState::Pressed } => {
-                    // Creative picker toggle (blocks list is server-sent).
+                    // E: inventory screen in survival, block picker in
+                    // creative (both server-driven).
                     self.picker_open = !self.picker_open;
+                    self.inv_pick = None;
                     let locked = frame.mouse_locked();
                     if self.picker_open && locked {
                         frame.set_mouse_locked(false);
@@ -388,14 +470,24 @@ impl App {
                 // land in the same frame's event batch).
                 EngineEvent::MouseButton { button: MouseButton::Left, state: KeyState::Pressed } => {
                     if self.picker_open {
-                        self.picker_click(frame);
+                        if self.mode == 1 {
+                            self.picker_click(frame);
+                        } else {
+                            self.inventory_click(frame);
+                        }
                     } else if frame.mouse_locked() {
-                        self.send(&ClientPacket::Dig);
+                        self.send(&ClientPacket::DigStart);
                         self.last_dig = Instant::now();
                     } else {
                         // While unlocked, the first click grabs the mouse
                         // instead of interacting (classic FPS UX).
                         frame.set_mouse_locked(true);
+                    }
+                }
+                EngineEvent::MouseButton { button: MouseButton::Left, state: KeyState::Released } => {
+                    // Release cancels the dig (survival progress).
+                    if !self.picker_open && frame.mouse_locked() {
+                        self.send(&ClientPacket::DigStop);
                     }
                 }
                 EngineEvent::MouseButton { button: MouseButton::Right, state: KeyState::Pressed } => {
@@ -488,13 +580,10 @@ impl App {
             self.send(&ClientPacket::Input { keys: self.keys, yaw: self.yaw, pitch: self.pitch });
         }
 
-        // Held dig/place: repeat while the button stays down.
+        // Held place: repeat while the button stays down (dig progress
+        // is server-side now — DigStart/DigStop bracket the hold).
         {
             let now = Instant::now();
-            if i.mouse_left && frame.mouse_locked() && now - self.last_dig >= ACTION_REPEAT {
-                self.last_dig = now;
-                self.send(&ClientPacket::Dig);
-            }
             if i.mouse_right && frame.mouse_locked() && now - self.last_place >= ACTION_REPEAT {
                 self.last_place = now;
                 self.send(&ClientPacket::Place);
@@ -553,15 +642,20 @@ impl App {
         // HUD (server-driven content where gameplay data is shown).
         // Crosshair.
         frame.hud_text("+".into(), wf / 2.0 - 5.0, hf / 2.0 - 9.0, 18.0, [1.0, 1.0, 1.0, 0.9]);
-        // Hotbar: server-defined blocks (names only until icons land).
+        // Hotbar: the first 9 inventory slots (server-driven content).
         if self.joined {
-            for (i, id) in self.hotbar.iter().enumerate() {
-                let name = ssc_world::info(*id).name;
+            for i in 0..9usize {
+                let (item, count) = self.inventory.get(i).copied().unwrap_or((0, 0));
                 let selected = i == self.selected_slot as usize;
-                let label = if selected {
-                    format!(">{}. {}", i + 1, name)
+                let label = if item != 0 {
+                    let name = ssc_world::item_info(item).name;
+                    if count > 1 {
+                        format!("{}. {} x{}", i + 1, name, count)
+                    } else {
+                        format!("{}. {}", i + 1, name)
+                    }
                 } else {
-                    format!(" {}. {}", i + 1, name)
+                    format!("{}. -", i + 1)
                 };
                 let color = if selected {
                     [1.0, 0.85, 0.3, 1.0]
@@ -569,6 +663,57 @@ impl App {
                     [0.85, 0.85, 0.85, 0.55]
                 };
                 frame.hud_text(label, 16.0, hf - 30.0 - i as f32 * 20.0, 16.0, color);
+            }
+        }
+        // Survival vitals (text bars; icon HUD later).
+        if self.joined && self.mode == 0 {
+            let bars_y = hf - 30.0 - 9.0 * 20.0 - 26.0;
+            frame.hud_text(
+                format!("HP {} / 20", self.health.ceil() as i32),
+                16.0,
+                bars_y,
+                16.0,
+                [1.0, 0.3, 0.3, 0.9],
+            );
+            frame.hud_text(
+                format!("Food {} / 20", self.hunger),
+                130.0,
+                bars_y,
+                16.0,
+                [0.6, 0.9, 0.3, 0.9],
+            );
+            if self.air < 300 {
+                frame.hud_text(
+                    format!("Air {}", self.air / 20),
+                    290.0,
+                    bars_y,
+                    16.0,
+                    [0.3, 0.6, 1.0, 0.9],
+                );
+            }
+            // Dig progress (server-driven) under the crosshair.
+            if let Some(((_, _, _), progress, at)) = self.dig_progress {
+                if Instant::now() - at < Duration::from_millis(400) {
+                    frame.hud_text(
+                        format!("digging {progress}%"),
+                        wf / 2.0 - 60.0,
+                        hf / 2.0 + 18.0,
+                        14.0,
+                        [1.0, 1.0, 1.0, 0.8],
+                    );
+                } else {
+                    self.dig_progress = None;
+                }
+            }
+            // Death overlay.
+            if self.health <= 0.0 {
+                frame.hud_text(
+                    "You died - respawning ...".into(),
+                    wf / 2.0 - 140.0,
+                    hf / 2.0 - 40.0,
+                    24.0,
+                    [1.0, 0.25, 0.25, 1.0],
+                );
             }
         }
         // F3-style debug overlay.
@@ -592,8 +737,8 @@ impl App {
                 frame.hud_text(line.clone(), 16.0, 8.0 + i as f32 * 18.0, 16.0, [1.0, 1.0, 1.0, 0.9]);
             }
         }
-        // Creative block picker (E): the palette is server-sent.
-        if self.picker_open {
+        // Creative block picker (E in creative): the palette is server-sent.
+        if self.picker_open && self.mode == 1 {
             let (x0, y0, col_w, row_h, _pw, _ph) =
                 self.picker_layout(wf, hf);
             frame.hud_text(
@@ -606,13 +751,56 @@ impl App {
             for (i, id) in self.creative.iter().enumerate() {
                 let col = (i % 3) as f32;
                 let row = (i / 3) as f32;
-                let name = ssc_world::info(*id).name;
+                let name = ssc_world::block_info(*id).name;
                 frame.hud_text(
                     name.to_string(),
                     x0 + 20.0 + col * col_w,
                     y0 + 44.0 + row * row_h,
                     16.0,
                     [0.95, 0.95, 0.95, 0.95],
+                );
+            }
+        }
+        // Survival inventory screen (E in survival): 36 slots, click two
+        // slots to swap them (server validates).
+        if self.picker_open && self.mode == 0 {
+            let (x0, y0, col_w, row_h) = self.inventory_layout(wf, hf);
+            frame.hud_text(
+                "inventory - click two slots to swap (E to close)".to_string(),
+                x0 + 15.0,
+                y0 + 14.0,
+                16.0,
+                [1.0, 0.85, 0.3, 1.0],
+            );
+            for i in 0..36usize {
+                let col = (i % 9) as f32;
+                let row = (i / 9) as f32;
+                let label = match self.inventory.get(i) {
+                    Some((item, count)) if *item != 0 => {
+                        let name = ssc_world::item_info(*item).name;
+                        if *count > 1 {
+                            format!("{} x{}", name, count)
+                        } else {
+                            name.to_string()
+                        }
+                    }
+                    _ => "-".to_string(),
+                };
+                let picked = self.inv_pick == Some(i as u8);
+                let in_hotbar = i < 9;
+                let color = if picked {
+                    [1.0, 0.55, 0.15, 1.0]
+                } else if in_hotbar {
+                    [0.95, 0.95, 0.95, 0.95]
+                } else {
+                    [0.7, 0.7, 0.7, 0.7]
+                };
+                frame.hud_text(
+                    label,
+                    x0 + 15.0 + col * col_w,
+                    y0 + 40.0 + row * row_h,
+                    15.0,
+                    color,
                 );
             }
         }
@@ -765,9 +953,10 @@ impl App {
 
     fn handle_packet(&mut self, frame: &mut Frame, p: ServerPacket) -> Flow {
         match p {
-            ServerPacket::Welcome { entity_id, spawn, render_distance, hotbar } => {
+            ServerPacket::Welcome { entity_id, spawn, render_distance, hotbar, game_mode } => {
                 self.own_id = Some(entity_id);
                 self.hotbar = hotbar;
+                self.mode = game_mode;
                 self.render_distance = render_distance as i32;
                 let s = Vec3::new(spawn[0], spawn[1], spawn[2]);
                 self.pos_prev = s;
@@ -784,7 +973,7 @@ impl App {
                     eprintln!("[client] bad subchunk size, dropping");
                     return Flow::Exit;
                 }
-                if blocks.iter().any(|&b| !valid_id(b)) {
+                if blocks.iter().any(|&b| !valid_block_id(b)) {
                     eprintln!("[client] invalid block id in subchunk, dropping");
                     return Flow::Exit;
                 }
@@ -872,7 +1061,7 @@ impl App {
                 }
             }
             ServerPacket::BlockUpdate { x, y, z, block } => {
-                if !valid_id(block) {
+                if !valid_block_id(block) {
                     return Flow::Continue;
                 }
                 let mut w = self.shared.write().unwrap_or_else(|e| e.into_inner());
@@ -896,7 +1085,33 @@ impl App {
             ServerPacket::Hotbar { slots } => {
                 self.hotbar = slots;
                 let id = self.hotbar[self.selected_slot as usize];
-                println!("[hotbar] slot {}: {}", self.selected_slot, ssc_world::info(id).name);
+                if id != 0 {
+                    println!(
+                        "[hotbar] slot {}: {}",
+                        self.selected_slot,
+                        ssc_world::item_info(id).name
+                    );
+                }
+            }
+            ServerPacket::Inventory { slots } => {
+                self.inventory = slots;
+                // Refresh the hotbar preview from the synced inventory.
+                for (i, slot) in self.inventory.iter().take(9).enumerate() {
+                    self.hotbar[i] = slot.0;
+                }
+            }
+            ServerPacket::Status { health, hunger, air } => {
+                self.health = health;
+                self.hunger = hunger;
+                self.air = air;
+            }
+            ServerPacket::DigProgress { x, y, z, progress } => {
+                if progress <= 100 {
+                    self.dig_progress = Some(((x, y, z), progress, Instant::now()));
+                } else {
+                    // 101 = cancelled.
+                    self.dig_progress = None;
+                }
             }
             ServerPacket::TimeOfDay { t } => {
                 self.day_time = t.clamp(0.0, 1.0);
@@ -1074,6 +1289,14 @@ fn main() {
                 if let Some(v) = args.next() {
                     if let Ok(rd) = v.parse::<i32>() {
                         cfg.render_distance = rd.clamp(2, 16);
+                    }
+                }
+            }
+            "--mode" => {
+                if let Some(v) = args.next() {
+                    match ssc_server::GameMode::parse(&v) {
+                        Some(m) => cfg.game_mode = m,
+                        None => eprintln!("bad --mode {v:?} (survival|creative), using survival"),
                     }
                 }
             }

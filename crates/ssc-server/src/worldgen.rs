@@ -248,7 +248,7 @@ impl WorldGen {
                                     if y >= best_y {
                                         best_y = y;
                                         let id = column.get(lx * 4 + bx, y, lz * 4 + bz);
-                                        best_tile = ssc_world::info(id).tiles[ssc_world::FACE_TOP];
+                                        best_tile = ssc_world::block_info(id).tiles[ssc_world::FACE_TOP];
                                     }
                                 }
                             }
@@ -272,7 +272,7 @@ impl WorldGen {
                         let h = self.height(wx, wz);
                         if h >= best_h {
                             best_h = h;
-                            best_tile = ssc_world::info(self.top_block(wx, wz, h)).tiles
+                            best_tile = ssc_world::block_info(self.top_block(wx, wz, h)).tiles
                                 [ssc_world::FACE_TOP];
                         }
                     }

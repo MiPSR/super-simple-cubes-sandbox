@@ -56,12 +56,29 @@ Every implemented wiki feature gets a line here. Status legend:
   walk 4.317 / sprint 5.612 / sneak 1.31 blocks/s, gravity 32 b/s², jump apex
   ≈1.27 blocks, terminal velocity 78.4.
 - `1:1` — Server tick rate 20 TPS.
+- `partial` — Survival mode (`--mode survival|creative`, default survival):
+  health 20 / hunger 20 / air 300 with wiki-accurate rules — fall damage
+  (distance − 3), drowning (1 heart/s after 15 s), exhaustion-driven hunger
+  (sprint 4× faster), regen 1 HP/4 s at hunger ≥ 18, starvation stops at
+  half a heart (normal difficulty), timed digging (hardness × 1.5, × 5
+  tool-required — hand-only until tools exist), block drops into a 36-slot
+  inventory (stone→cobble, grass→dirt, leaves→apple at 5%), placing
+  consumes items, eating (apple +4 hunger), death → auto-respawn after 2 s
+  at spawn (Minecraft uses a death screen + manual respawn; item entities
+  don't exist so inventory is kept and drops are direct-pickup). No tools,
+  armor, XP, crafting, item entities, inventory persistence or mode
+  switching mid-session yet.
+- `partial` — Game modes: creative (default hotbar blocks, instant dig,
+  no consumption, E = block picker) and survival (empty start, E =
+  inventory screen, click two slots to swap — drag-and-drop pending).
 - `partial` — Movement: axis-separated swept-AABB collision with sub-stepping
   (no tunneling), jump, sneak/sprint speeds; no momentum/drag simulation,
   auto step-up, swimming or fall damage yet.
-- `partial` — Block interaction: creative-style instant dig/place, reach 4.5,
-  server-side DDA voxel raycast, placement rejected inside the player AABB;
-  no survival dig timing, tools, drops or block-specific behaviors yet.
+- `partial` — Block interaction: creative instant dig / survival timed dig
+  (server-side progress with re-target on look change, progress broadcast
+  for the HUD), reach 4.5, server-side DDA voxel raycast, placement
+  rejected inside any player; no survival dig particles/crack overlay,
+  tools or block-specific behaviors yet.
 - `dev` — Sound triggers (dig/place/step) are chosen and sent by the server
   and flow end-to-end; playback via owner-approved **kira** with distance
   attenuation + stereo panning; `--sounds DIR` loads real OGG/WAV packs
@@ -75,12 +92,10 @@ Every implemented wiki feature gets a line here. Status legend:
   ticks ≈ 20 min per cycle), broadcast once per second; the client maps
   time to a sky color (dawn/day/dusk/night keys — no lighting changes,
   per specs §3). No sun/moon rendering, sleep or clock item yet.
-- `partial` — Creative basics: E opens a server-sent block picker (all
-  registered blocks); clicking assigns the block to the selected hotbar
-  slot (server validates and confirms). No inventory persistence,
-  survival inventory, crafting, survival dig timing, tools or drops yet.
-- `partial` — Fixed 9-slot hotbar with server-defined blocks; full inventory,
-  survival mode, hunger and health pending.
+- `partial` — Item system: block-items 1:1 with block ids + apple food
+  item; 36-slot inventories (9 hotbar + 27 storage, stack 64) fully
+  server-owned and synced. No tools, non-block crafting ingredients or
+  item entities yet.
 - `partial` — Gamepad (owner-approved gilrs, engine-side input abstraction):
   left stick moves, right stick looks (rate-normalized), A jumps, RT digs,
   LT places, Start = Escape; dead-zoned, works alongside keyboard/mouse.

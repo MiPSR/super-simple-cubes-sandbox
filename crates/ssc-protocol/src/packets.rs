@@ -6,6 +6,12 @@
 
 use crate::codec::{ByteReader, ByteWriter, DecodeResult};
 
+/// Game modes (wire values).
+pub mod game_mode {
+    pub const SURVIVAL: u8 = 0;
+    pub const CREATIVE: u8 = 1;
+}
+
 /// Input key bits for [`ClientPacket::Input`].
 pub mod keys {
     pub const FORWARD: u16 = 1 << 0;
@@ -24,6 +30,8 @@ pub enum SoundId {
     Dig,
     Place,
     Step,
+    Hurt,
+    Eat,
     _Ext(u16),
 }
 
@@ -33,6 +41,8 @@ impl SoundId {
             SoundId::Dig => 0,
             SoundId::Place => 1,
             SoundId::Step => 2,
+            SoundId::Hurt => 3,
+            SoundId::Eat => 4,
             SoundId::_Ext(v) => v,
         }
     }
@@ -42,6 +52,8 @@ impl SoundId {
             0 => SoundId::Dig,
             1 => SoundId::Place,
             2 => SoundId::Step,
+            3 => SoundId::Hurt,
+            4 => SoundId::Eat,
             _ => SoundId::_Ext(v),
         }
     }
@@ -51,6 +63,8 @@ impl SoundId {
             SoundId::Dig => "dig",
             SoundId::Place => "place",
             SoundId::Step => "step",
+            SoundId::Hurt => "hurt",
+            SoundId::Eat => "eat",
             SoundId::_Ext(_) => "unknown",
         }
     }
@@ -68,12 +82,18 @@ pub enum ClientPacket {
     Input { keys: u16, yaw: f32, pitch: f32 },
     /// Hotbar slot selection.
     SelectSlot { slot: u8 },
-    /// Request to break the block being looked at (server raycasts).
-    Dig,
-    /// Request to place the selected hotbar block (server raycasts).
+    /// Request to start digging (creative: instant break; survival:
+    /// progress begins server-side).
+    DigStart,
+    /// Stop digging (release; cancels survival progress).
+    DigStop,
+    /// Request to place the selected hotbar block / eat the selected food
+    /// (server raycasts and decides).
     Place,
     /// Creative: assign a block from the palette to a hotbar slot.
     SetHotbarSlot { slot: u8, block: u16 },
+    /// Move items within the own inventory (slot indices 0..36).
+    SwapSlots { a: u8, b: u8 },
 }
 
 impl ClientPacket {
@@ -95,12 +115,18 @@ impl ClientPacket {
                 w.put_u8(2);
                 w.put_u8(*slot);
             }
-            ClientPacket::Dig => w.put_u8(3),
+            ClientPacket::DigStart => w.put_u8(6),
+            ClientPacket::DigStop => w.put_u8(7),
             ClientPacket::Place => w.put_u8(4),
             ClientPacket::SetHotbarSlot { slot, block } => {
                 w.put_u8(5);
                 w.put_u8(*slot);
                 w.put_u16(*block);
+            }
+            ClientPacket::SwapSlots { a, b } => {
+                w.put_u8(8);
+                w.put_u8(*a);
+                w.put_u8(*b);
             }
         }
         w.into_bytes()
@@ -120,9 +146,11 @@ impl ClientPacket {
                 pitch: r.get_f32()?,
             },
             2 => ClientPacket::SelectSlot { slot: r.get_u8()? },
-            3 => ClientPacket::Dig,
+            6 => ClientPacket::DigStart,
+            7 => ClientPacket::DigStop,
             4 => ClientPacket::Place,
             5 => ClientPacket::SetHotbarSlot { slot: r.get_u8()?, block: r.get_u16()? },
+            8 => ClientPacket::SwapSlots { a: r.get_u8()?, b: r.get_u8()? },
             _ => return Err(crate::codec::DecodeError(format!("bad client packet tag {tag}"))),
         };
         r.expect_empty()?;
@@ -137,12 +165,13 @@ impl ClientPacket {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerPacket {
     /// Join acceptance: your entity id, spawn position, render distance,
-    /// hotbar contents.
+    /// hotbar contents, game mode.
     Welcome {
         entity_id: u16,
         spawn: [f32; 3],
         render_distance: u8,
         hotbar: [u16; 9],
+        game_mode: u8,
     },
     /// One 16³ sub-chunk of a column.
     Subchunk {
@@ -195,13 +224,19 @@ pub enum ServerPacket {
     /// Time of day, 0..1 (0 = dawn). Minecraft pace: a full cycle is
     /// 24000 ticks (~20 minutes at 20 TPS).
     TimeOfDay { t: f32 },
+    /// Full inventory sync (36 slots; hotbar = slots 0..9).
+    Inventory { slots: Vec<(u16, u8)> },
+    /// Survival status: health (0..20), hunger (0..20), air (0..300).
+    Status { health: f32, hunger: u8, air: u16 },
+    /// Dig progress broadcast (0..100; 101 = cancelled).
+    DigProgress { x: i32, y: i32, z: i32, progress: u8 },
 }
 
 impl ServerPacket {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = ByteWriter::new();
         match self {
-            ServerPacket::Welcome { entity_id, spawn, render_distance, hotbar } => {
+            ServerPacket::Welcome { entity_id, spawn, render_distance, hotbar, game_mode } => {
                 w.put_u8(0);
                 w.put_u16(*entity_id);
                 for v in spawn {
@@ -211,6 +246,7 @@ impl ServerPacket {
                 for b in hotbar {
                     w.put_u16(*b);
                 }
+                w.put_u8(*game_mode);
             }
             ServerPacket::Subchunk { cx, cz, sub, blocks } => {
                 w.put_u8(1);
@@ -287,6 +323,28 @@ impl ServerPacket {
                 w.put_u8(13);
                 w.put_f32(*t);
             }
+            ServerPacket::Inventory { slots } => {
+                w.put_u8(14);
+                debug_assert!(slots.len() <= u16::MAX as usize);
+                w.put_u16(slots.len() as u16);
+                for (item, count) in slots {
+                    w.put_u16(*item);
+                    w.put_u8(*count);
+                }
+            }
+            ServerPacket::Status { health, hunger, air } => {
+                w.put_u8(15);
+                w.put_f32(*health);
+                w.put_u8(*hunger);
+                w.put_u16(*air);
+            }
+            ServerPacket::DigProgress { x, y, z, progress } => {
+                w.put_u8(16);
+                w.put_i32(*x);
+                w.put_i32(*y);
+                w.put_i32(*z);
+                w.put_u8(*progress);
+            }
         }
         w.into_bytes()
     }
@@ -307,7 +365,8 @@ impl ServerPacket {
                 for b in &mut hotbar {
                     *b = r.get_u16()?;
                 }
-                ServerPacket::Welcome { entity_id, spawn, render_distance, hotbar }
+                let game_mode = r.get_u8()?;
+                ServerPacket::Welcome { entity_id, spawn, render_distance, hotbar, game_mode }
             }
             1 => ServerPacket::Subchunk {
                 cx: r.get_i32()?,
@@ -358,6 +417,25 @@ impl ServerPacket {
                 ServerPacket::Hotbar { slots }
             }
             13 => ServerPacket::TimeOfDay { t: r.get_f32()? },
+            14 => {
+                let len = r.get_u16()? as usize;
+                let mut slots = Vec::with_capacity(len);
+                for _ in 0..len {
+                    slots.push((r.get_u16()?, r.get_u8()?));
+                }
+                ServerPacket::Inventory { slots }
+            }
+            15 => ServerPacket::Status {
+                health: r.get_f32()?,
+                hunger: r.get_u8()?,
+                air: r.get_u16()?,
+            },
+            16 => ServerPacket::DigProgress {
+                x: r.get_i32()?,
+                y: r.get_i32()?,
+                z: r.get_i32()?,
+                progress: r.get_u8()?,
+            },
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad server packet tag {tag}"

@@ -6,7 +6,7 @@
 //! so fast falls never tunnel.
 
 use ssc_math::{Aabb, Vec3};
-use ssc_world::{is_solid, World, MIN_Y};
+use ssc_world::{is_solid, World, MIN_Y, WATER};
 
 /// Small collision epsilon to avoid floating-point re-penetration.
 const EPS: f32 = 1e-4;
@@ -15,6 +15,8 @@ const EPS: f32 = 1e-4;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MoveResult {
     pub on_ground: bool,
+    /// Feet or eyes in water (swimming physics active).
+    pub in_water: bool,
 }
 
 /// Player AABB for a feet-center position.
@@ -30,6 +32,18 @@ pub fn player_aabb(pos: Vec3) -> Aabb {
 /// block collision. `vel` is zeroed on the axes that get blocked.
 pub fn move_player(world: &World, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> MoveResult {
     let mut on_ground = false;
+
+    // Water check for the result (feet or head submerged).
+    let in_water = world.block_or_air(
+        pos.x.floor() as i32,
+        (pos.y + 0.4).floor() as i32,
+        pos.z.floor() as i32,
+    ) == WATER
+        || world.block_or_air(
+            (pos.x).floor() as i32,
+            (pos.y + ssc_math::PLAYER_EYE_HEIGHT).floor() as i32,
+            pos.z.floor() as i32,
+        ) == WATER;
 
     // Sub-step so no axis moves more than 0.4 blocks per step (no tunneling).
     let disp = *vel * dt;
@@ -56,7 +70,7 @@ pub fn move_player(world: &World, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> Mo
         on_ground = true;
     }
 
-    MoveResult { on_ground }
+    MoveResult { on_ground, in_water }
 }
 
 #[derive(Clone, Copy)]

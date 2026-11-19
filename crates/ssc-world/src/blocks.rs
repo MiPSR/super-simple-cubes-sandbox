@@ -63,48 +63,82 @@ pub struct BlockInfo {
     pub opaque: bool,
     /// Atlas tile per face: top, bottom, -X, +X, -Z, +Z.
     pub tiles: [u16; 6],
+    /// Breaking hardness (wiki values). `f32::INFINITY` = unbreakable.
+    pub hardness: f32,
+    /// Whether a proper tool is required (hand digging is 5× slower
+    /// instead of 1.5×; no tools exist yet, so it is always the slow
+    /// path for these blocks).
+    pub needs_tool: bool,
 }
 
 const fn t(top: u16, bottom: u16, side: u16) -> [u16; 6] {
     [top, bottom, side, side, side, side]
 }
 
+/// Full block constructor with wiki hardness values.
+const fn b(name: &'static str, tiles: [u16; 6], hardness: f32, needs_tool: bool) -> BlockInfo {
+    BlockInfo {
+        name,
+        solid: true,
+        opaque: true,
+        tiles,
+        hardness,
+        needs_tool,
+    }
+}
+
 /// The block registry, indexed by `BlockId`. Ids must stay contiguous.
 pub const BLOCKS: &[BlockInfo] = &[
     // 0 — air
-    BlockInfo { name: "air", solid: false, opaque: false, tiles: [TILE_MISSING; 6] },
-    // 1 — bedrock
-    BlockInfo { name: "bedrock", solid: true, opaque: true, tiles: t(TILE_STONE, TILE_STONE, TILE_STONE) },
-    // 2 — stone
-    BlockInfo { name: "stone", solid: true, opaque: true, tiles: t(TILE_STONE, TILE_STONE, TILE_STONE) },
-    // 3 — cobblestone
-    BlockInfo { name: "cobblestone", solid: true, opaque: true, tiles: t(TILE_COBBLESTONE, TILE_COBBLESTONE, TILE_COBBLESTONE) },
-    // 4 — dirt
-    BlockInfo { name: "dirt", solid: true, opaque: true, tiles: t(TILE_DIRT, TILE_DIRT, TILE_DIRT) },
-    // 5 — grass block
-    BlockInfo { name: "grass_block", solid: true, opaque: true, tiles: t(TILE_GRASS_TOP, TILE_DIRT, TILE_GRASS_SIDE) },
-    // 6 — sand
-    BlockInfo { name: "sand", solid: true, opaque: true, tiles: t(TILE_SAND, TILE_SAND, TILE_SAND) },
-    // 7 — sandstone
-    BlockInfo { name: "sandstone", solid: true, opaque: true, tiles: t(TILE_SANDSTONE_TOP, TILE_SANDSTONE_TOP, TILE_SANDSTONE_SIDE) },
-    // 8 — gravel
-    BlockInfo { name: "gravel", solid: true, opaque: true, tiles: t(TILE_GRAVEL, TILE_GRAVEL, TILE_GRAVEL) },
-    // 9 — oak log
-    BlockInfo { name: "oak_log", solid: true, opaque: true, tiles: t(TILE_LOG_TOP, TILE_LOG_TOP, TILE_LOG_SIDE) },
-    // 10 — oak planks
-    BlockInfo { name: "oak_planks", solid: true, opaque: true, tiles: t(TILE_PLANKS, TILE_PLANKS, TILE_PLANKS) },
-    // 11 — oak leaves
-    BlockInfo { name: "oak_leaves", solid: true, opaque: true, tiles: t(TILE_LEAVES, TILE_LEAVES, TILE_LEAVES) },
-    // 12 — snow block
-    BlockInfo { name: "snow_block", solid: true, opaque: true, tiles: t(TILE_SNOW, TILE_SNOW, TILE_SNOW) },
-    // 13 — bricks
-    BlockInfo { name: "bricks", solid: true, opaque: true, tiles: t(TILE_BRICKS, TILE_BRICKS, TILE_BRICKS) },
+    BlockInfo {
+        name: "air",
+        solid: false,
+        opaque: false,
+        tiles: [TILE_MISSING; 6],
+        hardness: f32::INFINITY,
+        needs_tool: false,
+    },
+    // 1 — bedrock (unbreakable)
+    BlockInfo {
+        name: "bedrock",
+        solid: true,
+        opaque: true,
+        tiles: t(TILE_STONE, TILE_STONE, TILE_STONE),
+        hardness: f32::INFINITY,
+        needs_tool: true,
+    },
+    // 2 — stone (hardness 1.5)
+    b("stone", t(TILE_STONE, TILE_STONE, TILE_STONE), 1.5, true),
+    // 3 — cobblestone (hardness 2)
+    b("cobblestone", t(TILE_COBBLESTONE, TILE_COBBLESTONE, TILE_COBBLESTONE), 2.0, true),
+    // 4 — dirt (hardness 0.5)
+    b("dirt", t(TILE_DIRT, TILE_DIRT, TILE_DIRT), 0.5, false),
+    // 5 — grass block (hardness 0.6)
+    b("grass_block", t(TILE_GRASS_TOP, TILE_DIRT, TILE_GRASS_SIDE), 0.6, false),
+    // 6 — sand (hardness 0.5)
+    b("sand", t(TILE_SAND, TILE_SAND, TILE_SAND), 0.5, false),
+    // 7 — sandstone (hardness 0.8)
+    b("sandstone", t(TILE_SANDSTONE_TOP, TILE_SANDSTONE_TOP, TILE_SANDSTONE_SIDE), 0.8, true),
+    // 8 — gravel (hardness 0.6)
+    b("gravel", t(TILE_GRAVEL, TILE_GRAVEL, TILE_GRAVEL), 0.6, false),
+    // 9 — oak log (hardness 2)
+    b("oak_log", t(TILE_LOG_TOP, TILE_LOG_TOP, TILE_LOG_SIDE), 2.0, false),
+    // 10 — oak planks (hardness 2)
+    b("oak_planks", t(TILE_PLANKS, TILE_PLANKS, TILE_PLANKS), 2.0, false),
+    // 11 — oak leaves (hardness 0.2)
+    b("oak_leaves", t(TILE_LEAVES, TILE_LEAVES, TILE_LEAVES), 0.2, false),
+    // 12 — snow block (hardness 0.2)
+    b("snow_block", t(TILE_SNOW, TILE_SNOW, TILE_SNOW), 0.2, false),
+    // 13 — bricks (hardness 2)
+    b("bricks", t(TILE_BRICKS, TILE_BRICKS, TILE_BRICKS), 2.0, true),
     // 14 — water: no collision, light passes, drawn translucent.
     BlockInfo {
         name: "water",
         solid: false,
         opaque: false,
         tiles: t(TILE_WATER, TILE_WATER, TILE_WATER),
+        hardness: f32::INFINITY,
+        needs_tool: false,
     },
 ];
 
@@ -112,13 +146,13 @@ pub const BLOCKS: &[BlockInfo] = &[
 pub const BLOCK_COUNT: u16 = BLOCKS.len() as u16;
 
 /// Validate a decoded block id (protocol safety).
-pub fn valid_id(id: BlockId) -> bool {
+pub fn valid_block_id(id: BlockId) -> bool {
     (id as usize) < BLOCKS.len()
 }
 
 /// Static info for a valid block id. Panics on invalid ids — always validate
 /// wire input with [`valid_id`] first.
-pub fn info(id: BlockId) -> &'static BlockInfo {
+pub fn block_info(id: BlockId) -> &'static BlockInfo {
     &BLOCKS[id as usize]
 }
 

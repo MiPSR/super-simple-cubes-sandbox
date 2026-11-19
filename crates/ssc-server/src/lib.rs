@@ -11,7 +11,8 @@
 pub mod game;
 pub mod physics;
 pub mod raycast;
+pub mod survival;
 pub mod worldgen;
 
-pub use game::{Server, ServerConfig, HOTBAR};
+pub use game::{Server, ServerConfig, GameMode, HOTBAR};
 pub use game::spawn_local;
