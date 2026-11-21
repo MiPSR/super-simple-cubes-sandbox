@@ -250,7 +250,7 @@ impl App {
             pos_prev: Vec3::new(8.5, 128.0, 8.5),
             pos_cur: Vec3::new(8.5, 128.0, 8.5),
             state_time: now,
-            avatar_cache: [0u8, 1u8, 2u8]
+            avatar_cache: [0u8, 1u8, 2u8, 3u8]
                 .iter()
                 .map(|&k| (k, mesh::build_avatar(k)))
                 .collect(),
@@ -858,11 +858,17 @@ impl App {
             let alpha =
                 ((Instant::now() - e.time).as_secs_f32() / 0.05).clamp(0.0, 1.0);
             let pos = e.prev.lerp(e.cur, alpha);
+            let (half_width, height) = if e.kind == 3 { (0.125, 0.25) } else { (0.45, 1.9) };
             let aabb = ssc_math::Aabb::new(
-                Vec3::new(pos.x - 0.35, pos.y - 0.05, pos.z - 0.35),
-                Vec3::new(pos.x + 0.35, pos.y + 1.9, pos.z + 0.35),
+                Vec3::new(pos.x - half_width, pos.y - 0.05, pos.z - half_width),
+                Vec3::new(pos.x + half_width, pos.y + height, pos.z + half_width),
             );
             let model = ssc_math::Mat4::from_translation(pos)
+                * if e.kind == 3 {
+                    ssc_math::Mat4::from_scale(Vec3::splat(0.25))
+                } else {
+                    ssc_math::Mat4::IDENTITY
+                }
                 * ssc_math::Mat4::from_rotation_y(-e.yaw);
             draws.push(DrawCmd {
                 mesh: e.mesh,
@@ -1070,6 +1076,36 @@ impl App {
             ServerPacket::EntityRemove { id } => {
                 if let Some(e) = self.entities.remove(&id) {
                     frame.remove_mesh(e.mesh);
+                }
+            }
+            ServerPacket::ItemState { id, x, y, z, .. } => {
+                let pos = Vec3::new(x, y, z);
+                match self.entities.get_mut(&id) {
+                    Some(e) => {
+                        e.prev = e.cur;
+                        e.cur = pos;
+                        e.time = Instant::now();
+                        e.kind = 3;
+                    }
+                    None => {
+                        let mesh_id = self.next_mesh_id;
+                        self.next_mesh_id += 1;
+                        let (verts, indices) = &self.avatar_cache[&3];
+                        if let Err(err) = frame.upload_mesh(mesh_id, verts, indices) {
+                            eprintln!("[client] item mesh upload failed: {err}");
+                        }
+                        self.entities.insert(
+                            id,
+                            EntityView {
+                                prev: pos,
+                                cur: pos,
+                                time: Instant::now(),
+                                yaw: 0.0,
+                                kind: 3,
+                                mesh: mesh_id,
+                            },
+                        );
+                    }
                 }
             }
             ServerPacket::BlockUpdate { x, y, z, block } => {

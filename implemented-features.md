@@ -64,10 +64,9 @@ Every implemented wiki feature gets a line here. Status legend:
   tool-required — hand-only until tools exist), block drops into a 36-slot
   inventory (stone→cobble, grass→dirt, leaves→apple at 5%), placing
   consumes items, eating (apple +4 hunger), death → auto-respawn after 2 s
-  at spawn (Minecraft uses a death screen + manual respawn; item entities
-  don't exist so inventory is kept and drops are direct-pickup). No tools,
-  armor, XP, crafting, item entities, inventory persistence or mode
-  switching mid-session yet.
+  at spawn (Minecraft uses a death screen + manual respawn; inventory is
+  kept on death). No tools, armor, XP, crafting, death drops, inventory
+  persistence or mode switching mid-session yet.
 - `partial` — Game modes: creative (default hotbar blocks, instant dig,
   no consumption, E = block picker, double-jump flight with server
   authority) and survival (empty start, E =
@@ -96,10 +95,11 @@ Every implemented wiki feature gets a line here. Status legend:
 - `partial` — Item system: block-items 1:1 with block ids, apple, raw
   porkchop and rotten flesh; food restores 4/3/4 hunger respectively,
   with rotten flesh applying Hunger I for 30 s at an 80% chance. No
-  effect icon yet. Mob drops go directly into the nearest player's
-  inventory within 6 blocks; no item entities or pickup physics. 36-slot
-  inventories (9 hotbar + 27 storage, stack 64) are server-owned and
-  synced. No tools or crafting ingredients yet.
+  effect icon yet. Server-owned dropped stacks have basic gravity,
+  5-minute despawn and inventory pickup; stack merging, bobbing, magnetism
+  and pickup delay are pending. 36-slot inventories (9 hotbar + 27 storage,
+  stack 64) are server-owned and synced. No tools or crafting ingredients
+  yet.
 - `partial` — Gamepad (owner-approved gilrs, engine-side input abstraction):
   left stick moves, right stick looks (rate-normalized), A jumps, RT digs,
   LT places, Start = Escape; dead-zoned, works alongside keyboard/mouse.
@@ -109,10 +109,8 @@ Every implemented wiki feature gets a line here. Status legend:
   (night spawning, chase, melee damage, knockback, daylight burning when
   exposed to sky), with entity-kind packets and placeholder client meshes.
   Spawn/despawn rules and AI are simplified; no pathfinding, fire visuals,
-  breeding, loot entities, or full Bedrock mob roster. Pigs drop 1–3 raw
-  porkchops, zombies 0–2
-  rotten flesh; drops are simplified to direct inventory pickup rather
-  than item entities.
+  breeding, or full Bedrock mob roster. Pigs drop 1–3 raw porkchops,
+  zombies 0–2 rotten flesh; drops use the basic item-entity system.
 
 ## Client
 

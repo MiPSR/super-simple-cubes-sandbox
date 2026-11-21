@@ -518,6 +518,12 @@ struct BoxDef {
 /// player = legs/body/head, pig = one low box, zombie = green boxes.
 pub fn build_avatar(kind: u8) -> (Vec<Vertex>, Vec<u32>) {
     let boxes: Vec<BoxDef> = match kind {
+        // Dropped stack: small block-like item placeholder.
+        3 => vec![BoxDef {
+            min: [-0.5, 0.0, -0.5],
+            max: [0.5, 1.0, 0.5],
+            tiles: [ssc_world::TILE_COBBLESTONE; 6],
+        }],
         // pig: one low, wide box
         1 => vec![BoxDef {
             min: [-0.45, 0.0, -0.45],

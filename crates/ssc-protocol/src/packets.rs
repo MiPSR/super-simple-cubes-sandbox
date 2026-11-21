@@ -232,6 +232,15 @@ pub enum ServerPacket {
     Status { health: f32, hunger: u8, air: u16 },
     /// Dig progress broadcast (0..100; 101 = cancelled).
     DigProgress { x: i32, y: i32, z: i32, progress: u8 },
+    /// Server-owned dropped item stack.
+    ItemState {
+        id: u16,
+        item: u16,
+        count: u8,
+        x: f32,
+        y: f32,
+        z: f32,
+    },
 }
 
 impl ServerPacket {
@@ -348,6 +357,15 @@ impl ServerPacket {
                 w.put_i32(*z);
                 w.put_u8(*progress);
             }
+            ServerPacket::ItemState { id, item, count, x, y, z } => {
+                w.put_u8(17);
+                w.put_u16(*id);
+                w.put_u16(*item);
+                w.put_u8(*count);
+                w.put_f32(*x);
+                w.put_f32(*y);
+                w.put_f32(*z);
+            }
         }
         w.into_bytes()
     }
@@ -440,6 +458,14 @@ impl ServerPacket {
                 z: r.get_i32()?,
                 progress: r.get_u8()?,
             },
+            17 => ServerPacket::ItemState {
+                id: r.get_u16()?,
+                item: r.get_u16()?,
+                count: r.get_u8()?,
+                x: r.get_f32()?,
+                y: r.get_f32()?,
+                z: r.get_f32()?,
+            },
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad server packet tag {tag}"
@@ -469,5 +495,18 @@ mod tests {
             };
             assert_eq!(ServerPacket::decode(&packet.encode()).unwrap(), packet);
         }
+    }
+
+    #[test]
+    fn item_state_survives_wire_round_trip() {
+        let packet = ServerPacket::ItemState {
+            id: 42_000,
+            item: 102,
+            count: 3,
+            x: -1.5,
+            y: 63.0,
+            z: 2.25,
+        };
+        assert_eq!(ServerPacket::decode(&packet.encode()).unwrap(), packet);
     }
 }

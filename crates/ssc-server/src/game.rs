@@ -24,8 +24,11 @@ use crate::worldgen::WorldGen;
 
 /// Mobs occupy ids from here upward (players are 1..).
 const FIRST_MOB_ID: EntityId = 10_000;
+/// Dropped-item ids occupy a separate range when possible.
+const FIRST_ITEM_ID: EntityId = 40_000;
 /// Maximum mobs within a player's spawn range (per player).
 const MOB_CAP_PER_PLAYER: usize = 6;
+const ITEM_LIFETIME_TICKS: u32 = 6_000;
 
 /// Server tick rate (matches Minecraft's 20 TPS).
 pub const TICK_RATE: f32 = 20.0;
@@ -146,6 +149,15 @@ struct Session {
     last_player_col: ColumnKey,
 }
 
+/// One dropped stack. Gameplay and pickup are entirely server-owned.
+struct ItemEntity {
+    item: ssc_world::ItemId,
+    count: u8,
+    pos: Vec3,
+    vel: Vec3,
+    age: u32,
+}
+
 impl Session {
     fn new(wire: Box<dyn Wire>, mode: GameMode) -> Self {
         // Creative starts with the default hotbar blocks (64× each);
@@ -198,8 +210,10 @@ pub struct Server {
     sessions: HashMap<EntityId, Session>,
     /// Mobs (ids from `FIRST_MOB_ID`).
     mobs: HashMap<EntityId, crate::mobs::Mob>,
+    items: HashMap<EntityId, ItemEntity>,
     next_id: EntityId,
     next_mob_id: EntityId,
+    next_item_id: EntityId,
     /// Dedicated mode: accepted wires land here and are attached on tick.
     accept_rx: Option<std::sync::mpsc::Receiver<Box<dyn Wire>>>,
     tick: u64,
@@ -229,8 +243,10 @@ impl Server {
             cfg,
             sessions: HashMap::new(),
             mobs: HashMap::new(),
+            items: HashMap::new(),
             next_id: 1,
             next_mob_id: FIRST_MOB_ID,
+            next_item_id: FIRST_ITEM_ID,
             accept_rx: None,
             tick: 0,
             time_of_day: 0.3, // start in the morning
@@ -503,6 +519,7 @@ impl Server {
             .filter(|(_, s)| s.player.joined)
             .map(|(id, s)| entity_state(*id, &s.player))
             .chain(self.mobs.iter().map(|(id, m)| mob_state(*id, m)))
+            .chain(self.items.iter().map(|(id, item)| item_state(*id, item)))
             .collect();
         for pkt in &states {
             let _ = self.broadcast(pkt);
@@ -553,8 +570,7 @@ impl Server {
                 );
             }
 
-            // Dead mobs: drop + remove (drop goes to the nearest living
-            // player's inventory — no item entities yet, noted).
+            // Dead mobs: spawn loot entities, then remove the mob.
             for mob_id in dead_mobs {
                 let (kind, pos) = {
                     let m = &self.mobs[&mob_id];
@@ -563,30 +579,7 @@ impl Server {
                 let drop_roll = hash_tick(self.tick, mob_id as i32, pos.x.floor() as i32);
                 let drop = crate::mobs::drop_for(kind, drop_roll);
                 if let Some((item, count)) = drop {
-                    let mut receiver = None;
-                    let mut best = f32::MAX;
-                    for (pid, session) in self.sessions.iter() {
-                        if session.player.joined {
-                            let d = (session.player.pos - pos).length();
-                            if d < best {
-                                best = d;
-                                receiver = Some(*pid);
-                            }
-                        }
-                    }
-                    if best < 6.0 {
-                        if let Some(pid) = receiver {
-                            let session = self.sessions.get_mut(&pid).unwrap();
-                            let leftover = crate::survival::add_item(
-                                &mut session.inventory,
-                                item,
-                                count,
-                            );
-                            if leftover == 0 {
-                                session.inv_dirty = true;
-                            }
-                        }
-                    }
+                    self.spawn_item_entity(item, count, pos);
                 }
                 self.mobs.remove(&mob_id);
                 let _ = self.broadcast(&ServerPacket::EntityRemove { id: mob_id });
@@ -610,6 +603,8 @@ impl Server {
                 let _ = self.broadcast(&ServerPacket::EntityRemove { id });
             }
         }
+
+        self.tick_items(dt);
 
         // --- Dirty syncs (inventory / status).
         let dirty: Vec<EntityId> = self
@@ -680,6 +675,123 @@ impl Server {
         }
     }
 
+    fn spawn_item_entity(&mut self, item: ssc_world::ItemId, count: u8, pos: Vec3) {
+        if count == 0 {
+            return;
+        }
+        let Some(id) = self.allocate_item_id() else {
+            eprintln!("[server] no free entity id for dropped item");
+            return;
+        };
+        self.items.insert(
+            id,
+            ItemEntity {
+                item,
+                count,
+                pos,
+                vel: Vec3::new(0.0, 1.5, 0.0),
+                age: 0,
+            },
+        );
+    }
+
+    fn allocate_item_id(&mut self) -> Option<EntityId> {
+        let range = (EntityId::MAX - FIRST_ITEM_ID) as usize + 1;
+        for _ in 0..range {
+            let id = self.next_item_id;
+            self.next_item_id = if id == EntityId::MAX {
+                FIRST_ITEM_ID
+            } else {
+                id + 1
+            };
+            if !self.sessions.contains_key(&id)
+                && !self.mobs.contains_key(&id)
+                && !self.items.contains_key(&id)
+            {
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    fn allocate_mob_id(&mut self) -> Option<EntityId> {
+        for _ in FIRST_MOB_ID..FIRST_ITEM_ID {
+            let id = self.next_mob_id;
+            self.next_mob_id = if id + 1 >= FIRST_ITEM_ID {
+                FIRST_MOB_ID
+            } else {
+                id + 1
+            };
+            if !self.sessions.contains_key(&id)
+                && !self.mobs.contains_key(&id)
+                && !self.items.contains_key(&id)
+            {
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    fn tick_items(&mut self, dt: f32) {
+        let mut expired = Vec::new();
+        for (id, item) in self.items.iter_mut() {
+            item.age += 1;
+            if item.age >= ITEM_LIFETIME_TICKS || item.pos.y <= ssc_world::MIN_Y as f32 {
+                expired.push(*id);
+                continue;
+            }
+            item.vel.y = (item.vel.y - GRAVITY * dt).max(-TERMINAL_VELOCITY);
+            let result = crate::physics::move_entity(
+                &self.world,
+                &mut item.pos,
+                &mut item.vel,
+                dt,
+                0.125,
+                0.25,
+            );
+            if result.on_ground {
+                item.vel.y = 0.0;
+            }
+            item.vel.x *= 0.8;
+            item.vel.z *= 0.8;
+        }
+
+        let ids: Vec<EntityId> = self.items.keys().copied().collect();
+        for item_id in ids {
+            let Some(item) = self.items.get(&item_id) else { continue };
+            let (item_value, mut count, pos) = (item.item, item.count, item.pos);
+            let nearest = self
+                .sessions
+                .iter()
+                .filter(|(_, s)| s.player.joined && !s.survival.dead)
+                .map(|(id, s)| (*id, (s.player.pos - pos).length()))
+                .filter(|(_, distance)| *distance <= 1.25)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(id, _)| id);
+            let Some(player_id) = nearest else { continue };
+            let Some(session) = self.sessions.get_mut(&player_id) else { continue };
+            let leftover =
+                crate::survival::add_item(&mut session.inventory, item_value, count);
+            if leftover < count {
+                session.inv_dirty = true;
+                count = leftover;
+            }
+            if let Some(item) = self.items.get_mut(&item_id) {
+                item.count = count;
+            }
+            if count == 0 {
+                expired.push(item_id);
+            }
+        }
+        expired.sort_unstable();
+        expired.dedup();
+        for id in expired {
+            if self.items.remove(&id).is_some() {
+                let _ = self.broadcast(&ServerPacket::EntityRemove { id });
+            }
+        }
+    }
+
     /// Mob spawning: a few pigs near each player during the day, zombies
     /// at night. Simple, deterministic-ish, capped.
     fn spawn_mobs(&mut self) {
@@ -741,8 +853,9 @@ impl Server {
                 if too_close {
                     continue;
                 }
-                let id = self.next_mob_id;
-                self.next_mob_id += 1;
+                let Some(id) = self.allocate_mob_id() else {
+                    return;
+                };
                 self.mobs.insert(id, crate::mobs::Mob::new(kind, pos));
                 break; // at most one mob per player per second
             }
@@ -940,6 +1053,17 @@ fn mob_state(id: EntityId, m: &crate::mobs::Mob) -> ServerPacket {
         yaw: m.yaw,
         pitch: 0.0,
         kind: m.kind.as_u8(),
+    }
+}
+
+fn item_state(id: EntityId, item: &ItemEntity) -> ServerPacket {
+    ServerPacket::ItemState {
+        id,
+        item: item.item,
+        count: item.count,
+        x: item.pos.x,
+        y: item.pos.y,
+        z: item.pos.z,
     }
 }
 
@@ -1398,7 +1522,11 @@ impl Server {
                         session.inv_dirty = true;
                     }
                 } else {
-                    eprintln!("[server] player {id} inventory full, drop lost");
+                    self.spawn_item_entity(
+                        item,
+                        leftover,
+                        Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5),
+                    );
                 }
             }
         }
@@ -1825,6 +1953,44 @@ mod tests {
         let session = &rig.server.sessions[&1];
         assert_eq!(session.survival.hunger, 13);
         assert_eq!(session.inventory[0], None);
+    }
+
+    #[test]
+    fn dropped_items_are_picked_up_into_inventory() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let pos = rig.server.sessions[&1].player.pos;
+        rig.server.spawn_item_entity(ssc_world::APPLE, 3, pos);
+
+        rig.server.tick_items(0.05);
+
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::APPLE, 3))
+        );
+        assert!(rig.server.items.is_empty());
+    }
+
+    #[test]
+    fn partial_item_pickup_keeps_remainder_and_marks_inventory_dirty() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let pos = rig.server.sessions[&1].player.pos;
+        {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory.fill(Some((ssc_world::STONE, 64)));
+            session.inventory[0] = Some((ssc_world::APPLE, 63));
+            session.inv_dirty = false;
+        }
+        let id = rig.server.next_item_id;
+        rig.server.spawn_item_entity(ssc_world::APPLE, 2, pos);
+
+        rig.server.tick_items(0.05);
+
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::APPLE, 64))
+        );
+        assert!(rig.server.sessions[&1].inv_dirty);
+        assert_eq!(rig.server.items[&id].count, 1);
     }
 
     #[test]
