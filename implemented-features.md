@@ -55,7 +55,8 @@ Every implemented wiki feature gets a line here. Status legend:
   seeded 3D simplex (blobby tunnels, surface/bedrock crust preserved);
   deterministic oak trees (~1 per 16 columns, canopies cross column
   borders consistently via neighbor scan); water fills basins up to sea
-  level. Seeded coal and iron ore clusters replace stone in depth-limited
+  level. Below Y=0 the stone body becomes deepslate, with a mixed transition
+  from Y=0 through Y=7. Seeded coal and iron ore clusters replace stone/deepslate in depth-limited
   bands (coal Y≥0, iron Y≤64) and drop coal/raw iron, respectively. Ore
   frequency and shapes are approximate; there are no deepslate variants,
   other ores, biomes, structures or flowing water yet.
@@ -63,7 +64,7 @@ Every implemented wiki feature gets a line here. Status legend:
   back-to-front, no depth writes), same-type face merging; swimming
   physics (slow sink, jump-to-rise, drag). No flow simulation, waves or
   underwater fog yet; cave pockets under lakes stay dry.
-- `dev` — 17 placeholder blocks with procedurally generated textures in
+- `dev` — 20 placeholder blocks with procedurally generated textures in
   Minecraft's 16×16 tile atlas convention; real texture packs load via
   `--textures <256×256 atlas.png>` (PNG decode through the approved
   `png` crate) — we cannot ship Mojang assets (specs §1).
@@ -71,6 +72,10 @@ Every implemented wiki feature gets a line here. Status legend:
   stone and drop one coal/raw iron on breaking. Resource drops do not yet
   enforce the wiki's pickaxe tier because tools are not implemented;
   no fortune, silk touch, or iron smelting yet.
+- `partial` — Deepslate (hardness 3) and deepslate iron ore (4.5)
+  generate below Y=0; breaking deepslate drops cobbled deepslate and both
+  iron ore variants drop raw iron. Deepslate coal ore, deepslate variants
+  of other ores and exact Bedrock distribution are pending.
 
 ## Player
 

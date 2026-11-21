@@ -7,8 +7,9 @@
 //! Every extension is logged in `implemented-features.md`.
 
 use ssc_world::{
-    Column, SubChunk, AIR, BEDROCK, COAL_ORE, DIRT, GRASS_BLOCK, IRON_ORE, MAX_Y, MIN_Y,
-    OAK_LEAVES, OAK_LOG, SAND, SANDSTONE, SNOW_BLOCK, STONE, SUBCHUNKS_PER_COLUMN, WATER,
+    Column, SubChunk, AIR, BEDROCK, COAL_ORE, DEEPSLATE, DEEPSLATE_IRON_ORE, DIRT, GRASS_BLOCK,
+    IRON_ORE, MAX_Y, MIN_Y, OAK_LEAVES, OAK_LOG, SAND, SANDSTONE, SNOW_BLOCK, STONE,
+    SUBCHUNKS_PER_COLUMN, WATER,
 };
 
 /// Sea level (water surfaces sit at the top of this block).
@@ -83,7 +84,7 @@ impl WorldGen {
             (IRON_ORE, 0x1A0F_u64, MIN_Y, 64, 3),
             (COAL_ORE, 0xC0A1_u64, 0, 192, 2),
         ] {
-            if !(min_y..=max_y).contains(&y) {
+            if !(min_y..=max_y).contains(&y) || (ore == COAL_ORE && self.deepslate_at(x, y, z)) {
                 continue;
             }
             let hash = hash3(
@@ -98,10 +99,26 @@ impl WorldGen {
             let dy = local_y - 2 - ((hash >> 16) % 4) as i32;
             let dz = local_z - 2 - ((hash >> 24) % 4) as i32;
             if dx * dx + dy * dy + dz * dz <= 4 {
-                return ore;
+                return if ore == IRON_ORE && self.deepslate_at(x, y, z) {
+                    DEEPSLATE_IRON_ORE
+                } else {
+                    ore
+                };
             }
         }
-        STONE
+        if self.deepslate_at(x, y, z) {
+            DEEPSLATE
+        } else {
+            STONE
+        }
+    }
+
+    /// Below Y=0 stone is deepslate. Between Y=0 and Y=8, choose a
+    /// deterministic mix that becomes progressively more common downwards.
+    fn deepslate_at(&self, x: i32, y: i32, z: i32) -> bool {
+        y < 0
+            || (y < 8
+                && hash3(x, z, self.seed ^ (y as u64).wrapping_mul(0x81)) % 8 < (8 - y) as u64)
     }
 
     /// Top block at (x, z) for the given terrain height.
@@ -561,7 +578,8 @@ mod tests {
                         let bedrock_h = MIN_Y + (hash3(x, z, gen.seed) % 4) as i32;
                         for y in MIN_Y..=h {
                             let block = col.get(lx, y, lz);
-                            if block != COAL_ORE && block != IRON_ORE {
+                            if block != COAL_ORE && block != IRON_ORE && block != DEEPSLATE_IRON_ORE
+                            {
                                 continue;
                             }
                             assert!(y > bedrock_h && y <= h - 4);
@@ -572,6 +590,7 @@ mod tests {
                                 coal += 1;
                             } else {
                                 assert!(y <= 64);
+                                assert_eq!(block == DEEPSLATE_IRON_ORE, gen.deepslate_at(x, y, z));
                                 iron += 1;
                             }
                         }
@@ -587,6 +606,32 @@ mod tests {
         let b = gen.generate_column(-1, -1);
         for y in MIN_Y..=64 {
             assert_eq!(a.get(15, y, 15), b.get(15, y, 15));
+        }
+    }
+
+    #[test]
+    fn deepslate_replaces_stone_below_zero_and_transitions_through_eight() {
+        let gen = WorldGen::new(972);
+        let col = gen.generate_column(-1, 0);
+        for lx in 0..16 {
+            for lz in 0..16 {
+                let x = lx - 16;
+                let z = lz;
+                for y in -48..=10 {
+                    let h = gen.height(x, z);
+                    let bedrock_h = MIN_Y + (hash3(x, z, gen.seed) % 4) as i32;
+                    if gen.is_cave(x, y, z, h, bedrock_h) || y > h - 4 {
+                        continue;
+                    }
+                    let block = col.get(lx, y, lz);
+                    if y < 0 {
+                        assert!(matches!(block, DEEPSLATE | DEEPSLATE_IRON_ORE));
+                    }
+                    if y >= 8 {
+                        assert!(matches!(block, STONE | COAL_ORE | IRON_ORE));
+                    }
+                }
+            }
         }
     }
 

@@ -152,7 +152,9 @@ fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgba {
             let wave = smooth_noise2(x, y / 4, 17);
             mix([63, 118, 228], 0.85 + wave * 0.3, 178)
         }
-        ssc_world::TILE_COAL_ORE | ssc_world::TILE_IRON_ORE => {
+        ssc_world::TILE_COAL_ORE
+        | ssc_world::TILE_IRON_ORE
+        | ssc_world::TILE_DEEPSLATE_IRON_ORE => {
             let n = noise2(x / 3, y / 3, 23);
             if n > 0.64 {
                 if tile == ssc_world::TILE_COAL_ORE {
@@ -160,9 +162,20 @@ fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgba {
                 } else {
                     mix([202, 164, 133], 0.8 + n * 0.2, 255)
                 }
+            } else if tile == ssc_world::TILE_DEEPSLATE_IRON_ORE {
+                mix([72, 75, 78], 0.82 + smooth_noise2(x, y, 29) * 0.36, 255)
             } else {
                 mix([128, 128, 128], 0.82 + smooth_noise2(x, y, 1) * 0.36, 255)
             }
+        }
+        ssc_world::TILE_DEEPSLATE => mix([72, 75, 78], 0.82 + smooth_noise2(x, y, 29) * 0.36, 255),
+        ssc_world::TILE_COBBLED_DEEPSLATE => {
+            let seam = x % 4 == 0 || y % 4 == 0;
+            mix(
+                if seam { [45, 47, 51] } else { [82, 84, 88] },
+                0.85 + noise2(x, y, 30) * 0.25,
+                255,
+            )
         }
         _ => [255, 0, 255, 255],
     }
