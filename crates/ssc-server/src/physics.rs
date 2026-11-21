@@ -61,17 +61,9 @@ pub fn move_entity(
 ) -> MoveResult {
     let mut on_ground = false;
 
-    // Water check for the result (feet or head submerged).
-    let in_water = world.block_or_air(
-        pos.x.floor() as i32,
-        (pos.y + 0.4).floor() as i32,
-        pos.z.floor() as i32,
-    ) == WATER
-        || world.block_or_air(
-            (pos.x).floor() as i32,
-            (pos.y + height * 0.9).floor() as i32,
-            pos.z.floor() as i32,
-        ) == WATER;
+    // Water is a trigger, not a collision surface. Sample every movement
+    // sub-step so a fast fall cannot tunnel through it between ticks.
+    let mut in_water = entity_in_water(world, *pos, height);
 
     // Sub-step so no axis moves more than 0.4 blocks per step (no tunneling).
     let disp = *vel * dt;
@@ -89,6 +81,7 @@ pub fn move_entity(
         if sweep_axis(world, pos, vel.z * step_dt, Axis::Z, &mut on_ground, hw, height) {
             vel.z = 0.0;
         }
+        in_water |= entity_in_water(world, *pos, height);
     }
 
     // Void safety: never fall out of the bottom of the world.
@@ -99,6 +92,19 @@ pub fn move_entity(
     }
 
     MoveResult { on_ground, in_water }
+}
+
+fn entity_in_water(world: &World, pos: Vec3, height: f32) -> bool {
+    world.block_or_air(
+        pos.x.floor() as i32,
+        (pos.y + 0.4).floor() as i32,
+        pos.z.floor() as i32,
+    ) == WATER
+        || world.block_or_air(
+            pos.x.floor() as i32,
+            (pos.y + height * 0.9).floor() as i32,
+            pos.z.floor() as i32,
+        ) == WATER
 }
 
 #[derive(Clone, Copy)]
@@ -191,4 +197,22 @@ fn sweep_axis(
         }
     }
     blocked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fast_fall_detects_water_crossed_between_ticks() {
+        let mut world = World::default();
+        world.set_block(0, 51, 0, WATER);
+        let mut pos = Vec3::new(0.5, 52.1, 0.5);
+        let mut vel = Vec3::new(0.0, -30.0, 0.0);
+
+        let result = move_player(&world, &mut pos, &mut vel, 0.05);
+
+        assert!(result.in_water, "the swept path crossed a water block");
+        assert!(pos.y < 51.0, "the test should pass through the water cell");
+    }
 }
