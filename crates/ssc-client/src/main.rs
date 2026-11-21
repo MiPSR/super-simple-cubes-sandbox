@@ -148,6 +148,7 @@ struct App {
     health: f32,
     hunger: u8,
     air: u16,
+    hunger_effect_ticks: u16,
     /// Dig progress broadcast ((x,y,z), percent) + expiry.
     dig_progress: Option<((i32, i32, i32), u8, Instant)>,
     /// Slot currently highlighted during an inventory drag.
@@ -276,6 +277,7 @@ impl App {
             health: 20.0,
             hunger: 20,
             air: 300,
+            hunger_effect_ticks: 0,
             dig_progress: None,
             inv_pick: None,
             inv_drag: None,
@@ -719,6 +721,15 @@ impl App {
                     bars_y,
                     16.0,
                     [0.3, 0.6, 1.0, 0.9],
+                );
+            }
+            if self.hunger_effect_ticks > 0 {
+                frame.hud_text(
+                    format!("Hunger I  {}s", self.hunger_effect_ticks.div_ceil(20)),
+                    16.0,
+                    bars_y - 22.0,
+                    16.0,
+                    [0.6, 0.45, 0.8, 0.95],
                 );
             }
             // Dig progress (server-driven) under the crosshair.
@@ -1189,10 +1200,11 @@ impl App {
                     self.hotbar[i] = slot.0;
                 }
             }
-            ServerPacket::Status { health, hunger, air } => {
+            ServerPacket::Status { health, hunger, air, hunger_effect_ticks } => {
                 self.health = health;
                 self.hunger = hunger;
                 self.air = air;
+                self.hunger_effect_ticks = hunger_effect_ticks;
             }
             ServerPacket::DigProgress { x, y, z, progress } => {
                 if progress <= 100 {

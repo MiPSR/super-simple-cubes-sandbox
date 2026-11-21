@@ -238,8 +238,9 @@ pub enum ServerPacket {
     TimeOfDay { t: f32 },
     /// Full inventory sync (36 slots; hotbar = slots 0..9).
     Inventory { slots: Vec<(u16, u8)> },
-    /// Survival status: health (0..20), hunger (0..20), air (0..300).
-    Status { health: f32, hunger: u8, air: u16 },
+    /// Survival status: health (0..20), hunger (0..20), air (0..300),
+    /// remaining Hunger I duration in server ticks.
+    Status { health: f32, hunger: u8, air: u16, hunger_effect_ticks: u16 },
     /// Dig progress broadcast (0..100; 101 = cancelled).
     DigProgress { x: i32, y: i32, z: i32, progress: u8 },
     /// Server-owned dropped item stack.
@@ -354,11 +355,12 @@ impl ServerPacket {
                     w.put_u8(*count);
                 }
             }
-            ServerPacket::Status { health, hunger, air } => {
+            ServerPacket::Status { health, hunger, air, hunger_effect_ticks } => {
                 w.put_u8(15);
                 w.put_f32(*health);
                 w.put_u8(*hunger);
                 w.put_u16(*air);
+                w.put_u16(*hunger_effect_ticks);
             }
             ServerPacket::DigProgress { x, y, z, progress } => {
                 w.put_u8(16);
@@ -461,6 +463,7 @@ impl ServerPacket {
                 health: r.get_f32()?,
                 hunger: r.get_u8()?,
                 air: r.get_u16()?,
+                hunger_effect_ticks: r.get_u16()?,
             },
             16 => ServerPacket::DigProgress {
                 x: r.get_i32()?,
@@ -494,7 +497,7 @@ mod tests {
     #[test]
     fn hello_carries_anonymous_player_id() {
         let packet = ClientPacket::Hello {
-            version: 7,
+            version: crate::PROTOCOL_VERSION,
             player_id: [0x5a; 16],
             name: "anonymous".into(),
         };
@@ -526,6 +529,17 @@ mod tests {
             x: -1.5,
             y: 63.0,
             z: 2.25,
+        };
+        assert_eq!(ServerPacket::decode(&packet.encode()).unwrap(), packet);
+    }
+
+    #[test]
+    fn status_carries_hunger_effect_duration() {
+        let packet = ServerPacket::Status {
+            health: 17.0,
+            hunger: 14,
+            air: 300,
+            hunger_effect_ticks: 417,
         };
         assert_eq!(ServerPacket::decode(&packet.encode()).unwrap(), packet);
     }

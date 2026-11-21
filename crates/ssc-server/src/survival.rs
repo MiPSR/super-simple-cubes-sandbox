@@ -100,6 +100,7 @@ pub struct TickEffects {
     pub hurt: bool,
     pub health_changed: bool,
     pub hunger_changed: bool,
+    pub effect_changed: bool,
     pub air_changed: bool,
     pub died: bool,
 }
@@ -140,6 +141,9 @@ impl SurvivalState {
             self.hunger_effect_ticks -= 1;
             // Hunger I adds 0.005 exhaustion per tick.
             self.exhaustion += 0.005;
+            // UI needs only one status refresh per displayed second, plus
+            // the final packet that clears the effect.
+            fx.effect_changed = self.hunger_effect_ticks % 20 == 0;
         }
         while self.exhaustion >= 4.0 {
             self.exhaustion -= 4.0;

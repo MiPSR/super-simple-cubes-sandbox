@@ -115,8 +115,9 @@ Every implemented wiki feature gets a line here. Status legend:
   per specs §3). No sun/moon rendering, sleep or clock item yet.
 - `partial` — Item system: block-items 1:1 with block ids, apple, raw
   porkchop and rotten flesh; food restores 4/3/4 hunger respectively,
-  with rotten flesh applying Hunger I for 30 s at an 80% chance. No
-  effect icon yet. Server-owned dropped stacks have basic gravity, same-item
+  with rotten flesh applying Hunger I for 30 s at an 80% chance. The HUD
+  shows a text countdown for the effect (no icon yet). Server-owned dropped
+  stacks have basic gravity, same-item
   merging, 10-tick pickup delay, 5-minute despawn and partial inventory
   pickup (including passing a partial stack to the next nearby player), with
   merged stacks retaining the longer pickup delay, plus

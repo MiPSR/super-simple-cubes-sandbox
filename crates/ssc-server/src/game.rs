@@ -694,7 +694,9 @@ impl Server {
             } else {
                 Default::default()
             };
-            if fx_tick.health_changed || fx_tick.hunger_changed || fx_tick.air_changed {
+            if fx_tick.health_changed || fx_tick.hunger_changed || fx_tick.air_changed
+                || fx_tick.effect_changed
+            {
                 session.status_dirty = true;
             }
 
@@ -960,6 +962,7 @@ impl Server {
                         health: session.survival.health,
                         hunger: session.survival.hunger,
                         air: session.survival.air,
+                        hunger_effect_ticks: session.survival.hunger_effect_ticks,
                     })
                 } else {
                     None
@@ -2736,6 +2739,25 @@ mod tests {
         assert_eq!(session.survival.hunger, 14);
         assert_eq!(session.inventory[0], Some((ssc_world::ROTTEN_FLESH, 1)));
         assert_eq!(session.survival.hunger_effect_ticks > 0, should_apply);
+    }
+
+    #[test]
+    fn hunger_effect_status_syncs_and_clears_on_expiry() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.survival.apply_rotten_flesh_effect();
+            session.status_dirty = true;
+        }
+        rig.server.tick();
+        assert!(rig.drain(0).iter().any(|p| {
+            matches!(p, ServerPacket::Status { hunger_effect_ticks: 599, .. })
+        }));
+        rig.server.sessions.get_mut(&1).unwrap().survival.hunger_effect_ticks = 1;
+        rig.server.tick();
+        assert!(rig.drain(0).iter().any(|p| {
+            matches!(p, ServerPacket::Status { hunger_effect_ticks: 0, .. })
+        }));
     }
 
     #[test]
