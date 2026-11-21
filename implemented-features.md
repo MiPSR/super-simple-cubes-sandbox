@@ -106,10 +106,11 @@ Every implemented wiki feature gets a line here. Status legend:
   Button remapping/UI, haptics and analog movement (protocol is digital
   keys) pending.
 - `partial` — Mobs: server-authoritative pigs (passive wandering) and zombies
-  (night spawning, chase, melee damage, knockback, death), with entity-kind
-  packets and placeholder client meshes. Spawn/despawn rules and AI are
-  simplified; no pathfinding, sunlight burning, breeding, loot entities,
-  or full Bedrock mob roster. Pigs drop 1–3 raw porkchops, zombies 0–2
+  (night spawning, chase, melee damage, knockback, daylight burning when
+  exposed to sky), with entity-kind packets and placeholder client meshes.
+  Spawn/despawn rules and AI are simplified; no pathfinding, fire visuals,
+  breeding, loot entities, or full Bedrock mob roster. Pigs drop 1–3 raw
+  porkchops, zombies 0–2
   rotten flesh; drops are simplified to direct inventory pickup rather
   than item entities.
 

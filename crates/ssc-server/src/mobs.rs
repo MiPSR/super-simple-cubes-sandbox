@@ -92,6 +92,8 @@ pub struct Mob {
     pub wander_dir: Option<Vec2>,
     /// Ticks until the next allowed attack.
     pub attack_cooldown: u32,
+    /// Daylight burn interval counter.
+    pub burn_timer: u8,
     /// Marked for removal (death or despawn).
     pub dead: bool,
     /// Set by the physics step, read by the AI next tick.
@@ -109,6 +111,7 @@ impl Mob {
             wander_timer: 0,
             wander_dir: None,
             attack_cooldown: 0,
+            burn_timer: 0,
             dead: false,
             on_ground_hint: false,
         }
@@ -117,9 +120,31 @@ impl Mob {
     /// Advance one tick: AI + physics. `players` are nearby player feet
     /// positions (for zombie chasing). Returns the **index** into
     /// `players` of a player this mob hit this tick, if any.
-    pub fn tick(&mut self, world: &World, players: &[Vec3], dt: f32) -> Option<usize> {
+    pub fn tick(
+        &mut self,
+        world: &World,
+        players: &[Vec3],
+        dt: f32,
+        daylight: bool,
+    ) -> Option<usize> {
         if self.dead {
             return None;
+        }
+        if self.kind == MobKind::Zombie
+            && daylight
+            && has_open_sky(world, self.pos, self.kind.dims().1)
+        {
+            self.burn_timer += 1;
+            if self.burn_timer >= 20 {
+                self.burn_timer = 0;
+                self.health -= 1.0;
+                if self.health <= 0.0 {
+                    self.dead = true;
+                    return None;
+                }
+            }
+        } else {
+            self.burn_timer = 0;
         }
         if self.attack_cooldown > 0 {
             self.attack_cooldown -= 1;
@@ -219,6 +244,16 @@ impl Mob {
     }
 }
 
+/// Whether an opaque block covers the mob. Starts above its head so its
+/// supporting terrain does not incorrectly count as a roof.
+fn has_open_sky(world: &World, pos: Vec3, height: f32) -> bool {
+    let x = pos.x.floor() as i32;
+    let z = pos.z.floor() as i32;
+    let start_y = (pos.y + height).ceil() as i32;
+    (start_y..ssc_world::MAX_Y)
+        .all(|y| !ssc_world::is_opaque(world.block_or_air(x, y, z)))
+}
+
 /// Spawn eligibility for a mob at a world column: solid ground with air
 /// above (the worldgen surface is grass unless carved).
 pub fn spawn_column_ok(world: &World, x: i32, z: i32) -> Option<i32> {
@@ -263,7 +298,7 @@ mod tests {
         // Tick 20 times: it should close distance and land a hit.
         let mut hits = 0;
         for _ in 0..20 {
-            if zombie.tick(&world, &players, 0.05).is_some() {
+            if zombie.tick(&world, &players, 0.05, false).is_some() {
                 hits += 1;
             }
         }
@@ -276,7 +311,7 @@ mod tests {
         let mut pig = Mob::new(MobKind::Pig, Vec3::new(8.5, 48.02, 8.5));
         let players = [Vec3::new(8.5, 48.02, 8.5)];
         for _ in 0..200 {
-            assert!(pig.tick(&world, &players, 0.05).is_none());
+            assert!(pig.tick(&world, &players, 0.05, false).is_none());
         }
     }
 
@@ -310,5 +345,22 @@ mod tests {
             }
         }
         assert_eq!(drop_for(MobKind::Zombie, 0), None);
+    }
+
+    #[test]
+    fn zombie_burns_in_daylight_but_not_under_a_roof() {
+        let mut exposed_world = flat_world();
+        let mut exposed = Mob::new(MobKind::Zombie, Vec3::new(8.5, 49.0, 8.5));
+        for _ in 0..20 {
+            exposed.tick(&exposed_world, &[], 0.05, true);
+        }
+        assert_eq!(exposed.health, 19.0);
+
+        exposed_world.set_block(8, 54, 8, ssc_world::STONE);
+        let mut sheltered = Mob::new(MobKind::Zombie, Vec3::new(8.5, 49.0, 8.5));
+        for _ in 0..40 {
+            sheltered.tick(&exposed_world, &[], 0.05, true);
+        }
+        assert_eq!(sheltered.health, 20.0);
     }
 }

@@ -523,8 +523,9 @@ impl Server {
             // Simulate.
             let mut mob_hits: Vec<(EntityId, usize)> = Vec::new();
             let mut dead_mobs: Vec<EntityId> = Vec::new();
+            let daylight = self.time_of_day > 0.25 && self.time_of_day < 0.75;
             for (id, mob) in self.mobs.iter_mut() {
-                if let Some(idx) = mob.tick(&self.world, &positions, dt) {
+                if let Some(idx) = mob.tick(&self.world, &positions, dt, daylight) {
                     mob_hits.push((*id, idx));
                 }
                 if mob.dead {
