@@ -194,8 +194,9 @@ pub enum ServerPacket {
     },
     /// Drop the LOD summary of a column.
     UnloadLod { cx: i32, cz: i32 },
-    /// Authoritative entity state (all players, 20 Hz, own id included;
-    /// clients interpolate everything the same way).
+    /// Authoritative entity state (20 Hz, own id included; clients
+    /// interpolate everything the same way). `kind`: 0 = player,
+    /// 1 = pig, 2 = zombie.
     EntityState {
         id: u16,
         x: f32,
@@ -203,6 +204,7 @@ pub enum ServerPacket {
         z: f32,
         yaw: f32,
         pitch: f32,
+        kind: u8,
     },
     /// An entity left the world.
     EntityRemove { id: u16 },
@@ -278,7 +280,7 @@ impl ServerPacket {
                 w.put_i32(*cx);
                 w.put_i32(*cz);
             }
-            ServerPacket::EntityState { id, x, y, z, yaw, pitch } => {
+            ServerPacket::EntityState { id, x, y, z, yaw, pitch, kind } => {
                 w.put_u8(6);
                 w.put_u16(*id);
                 w.put_f32(*x);
@@ -286,6 +288,7 @@ impl ServerPacket {
                 w.put_f32(*z);
                 w.put_f32(*yaw);
                 w.put_f32(*pitch);
+                w.put_u8(*kind);
             }
             ServerPacket::EntityRemove { id } => {
                 w.put_u8(7);
@@ -393,6 +396,7 @@ impl ServerPacket {
                 z: r.get_f32()?,
                 yaw: r.get_f32()?,
                 pitch: r.get_f32()?,
+                kind: r.get_u8()?,
             },
             7 => ServerPacket::EntityRemove { id: r.get_u16()? },
             8 => ServerPacket::BlockUpdate {
@@ -444,5 +448,26 @@ impl ServerPacket {
         };
         r.expect_empty()?;
         Ok(pkt)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ServerPacket;
+
+    #[test]
+    fn entity_kind_survives_wire_round_trip() {
+        for kind in 0..=2 {
+            let packet = ServerPacket::EntityState {
+                id: 10_000,
+                x: -12.5,
+                y: 64.0,
+                z: 9.25,
+                yaw: 1.5,
+                pitch: -0.25,
+                kind,
+            };
+            assert_eq!(ServerPacket::decode(&packet.encode()).unwrap(), packet);
+        }
     }
 }

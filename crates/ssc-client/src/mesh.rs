@@ -513,30 +513,54 @@ struct BoxDef {
     tiles: [u16; 6],
 }
 
-/// Placeholder player avatar: three boxes (legs, body, head) in local
-/// space. Minecraft proportions; placeholder atlas tiles until real
-/// player skins exist (`implemented-features.md`).
-pub fn build_avatar() -> (Vec<Vertex>, Vec<u32>) {
-    let boxes = [
-        // legs
-        BoxDef {
-            min: [-0.125, 0.0, -0.125],
-            max: [0.125, 0.7, 0.125],
-            tiles: [ssc_world::TILE_BRICKS; 6],
-        },
-        // body
-        BoxDef {
-            min: [-0.25, 0.7, -0.125],
-            max: [0.25, 1.4, 0.125],
+/// Entity avatars: boxes in local space, feet at y=0. Placeholder visuals
+/// per kind (real models/skins later — `implemented-features.md`):
+/// player = legs/body/head, pig = one low box, zombie = green boxes.
+pub fn build_avatar(kind: u8) -> (Vec<Vertex>, Vec<u32>) {
+    let boxes: Vec<BoxDef> = match kind {
+        // pig: one low, wide box
+        1 => vec![BoxDef {
+            min: [-0.45, 0.0, -0.45],
+            max: [0.45, 0.9, 0.45],
             tiles: [ssc_world::TILE_PLANKS; 6],
-        },
-        // head
-        BoxDef {
-            min: [-0.25, 1.4, -0.25],
-            max: [0.25, 1.8, 0.25],
-            tiles: [ssc_world::TILE_SNOW; 6],
-        },
-    ];
+        }],
+        // zombie: like a player but leaf-green
+        2 => vec![
+            BoxDef {
+                min: [-0.125, 0.0, -0.125],
+                max: [0.125, 0.7, 0.125],
+                tiles: [ssc_world::TILE_LEAVES; 6],
+            },
+            BoxDef {
+                min: [-0.25, 0.7, -0.125],
+                max: [0.25, 1.4, 0.125],
+                tiles: [ssc_world::TILE_LEAVES; 6],
+            },
+            BoxDef {
+                min: [-0.25, 1.4, -0.25],
+                max: [0.25, 1.8, 0.25],
+                tiles: [ssc_world::TILE_GRASS_TOP; 6],
+            },
+        ],
+        // player (default): legs/body/head with distinct tiles
+        _ => vec![
+            BoxDef {
+                min: [-0.125, 0.0, -0.125],
+                max: [0.125, 0.7, 0.125],
+                tiles: [ssc_world::TILE_BRICKS; 6],
+            },
+            BoxDef {
+                min: [-0.25, 0.7, -0.125],
+                max: [0.25, 1.4, 0.125],
+                tiles: [ssc_world::TILE_PLANKS; 6],
+            },
+            BoxDef {
+                min: [-0.25, 1.4, -0.25],
+                max: [0.25, 1.8, 0.25],
+                tiles: [ssc_world::TILE_SNOW; 6],
+            },
+        ],
+    };
     let mut verts = Vec::new();
     let mut indices = Vec::new();
     for b in &boxes {

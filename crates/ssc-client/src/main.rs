@@ -100,12 +100,13 @@ fn spawn_worker(shared: Arc<RwLock<ClientWorld>>) -> (Sender<Job>, Receiver<JobR
 // The client application
 // ---------------------------------------------------------------------------
 
-/// Interpolated view of another player.
+/// Interpolated view of another entity (player or mob).
 struct EntityView {
     prev: Vec3,
     cur: Vec3,
     time: Instant,
     yaw: f32,
+    kind: u8,
     mesh: MeshId,
 }
 
@@ -127,9 +128,8 @@ struct App {
     own_id: Option<u16>,
     /// Other players.
     entities: HashMap<u16, EntityView>,
-    /// Placeholder avatar geometry (uploaded per entity, built once).
-    avatar_verts: Vec<ssc_engine::Vertex>,
-    avatar_indices: Vec<u32>,
+    /// Placeholder avatar geometry per entity kind (uploaded per entity).
+    avatar_cache: HashMap<u8, (Vec<ssc_engine::Vertex>, Vec<u32>)>,
     // Player presentation state.
     pos_prev: Vec3,
     pos_cur: Vec3,
@@ -234,7 +234,6 @@ impl App {
         // Debug camera overrides (orientation testing / screenshots).
         let yaw = std::env::var("SSC_YAW").ok().and_then(|v| v.parse().ok());
         let pitch = std::env::var("SSC_PITCH").ok().and_then(|v| v.parse().ok());
-        let (avatar_verts, avatar_indices) = mesh::build_avatar();
         Self {
             wire,
             shared,
@@ -251,8 +250,10 @@ impl App {
             pos_prev: Vec3::new(8.5, 128.0, 8.5),
             pos_cur: Vec3::new(8.5, 128.0, 8.5),
             state_time: now,
-            avatar_verts,
-            avatar_indices,
+            avatar_cache: [0u8, 1u8, 2u8]
+                .iter()
+                .map(|&k| (k, mesh::build_avatar(k)))
+                .collect(),
             yaw: yaw.unwrap_or(0.0),
             pitch: pitch.unwrap_or(0.0),
             keys: 0,
@@ -1013,7 +1014,7 @@ impl App {
                 let mut w = self.shared.write().unwrap_or_else(|e| e.into_inner());
                 w.apply_lod_unload(cx, cz);
             }
-            ServerPacket::EntityState { id, x, y, z, yaw, pitch } => {
+            ServerPacket::EntityState { id, x, y, z, yaw, pitch, kind } => {
                 if Some(id) == self.own_id {
                     // Own authoritative state: interpolate for smooth
                     // rendering (the server owns the logic, specs.md §2).
@@ -1024,6 +1025,16 @@ impl App {
                 } else {
                     match self.entities.get_mut(&id) {
                         Some(e) => {
+                            if e.kind != kind {
+                                let (verts, indices) = self
+                                    .avatar_cache
+                                    .get(&kind)
+                                    .unwrap_or_else(|| self.avatar_cache.get(&0).expect("player avatar"));
+                                if let Err(err) = frame.upload_mesh(e.mesh, verts, indices) {
+                                    eprintln!("[client] avatar update failed: {err}");
+                                }
+                                e.kind = kind;
+                            }
                             e.prev = e.cur;
                             e.cur = Vec3::new(x, y, z);
                             e.time = Instant::now();
@@ -1033,11 +1044,11 @@ impl App {
                             // First sighting: upload a placeholder avatar.
                             let mesh_id = self.next_mesh_id;
                             self.next_mesh_id += 1;
-                            if let Err(e) = frame.upload_mesh(
-                                mesh_id,
-                                &self.avatar_verts,
-                                &self.avatar_indices,
-                            ) {
+                            let (verts, indices) = self
+                                .avatar_cache
+                                .get(&kind)
+                                .unwrap_or_else(|| self.avatar_cache.get(&0).expect("player avatar"));
+                            if let Err(e) = frame.upload_mesh(mesh_id, verts, indices) {
                                 eprintln!("[client] avatar upload failed: {e}");
                             }
                             let p = Vec3::new(x, y, z);
@@ -1048,6 +1059,7 @@ impl App {
                                     cur: p,
                                     time: Instant::now(),
                                     yaw,
+                                    kind,
                                     mesh: mesh_id,
                                 },
                             );

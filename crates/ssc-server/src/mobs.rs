@@ -1,0 +1,288 @@
+//! Mobs: server-authoritative entities with simple AI (`specs.md` §2 —
+//! all logic here, clients only render what the server broadcasts).
+//!
+//! v0 mobs: **pig** (passive, wanders, drops porkchop) and **zombie**
+//! (spawns at night, chases and hits players, burns nothing yet).
+//! Placeholder visuals on the client (colored boxes); the entity-state
+//! broadcast carries the kind.
+
+use ssc_math::{Vec2, Vec3};
+use ssc_world::World;
+
+use crate::physics::move_entity;
+
+/// Mob kinds and their stats (wiki-approximated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MobKind {
+    Pig,
+    Zombie,
+}
+
+impl MobKind {
+    /// Wire value in `EntityState::kind`.
+    pub fn as_u8(self) -> u8 {
+        match self {
+            MobKind::Pig => 1,
+            MobKind::Zombie => 2,
+        }
+    }
+
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(MobKind::Pig),
+            2 => Some(MobKind::Zombie),
+            _ => None,
+        }
+    }
+
+    pub fn max_health(self) -> f32 {
+        match self {
+            MobKind::Pig => 10.0,
+            MobKind::Zombie => 20.0,
+        }
+    }
+
+    /// Movement speed (blocks/s).
+    pub fn speed(self) -> f32 {
+        match self {
+            MobKind::Pig => 1.2,
+            MobKind::Zombie => 2.3,
+        }
+    }
+
+    /// Attack damage (zombies only; pigs are passive).
+    pub fn attack_damage(self) -> f32 {
+        match self {
+            MobKind::Zombie => 3.0,
+            MobKind::Pig => 0.0,
+        }
+    }
+
+    /// Body dimensions (half-width, height) for physics + hit boxes.
+    pub fn dims(self) -> (f32, f32) {
+        match self {
+            MobKind::Pig => (0.45, 0.9),
+            MobKind::Zombie => (0.3, 1.9),
+        }
+    }
+}
+
+/// One mob.
+pub struct Mob {
+    pub kind: MobKind,
+    pub pos: Vec3,
+    pub vel: Vec3,
+    pub yaw: f32,
+    pub health: f32,
+    /// Ticks until the next wander decision.
+    pub wander_timer: u32,
+    /// Wander direction (None = idle).
+    pub wander_dir: Option<Vec2>,
+    /// Ticks until the next allowed attack.
+    pub attack_cooldown: u32,
+    /// Marked for removal (death or despawn).
+    pub dead: bool,
+    /// Set by the physics step, read by the AI next tick.
+    pub on_ground_hint: bool,
+}
+
+impl Mob {
+    pub fn new(kind: MobKind, pos: Vec3) -> Self {
+        Self {
+            kind,
+            pos,
+            vel: Vec3::ZERO,
+            yaw: 0.0,
+            health: kind.max_health(),
+            wander_timer: 0,
+            wander_dir: None,
+            attack_cooldown: 0,
+            dead: false,
+            on_ground_hint: false,
+        }
+    }
+
+    /// Advance one tick: AI + physics. `players` are nearby player feet
+    /// positions (for zombie chasing). Returns the **index** into
+    /// `players` of a player this mob hit this tick, if any.
+    pub fn tick(&mut self, world: &World, players: &[Vec3], dt: f32) -> Option<usize> {
+        if self.dead {
+            return None;
+        }
+        if self.attack_cooldown > 0 {
+            self.attack_cooldown -= 1;
+        }
+
+        let mut hit_player = None;
+        let speed = self.kind.speed();
+        let (hw, height) = self.kind.dims();
+
+        // --- AI ---------------------------------------------------------
+        if self.kind == MobKind::Zombie {
+            // Chase the nearest player within 16 blocks.
+            let nearest = players
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| (**p - self.pos).length() < 16.0)
+                .min_by_key(|(_, p)| (**p - self.pos).length() as u32);
+            if let Some((idx, target)) = nearest {
+                let delta = *target - self.pos;
+                let dist2d = Vec2::new(delta.x, delta.z).length();
+                self.yaw = delta.x.atan2(delta.z);
+                self.vel.x = (delta.x / dist2d.max(0.001)) * speed;
+                self.vel.z = (delta.z / dist2d.max(0.001)) * speed;
+                // Attack when close enough (and cooldown ready).
+                if delta.length() < 1.5 && self.attack_cooldown == 0 {
+                    self.attack_cooldown = 20; // 1 hit/second
+                    hit_player = Some(idx);
+                }
+                // Hop over 1-block obstacles when blocked and on ground.
+                if self.on_ground_hint && self.is_blocked(world, hw) {
+                    self.vel.y = 8.4;
+                }
+            }
+        } else {
+            // Passive wander: pick a direction or pause.
+            if self.wander_timer == 0 {
+                self.wander_timer = 40 + (self.pos.x as u32 * 31 + self.pos.z as u32) % 80;
+                self.wander_dir = if self.wander_timer % 2 == 0 {
+                    let yaw = ((self.pos.x * 7.0 + self.pos.z * 13.0).fract() * 6.283) - 3.1416;
+                    Some(Vec2::new(yaw.cos(), yaw.sin()))
+                } else {
+                    None
+                };
+            }
+            self.wander_timer -= 1;
+            match self.wander_dir {
+                Some(dir) => {
+                    self.vel.x = dir.x * speed;
+                    self.vel.z = dir.y * speed;
+                    self.yaw = dir.x.atan2(dir.y);
+                }
+                None => {
+                    self.vel.x = 0.0;
+                    self.vel.z = 0.0;
+                }
+            }
+        }
+
+        // --- Physics -----------------------------------------------------
+        // Mobs fall; no swimming AI yet (they bob to the surface because
+        // water is non-solid and they walk on the bed — noted).
+        self.vel.y -= ssc_math::GRAVITY * dt;
+        if self.vel.y < -40.0 {
+            self.vel.y = -40.0;
+        }
+        let res = move_entity(world, &mut self.pos, &mut self.vel, dt, hw, height);
+        self.on_ground_hint = res.on_ground;
+        hit_player
+    }
+
+    /// Whether horizontal movement is blocked by a solid block ahead.
+    fn is_blocked(&self, world: &World, hw: f32) -> bool {
+        let ahead = Vec3::new(
+            self.pos.x + self.vel.x * 0.2 + self.vel.x.signum() * hw,
+            self.pos.y + 0.5,
+            self.pos.z + self.vel.z * 0.2 + self.vel.z.signum() * hw,
+        );
+        ssc_world::is_solid(
+            world.block_or_air(ahead.x.floor() as i32, ahead.y.floor() as i32, ahead.z.floor() as i32),
+        )
+    }
+
+    /// External damage (player punch). Knockback along `from`.
+    pub fn hurt(&mut self, amount: f32, from: Vec3) -> bool {
+        self.health -= amount;
+        // Knockback away from the attacker.
+        let delta = (self.pos - from).normalize_or_zero();
+        self.vel.x += delta.x * 6.0;
+        self.vel.z += delta.z * 6.0;
+        self.vel.y = 4.0;
+        if self.health <= 0.0 {
+            self.dead = true;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Spawn eligibility for a mob at a world column: solid ground with air
+/// above (the worldgen surface is grass unless carved).
+pub fn spawn_column_ok(world: &World, x: i32, z: i32) -> Option<i32> {
+    for y in (ssc_world::MIN_Y + 8..ssc_world::MAX_Y - 40).rev() {
+        let ground = world.block_or_air(x, y - 1, z);
+        let here = world.block_or_air(x, y, z);
+        let above = world.block_or_air(x, y + 1, z);
+        if ssc_world::is_solid(ground)
+            && !ssc_world::is_solid(here)
+            && !ssc_world::is_solid(above)
+            && here != ssc_world::WATER
+        {
+            return Some(y);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flat_world() -> World {
+        let mut world = World::default();
+        let mut col = ssc_world::Column::default();
+        let mut sc = Box::new(ssc_world::SubChunk::default());
+        for z in 0..16 {
+            for x in 0..16 {
+                sc.set(x, 0, z, ssc_world::STONE);
+            }
+        }
+        col.subchunks[7] = Some(sc);
+        world.columns.insert((0, 0), col);
+        world
+    }
+
+    #[test]
+    fn zombie_chases_and_hits_players() {
+        let world = flat_world();
+        let mut zombie = Mob::new(MobKind::Zombie, Vec3::new(4.5, 48.02, 8.5));
+        let players = [Vec3::new(2.5, 48.02, 8.5)];
+        // Tick 20 times: it should close distance and land a hit.
+        let mut hits = 0;
+        for _ in 0..20 {
+            if zombie.tick(&world, &players, 0.05).is_some() {
+                hits += 1;
+            }
+        }
+        let dist = (players[0] - zombie.pos).length();
+        assert!(dist < 3.0, "zombie should approach, dist {dist}");
+        assert!(hits >= 1, "zombie should land at least one hit");
+    }    #[test]
+    fn pig_wanders_but_never_attacks() {
+        let world = flat_world();
+        let mut pig = Mob::new(MobKind::Pig, Vec3::new(8.5, 48.02, 8.5));
+        let players = [Vec3::new(8.5, 48.02, 8.5)];
+        for _ in 0..200 {
+            assert!(pig.tick(&world, &players, 0.05).is_none());
+        }
+    }
+
+    #[test]
+    fn hurt_deals_knockback_and_death() {
+        let mut pig = Mob::new(MobKind::Pig, Vec3::new(8.5, 48.02, 8.5));
+        let died = pig.hurt(6.0, Vec3::new(8.5, 48.0, 6.5));
+        assert!(!died);
+        assert!(pig.health < 4.1);
+        assert!(pig.vel.y > 0.0, "knockback should pop the mob up");
+        assert!(pig.hurt(10.0, Vec3::new(8.5, 48.0, 6.5)));
+        assert!(pig.dead);
+    }
+
+    #[test]
+    fn spawn_column_finds_surface() {
+        let world = flat_world();
+        // Ground cells at y 48; the standing surface is the top face = 49.
+        assert_eq!(spawn_column_ok(&world, 8, 8), Some(49));
+    }
+}

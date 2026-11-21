@@ -18,9 +18,14 @@ use ssc_protocol::wire::{memory_pair, MemoryWire, Wire};
 use ssc_protocol::PROTOCOL_VERSION;
 use ssc_world::{is_solid, BlockId, ColumnKey, World, AIR, SAND, SANDSTONE, SNOW_BLOCK, WATER};
 
-use crate::physics::{move_player, player_aabb};
+use crate::physics::{move_player, player_aabb, entity_aabb};
 use crate::raycast::raycast;
 use crate::worldgen::WorldGen;
+
+/// Mobs occupy ids from here upward (players are 1..).
+const FIRST_MOB_ID: EntityId = 10_000;
+/// Maximum mobs within a player's spawn range (per player).
+const MOB_CAP_PER_PLAYER: usize = 6;
 
 /// Server tick rate (matches Minecraft's 20 TPS).
 pub const TICK_RATE: f32 = 20.0;
@@ -185,7 +190,10 @@ pub struct Server {
     gen: WorldGen,
     edited: HashSet<ColumnKey>,
     sessions: HashMap<EntityId, Session>,
+    /// Mobs (ids from `FIRST_MOB_ID`).
+    mobs: HashMap<EntityId, crate::mobs::Mob>,
     next_id: EntityId,
+    next_mob_id: EntityId,
     /// Dedicated mode: accepted wires land here and are attached on tick.
     accept_rx: Option<std::sync::mpsc::Receiver<Box<dyn Wire>>>,
     tick: u64,
@@ -214,7 +222,9 @@ impl Server {
             edited: HashSet::new(),
             cfg,
             sessions: HashMap::new(),
+            mobs: HashMap::new(),
             next_id: 1,
+            next_mob_id: FIRST_MOB_ID,
             accept_rx: None,
             tick: 0,
             time_of_day: 0.3, // start in the morning
@@ -485,9 +495,111 @@ impl Server {
             .iter()
             .filter(|(_, s)| s.player.joined)
             .map(|(id, s)| entity_state(*id, &s.player))
+            .chain(self.mobs.iter().map(|(id, m)| mob_state(*id, m)))
             .collect();
         for pkt in &states {
             let _ = self.broadcast(pkt);
+        }
+
+        // --- Mobs: simulate, attack players, die, despawn, spawn.
+        {
+            // Player positions for the AI (zombies chase, pigs flee
+            // nothing yet).
+            let players: Vec<(EntityId, Vec3)> = self
+                .sessions
+                .iter()
+                .filter(|(_, s)| s.player.joined && !s.survival.dead)
+                .map(|(id, s)| (*id, s.player.pos))
+                .collect();
+            let positions: Vec<Vec3> = players.iter().map(|(_, p)| *p).collect();
+
+            // Simulate.
+            let mut mob_hits: Vec<(EntityId, usize)> = Vec::new();
+            let mut dead_mobs: Vec<EntityId> = Vec::new();
+            for (id, mob) in self.mobs.iter_mut() {
+                if let Some(idx) = mob.tick(&self.world, &positions, dt) {
+                    mob_hits.push((*id, idx));
+                }
+                if mob.dead {
+                    dead_mobs.push(*id);
+                }
+            }
+
+            // Zombie hits land on players (survival damage + sound).
+            for (mob_id, idx) in mob_hits {
+                let Some((player_id, _)) = players.get(idx) else { continue };
+                if self.cfg.game_mode != GameMode::Survival {
+                    continue;
+                }
+                let damage = self.mobs[&mob_id].kind.attack_damage();
+                let mut fx = crate::survival::TickEffects::default();
+                let session = self.sessions.get_mut(player_id).unwrap();
+                session.survival.apply_damage(damage, &mut fx);
+                session.status_dirty = true;
+                let pos = session.player.pos;
+                self.send_sound(
+                    SoundId::Hurt,
+                    pos.x.floor() as i32,
+                    pos.y.floor() as i32,
+                    pos.z.floor() as i32,
+                );
+            }
+
+            // Dead mobs: drop + remove (drop goes to the nearest living
+            // player's inventory — no item entities yet, noted).
+            for mob_id in dead_mobs {
+                let (kind, pos) = {
+                    let m = &self.mobs[&mob_id];
+                    (m.kind, m.pos)
+                };
+                let drop = match kind {
+                    crate::mobs::MobKind::Pig => Some(ssc_world::PORKCHOP),
+                    crate::mobs::MobKind::Zombie => None, // rotten flesh: later
+                };
+                if let Some(item) = drop {
+                    let mut receiver = None;
+                    let mut best = f32::MAX;
+                    for (pid, session) in self.sessions.iter() {
+                        if session.player.joined {
+                            let d = (session.player.pos - pos).length();
+                            if d < best {
+                                best = d;
+                                receiver = Some(*pid);
+                            }
+                        }
+                    }
+                    if best < 6.0 {
+                        if let Some(pid) = receiver {
+                            let session = self.sessions.get_mut(&pid).unwrap();
+                            let leftover =
+                                crate::survival::add_item(&mut session.inventory, item, 1);
+                            if leftover == 0 {
+                                session.inv_dirty = true;
+                            }
+                        }
+                    }
+                }
+                self.mobs.remove(&mob_id);
+                let _ = self.broadcast(&ServerPacket::EntityRemove { id: mob_id });
+            }
+
+            // Despawn far-away mobs; remove those in nothing (void).
+            let player_refs: Vec<Vec3> = positions.clone();
+            let despawn: Vec<EntityId> = self
+                .mobs
+                .iter()
+                .filter(|(_, m)| {
+                    m.pos.y <= ssc_world::MIN_Y as f32 + 1.0
+                        || player_refs
+                            .iter()
+                            .all(|p| (m.pos - *p).length() > 64.0)
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            for id in despawn {
+                self.mobs.remove(&id);
+                let _ = self.broadcast(&ServerPacket::EntityRemove { id });
+            }
         }
 
         // --- Dirty syncs (inventory / status).
@@ -555,6 +667,133 @@ impl Server {
                 self.refresh_streaming(id);
             }
             self.evict_unused_columns();
+            self.spawn_mobs();
+        }
+    }
+
+    /// Mob spawning: a few pigs near each player during the day, zombies
+    /// at night. Simple, deterministic-ish, capped.
+    fn spawn_mobs(&mut self) {
+        let night = self.time_of_day > 0.75 && self.time_of_day < 0.98;
+        let player_cols: Vec<(i32, i32)> = self
+            .sessions
+            .values()
+            .filter(|s| s.player.joined)
+            .map(|s| {
+                (
+                    (s.player.pos.x as i32).div_euclid(16),
+                    (s.player.pos.z as i32).div_euclid(16),
+                )
+            })
+            .collect();
+        if player_cols.is_empty() {
+            return;
+        }
+        let mob_cap = player_cols.len() * MOB_CAP_PER_PLAYER;
+        if self.mobs.len() >= mob_cap {
+            return;
+        }
+
+        // Pigs by day (and rarely at night), zombies at night.
+        let want_zombie = night;
+        let want_pig = !night;
+        for (pcx, pcz) in player_cols {
+            for attempt in 0..4 {
+                // A random-ish column in a 3-radius ring (8..24 blocks).
+                let ax = (pcx * 16 + 8 + (hash_tick(self.tick + attempt, pcx, pcz) % 32) as i32)
+                    - 16;
+                let az = (pcz * 16 + 8
+                    + (hash_tick(self.tick + attempt * 7, pcz, pcx) % 32) as i32)
+                    - 16;
+                let Some(y) = crate::mobs::spawn_column_ok(&self.world, ax, az) else {
+                    continue;
+                };
+                // Column must exist server-side (spawn only in streamed
+                // areas so clients see the mob's ground).
+                if self.world.column(ax.div_euclid(16), az.div_euclid(16)).is_none() {
+                    continue;
+                }
+                let (kind, want) = if want_zombie {
+                    (crate::mobs::MobKind::Zombie, want_zombie)
+                } else {
+                    (crate::mobs::MobKind::Pig, want_pig)
+                };
+                if !want {
+                    continue;
+                }
+                // No spawning right on top of players.
+                let pos = Vec3::new(ax as f32 + 0.5, y as f32 + 0.02, az as f32 + 0.5);
+                let too_close = self.sessions.values().any(|s| {
+                    s.player.joined && (s.player.pos - pos).length() < 12.0
+                });
+                if too_close {
+                    continue;
+                }
+                let id = self.next_mob_id;
+                self.next_mob_id += 1;
+                self.mobs.insert(id, crate::mobs::Mob::new(kind, pos));
+                break; // at most one mob per player per second
+            }
+        }
+    }
+
+    /// Punch: if the crosshair ray hits an entity first, damage it;
+    /// returns true when an entity was hit (skip block digging).
+    fn try_attack(&mut self, id: EntityId) -> bool {
+        let (yaw, pitch) = self.look_of(id);
+        let dir = look_dir(yaw, pitch);
+        let eye = self.eye_of(id);
+        // Candidate entities: mobs + other players.
+        let mut candidates: Vec<(EntityId, ssc_math::Aabb, bool)> = Vec::new();
+        for (mid, m) in &self.mobs {
+            let (hw, h) = m.kind.dims();
+            candidates.push((*mid, entity_aabb(m.pos, hw, h), true));
+        }
+        for (pid, session) in &self.sessions {
+            if *pid != id && session.player.joined {
+                candidates.push((*pid, player_aabb(session.player.pos), false));
+            }
+        }
+        let mut best: Option<(EntityId, f32, bool)> = None;
+        for (eid, aabb, is_mob) in candidates {
+            if let Some(t) = ray_aabb(eye, dir, &aabb) {
+                if t <= REACH && best.map(|(_, bt, _)| t < bt).unwrap_or(true) {
+                    best = Some((eid, t, is_mob));
+                }
+            }
+        }
+        let Some((target, _t, is_mob)) = best else { return false };
+
+        if is_mob {
+            // Punch a mob: 2 damage by hand, knockback.
+            let from = self.sessions[&id].player.pos;
+            if let Some(mob) = self.mobs.get_mut(&target) {
+                mob.hurt(2.0, from);
+            }
+            let pos = self.mobs.get(&target).map(|m| m.pos);
+            if let Some(p) = pos {
+                self.send_sound(SoundId::Hurt, p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+            }
+            // Death and entity removal are handled together during the
+            // authoritative mob tick so clients don't receive remove/state/
+            // remove in consecutive packets.
+            true
+        } else {
+            // PvP: 2 damage (hand) + knockback via velocity.
+            let from = self.sessions[&id].player.pos;
+            let session = self.sessions.get_mut(&target).unwrap();
+            if self.cfg.game_mode == GameMode::Survival {
+                let delta = (session.player.pos - from).normalize_or_zero();
+                session.player.vel.x += delta.x * 6.0;
+                session.player.vel.z += delta.z * 6.0;
+                session.player.vel.y = (session.player.vel.y + 4.0).min(6.0);
+                let mut fx = crate::survival::TickEffects::default();
+                session.survival.apply_damage(2.0, &mut fx);
+                session.status_dirty = true;
+            }
+            let p = self.sessions[&target].player.pos;
+            self.send_sound(SoundId::Hurt, p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+            true
         }
     }
 }
@@ -664,7 +903,49 @@ fn entity_state(id: EntityId, p: &Player) -> ServerPacket {
         z: p.pos.z,
         yaw: p.yaw,
         pitch: p.pitch,
+        kind: 0, // player
     }
+}
+
+fn mob_state(id: EntityId, m: &crate::mobs::Mob) -> ServerPacket {
+    ServerPacket::EntityState {
+        id,
+        x: m.pos.x,
+        y: m.pos.y,
+        z: m.pos.z,
+        yaw: m.yaw,
+        pitch: 0.0,
+        kind: m.kind.as_u8(),
+    }
+}
+
+/// Ray vs AABB slab test: entry distance if the ray hits.
+fn ray_aabb(origin: Vec3, dir: Vec3, aabb: &ssc_math::Aabb) -> Option<f32> {
+    let mut tmin = 0.0f32;
+    let mut tmax = f32::INFINITY;
+    for (o, d, (lo, hi)) in [
+        (origin.x, dir.x, (aabb.min.x, aabb.max.x)),
+        (origin.y, dir.y, (aabb.min.y, aabb.max.y)),
+        (origin.z, dir.z, (aabb.min.z, aabb.max.z)),
+    ] {
+        if d.abs() < 1e-8 {
+            if o < lo || o > hi {
+                return None;
+            }
+            continue;
+        }
+        let mut t1 = (lo - o) / d;
+        let mut t2 = (hi - o) / d;
+        if t1 > t2 {
+            std::mem::swap(&mut t1, &mut t2);
+        }
+        tmin = tmin.max(t1);
+        tmax = tmax.min(t2);
+        if tmin > tmax {
+            return None;
+        }
+    }
+    Some(tmin)
 }
 
 impl Server {
@@ -1022,9 +1303,12 @@ impl Server {
             .flatten()
     }
 
-    /// Start digging: creative breaks instantly, survival begins timed
-    /// progress (advanced in `tick`).
+    /// Start digging or punching: entity hit → attack; otherwise creative
+    /// breaks instantly, survival begins timed progress.
     fn handle_dig_start(&mut self, id: EntityId) {
+        if self.try_attack(id) {
+            return;
+        }
         let (yaw, pitch) = self.look_of(id);
         let dir = look_dir(yaw, pitch);
         let Some(hit) = raycast(&self.world, self.eye_of(id), dir, REACH) else {
@@ -1375,7 +1659,9 @@ mod tests {
         rig.server.handle_dig_start(1);
         let packets = rig.drain(0);
         assert!(
-            packets.iter().all(|p| !matches!(p, p @ ServerPacket::BlockUpdate { .. })),
+            packets
+                .iter()
+                .all(|p| !matches!(p, ServerPacket::BlockUpdate { .. })),
             "no instant break in survival: {packets:?}"
         );
         assert!(rig.server.sessions[&1].survival.digging.is_some());
@@ -1386,7 +1672,9 @@ mod tests {
         }
         let packets = rig.drain(0);
         assert!(
-            packets.iter().all(|p| !matches!(p, p @ ServerPacket::BlockUpdate { .. })),
+            packets
+                .iter()
+                .all(|p| !matches!(p, ServerPacket::BlockUpdate { .. })),
             "stone must not break early: {packets:?}"
         );
         // A few extra ticks finish it (floating-point accumulation can
@@ -1499,6 +1787,29 @@ mod tests {
         assert!(packets
             .iter()
             .any(|p| matches!(p, ServerPacket::Status { health, .. } if *health > 0.0)));
+    }
+
+    #[test]
+    fn creative_players_are_immune_to_mob_attacks() {
+        let mut rig = Rig::new(1, 0.0);
+        let mob_id = FIRST_MOB_ID;
+        rig.server.mobs.insert(
+            mob_id,
+            crate::mobs::Mob::new(
+                crate::mobs::MobKind::Zombie,
+                rig.server.sessions[&1].player.pos + Vec3::new(0.0, 0.0, 1.0),
+            ),
+        );
+
+        for _ in 0..10 {
+            rig.server.tick();
+        }
+
+        assert_eq!(
+            rig.server.sessions[&1].survival.health,
+            crate::survival::MAX_HEALTH,
+            "creative mode must not take mob damage"
+        );
     }
 
     #[test]

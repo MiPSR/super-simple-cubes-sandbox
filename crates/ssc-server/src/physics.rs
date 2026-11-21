@@ -28,9 +28,37 @@ pub fn player_aabb(pos: Vec3) -> Aabb {
     )
 }
 
+/// AABB of a generic entity (feet-center, half-width, height).
+pub fn entity_aabb(pos: Vec3, hw: f32, height: f32) -> Aabb {
+    Aabb::new(
+        Vec3::new(pos.x - hw, pos.y, pos.z - hw),
+        Vec3::new(pos.x + hw, pos.y + height, pos.z + hw),
+    )
+}
+
 /// Integrate one tick of player movement: applies `vel * dt` to `pos` with
 /// block collision. `vel` is zeroed on the axes that get blocked.
 pub fn move_player(world: &World, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> MoveResult {
+    move_entity(
+        world,
+        pos,
+        vel,
+        dt,
+        ssc_math::PLAYER_HALF_WIDTH,
+        ssc_math::PLAYER_HEIGHT,
+    )
+}
+
+/// Generic entity movement with per-axis swept AABB collision and
+/// sub-stepping (players, mobs).
+pub fn move_entity(
+    world: &World,
+    pos: &mut Vec3,
+    vel: &mut Vec3,
+    dt: f32,
+    hw: f32,
+    height: f32,
+) -> MoveResult {
     let mut on_ground = false;
 
     // Water check for the result (feet or head submerged).
@@ -41,7 +69,7 @@ pub fn move_player(world: &World, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> Mo
     ) == WATER
         || world.block_or_air(
             (pos.x).floor() as i32,
-            (pos.y + ssc_math::PLAYER_EYE_HEIGHT).floor() as i32,
+            (pos.y + height * 0.9).floor() as i32,
             pos.z.floor() as i32,
         ) == WATER;
 
@@ -52,13 +80,13 @@ pub fn move_player(world: &World, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> Mo
 
     for _ in 0..steps {
         // Y first (so landing is exact), then X, then Z.
-        if sweep_axis(world, pos, vel.y * step_dt, Axis::Y, &mut on_ground) {
+        if sweep_axis(world, pos, vel.y * step_dt, Axis::Y, &mut on_ground, hw, height) {
             vel.y = 0.0;
         }
-        if sweep_axis(world, pos, vel.x * step_dt, Axis::X, &mut on_ground) {
+        if sweep_axis(world, pos, vel.x * step_dt, Axis::X, &mut on_ground, hw, height) {
             vel.x = 0.0;
         }
-        if sweep_axis(world, pos, vel.z * step_dt, Axis::Z, &mut on_ground) {
+        if sweep_axis(world, pos, vel.z * step_dt, Axis::Z, &mut on_ground, hw, height) {
             vel.z = 0.0;
         }
     }
@@ -98,7 +126,7 @@ impl Axis {
     }
 }
 
-/// Move the player along one axis and clamp against the first solid block
+/// Move an entity along one axis and clamp against the first solid block
 /// hit. Returns whether the axis got blocked (velocity should be zeroed by
 /// the caller). Sets `on_ground` when a downward Y move gets clamped.
 fn sweep_axis(
@@ -107,13 +135,15 @@ fn sweep_axis(
     d: f32,
     axis: Axis,
     on_ground: &mut bool,
+    hw: f32,
+    height: f32,
 ) -> bool {
     if d == 0.0 {
         return false;
     }
 
     axis.set(pos, axis.get(*pos) + d);
-    let aabb = player_aabb(*pos);
+    let aabb = entity_aabb(*pos, hw, height);
 
     // Cells overlapping the (moved) player AABB.
     let x0 = aabb.min.x.floor() as i32;
@@ -135,14 +165,14 @@ fn sweep_axis(
                 match axis {
                     Axis::X => {
                         if d > 0.0 {
-                            pos.x = bx as f32 - ssc_math::PLAYER_HALF_WIDTH - EPS;
+                            pos.x = bx as f32 - hw - EPS;
                         } else {
-                            pos.x = bx as f32 + 1.0 + ssc_math::PLAYER_HALF_WIDTH + EPS;
+                            pos.x = bx as f32 + 1.0 + hw + EPS;
                         }
                     }
                     Axis::Y => {
                         if d > 0.0 {
-                            pos.y = by as f32 - ssc_math::PLAYER_HEIGHT - EPS;
+                            pos.y = by as f32 - height - EPS;
                         } else {
                             pos.y = by as f32 + 1.0 + EPS;
                             *on_ground = true;
@@ -150,9 +180,9 @@ fn sweep_axis(
                     }
                     Axis::Z => {
                         if d > 0.0 {
-                            pos.z = bz as f32 - ssc_math::PLAYER_HALF_WIDTH - EPS;
+                            pos.z = bz as f32 - hw - EPS;
                         } else {
-                            pos.z = bz as f32 + 1.0 + ssc_math::PLAYER_HALF_WIDTH + EPS;
+                            pos.z = bz as f32 + 1.0 + hw + EPS;
                         }
                     }
                 }

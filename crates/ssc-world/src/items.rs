@@ -20,6 +20,9 @@ pub const FIRST_FREE_ITEM: ItemId = 100;
 
 /// Apple: the survival food source (drops from oak leaves).
 pub const APPLE: ItemId = 100;
+/// Raw porkchop dropped by pigs. Cooking requires a furnace, not yet
+/// implemented; this item is therefore not edible in this milestone.
+pub const PORKCHOP: ItemId = 101;
 
 /// Static item description. No behavior — behavior lives in the server.
 pub struct ItemInfo {
@@ -61,6 +64,12 @@ pub fn item_info(id: ItemId) -> ItemInfo {
             places: None,
             food: Some(4), // wiki: apple restores 4 hunger points
         },
+        PORKCHOP => ItemInfo {
+            name: "porkchop",
+            max_stack: 64,
+            places: None,
+            food: None,
+        },
         _ => ItemInfo { name: "unknown", max_stack: 64, places: None, food: None },
     }
 }
@@ -69,7 +78,7 @@ pub fn item_info(id: ItemId) -> ItemInfo {
 pub fn valid_item_id(id: ItemId) -> bool {
     // Block-items: contiguous. Free items: only the ones we defined.
     let block_items = id >= FIRST_BLOCK_ITEM && id < super::BLOCK_COUNT;
-    let free_items = id == APPLE;
+    let free_items = id == APPLE || id == PORKCHOP;
     id == EMPTY_ITEM || block_items || free_items
 }
 

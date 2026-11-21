@@ -72,8 +72,8 @@ Every implemented wiki feature gets a line here. Status legend:
   no consumption, E = block picker) and survival (empty start, E =
   inventory screen, click two slots to swap — drag-and-drop pending).
 - `partial` — Movement: axis-separated swept-AABB collision with sub-stepping
-  (no tunneling), jump, sneak/sprint speeds; no momentum/drag simulation,
-  auto step-up, swimming or fall damage yet.
+  (no tunneling), jump, sneak/sprint speeds and basic swimming; no
+  momentum/drag simulation, auto step-up or water-aware mob AI yet.
 - `partial` — Block interaction: creative instant dig / survival timed dig
   (server-side progress with re-target on look change, progress broadcast
   for the HUD), reach 4.5, server-side DDA voxel raycast, placement
@@ -93,14 +93,20 @@ Every implemented wiki feature gets a line here. Status legend:
   time to a sky color (dawn/day/dusk/night keys — no lighting changes,
   per specs §3). No sun/moon rendering, sleep or clock item yet.
 - `partial` — Item system: block-items 1:1 with block ids + apple food
-  item; 36-slot inventories (9 hotbar + 27 storage, stack 64) fully
-  server-owned and synced. No tools, non-block crafting ingredients or
-  item entities yet.
+  item + raw porkchop drop; 36-slot inventories (9 hotbar + 27 storage,
+  stack 64) fully server-owned and synced. No tools, non-block crafting
+  ingredients or item entities yet.
 - `partial` — Gamepad (owner-approved gilrs, engine-side input abstraction):
   left stick moves, right stick looks (rate-normalized), A jumps, RT digs,
   LT places, Start = Escape; dead-zoned, works alongside keyboard/mouse.
   Button remapping/UI, haptics and analog movement (protocol is digital
   keys) pending.
+- `partial` — Mobs: server-authoritative pigs (passive wandering) and zombies
+  (night spawning, chase, melee damage, knockback, death), with entity-kind
+  packets and placeholder client meshes. Spawn/despawn rules and AI are
+  simplified; no pathfinding, sunlight burning, breeding, loot entities,
+  or full Bedrock mob roster. Pig drops raw porkchop; furnace/cooking is
+  not implemented.
 
 ## Client
 
