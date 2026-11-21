@@ -11,6 +11,7 @@ use ssc_math::{Vec2, Vec3};
 use ssc_world::World;
 
 use crate::physics::move_entity;
+use crate::raycast::raycast;
 
 /// Mob kinds and their stats (wiki-approximated).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,8 +172,16 @@ impl Mob {
                 self.vel.z = (delta.z / dist2d.max(0.001)) * speed;
                 // Attack when close enough (and cooldown ready).
                 if delta.length() < 1.5 && self.attack_cooldown == 0 {
-                    self.attack_cooldown = 20; // 1 hit/second
-                    hit_player = Some(idx);
+                    let eye = self.pos + Vec3::new(0.0, 1.5, 0.0);
+                    let target_eye = *target + Vec3::new(0.0, 1.5, 0.0);
+                    let to_target = target_eye - eye;
+                    let distance = to_target.length();
+                    if distance > 0.001
+                        && raycast(world, eye, to_target / distance, distance).is_none()
+                    {
+                        self.attack_cooldown = 20; // 1 hit/second
+                        hit_player = Some(idx);
+                    }
                 }
                 // Hop over 1-block obstacles when blocked and on ground.
                 if self.on_ground_hint && self.is_blocked(world, hw) {
@@ -306,7 +315,9 @@ mod tests {
         let dist = (players[0] - zombie.pos).length();
         assert!(dist < 3.0, "zombie should approach, dist {dist}");
         assert!(hits >= 1, "zombie should land at least one hit");
-    }    #[test]
+    }
+
+    #[test]
     fn pig_wanders_but_never_attacks() {
         let world = flat_world();
         let mut pig = Mob::new(MobKind::Pig, Vec3::new(8.5, 48.02, 8.5));
@@ -314,6 +325,22 @@ mod tests {
         for _ in 0..200 {
             assert!(pig.tick(&world, &players, 0.05, false).is_none());
         }
+    }
+
+    #[test]
+    fn zombie_cannot_melee_through_a_wall() {
+        let mut world = flat_world();
+        world.set_block(9, 49, 8, ssc_world::STONE);
+        world.set_block(9, 50, 8, ssc_world::STONE);
+        let mut zombie = Mob::new(MobKind::Zombie, Vec3::new(8.69, 49.02, 8.5));
+        let players = [Vec3::new(10.05, 49.02, 8.5)];
+
+        assert_eq!(zombie.tick(&world, &players, 0.05, false), None);
+        assert_eq!(zombie.attack_cooldown, 0);
+
+        world.set_block(9, 49, 8, ssc_world::AIR);
+        world.set_block(9, 50, 8, ssc_world::AIR);
+        assert_eq!(zombie.tick(&world, &players, 0.05, false), Some(0));
     }
 
     #[test]

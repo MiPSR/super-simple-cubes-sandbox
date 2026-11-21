@@ -123,7 +123,8 @@ Every implemented wiki feature gets a line here. Status legend:
   keys) pending.
 - `partial` — Mobs: server-authoritative pigs (passive wandering) and zombies
   (night spawning, chase, melee damage, knockback, daylight burning when
-  exposed to sky), with entity-kind packets and placeholder client meshes.
+  exposed to sky); solid walls prevent zombie melee hits. Entity-kind
+  packets and placeholder client meshes.
   Spawn/despawn rules and AI are simplified; no pathfinding, fire visuals,
   breeding, or full Bedrock mob roster. Pigs drop 1–3 raw porkchops,
   zombies 0–2 rotten flesh; drops use the basic item-entity system.
