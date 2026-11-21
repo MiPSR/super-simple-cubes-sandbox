@@ -1747,6 +1747,9 @@ impl Server {
                 name,
             } => self.on_hello(id, version, player_id, name),
             ClientPacket::Input { keys, yaw, pitch } => {
+                if !yaw.is_finite() || !pitch.is_finite() {
+                    return Err("non-finite input angles".into());
+                }
                 let creative = self.cfg.game_mode == GameMode::Creative;
                 let tick = self.tick;
                 let Some(session) = self.sessions.get_mut(&id) else { return Ok(()) };
@@ -2827,6 +2830,31 @@ mod tests {
             rig.server.world.get_block(target.0, target.1, target.2),
             Some(ssc_world::DIRT)
         );
+    }
+
+    #[test]
+    fn non_finite_input_cannot_corrupt_player_position() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let before = rig.server.sessions[&1].player.pos;
+        for (yaw, pitch) in [(f32::NAN, 0.0), (0.0, f32::INFINITY)] {
+            assert!(rig
+                .server
+                .handle_packet(
+                    1,
+                    ClientPacket::Input {
+                        keys: keys::FORWARD,
+                        yaw,
+                        pitch,
+                    },
+                )
+                .is_err());
+        }
+        rig.server.tick();
+        let player = &rig.server.sessions[&1].player;
+        assert_eq!(player.pos.x, before.x);
+        assert_eq!(player.pos.z, before.z);
+        assert!(player.pos.y.is_finite());
+        assert!(player.yaw.is_finite() && player.pitch.is_finite());
     }
 
     #[test]
