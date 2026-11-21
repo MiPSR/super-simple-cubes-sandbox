@@ -516,6 +516,16 @@ impl Server {
             hunger,
             air,
             selected_slot: session.player.selected_slot,
+            hunger_effect_ticks: if session.survival.dead {
+                0
+            } else {
+                session.survival.hunger_effect_ticks
+            },
+            exhaustion: if session.survival.dead {
+                0.0
+            } else {
+                session.survival.exhaustion
+            },
         };
         if let Err(err) = crate::persistence::save_player(&path, player_id, &data) {
             eprintln!("[server] could not save anonymous player data: {err}");
@@ -1945,6 +1955,8 @@ impl Server {
                 session.survival.health = data.health;
                 session.survival.hunger = data.hunger;
                 session.survival.air = data.air;
+                session.survival.hunger_effect_ticks = data.hunger_effect_ticks;
+                session.survival.exhaustion = data.exhaustion;
             }
             session.player.selected_slot = data.selected_slot;
         }
@@ -3133,6 +3145,8 @@ mod tests {
             hunger: 7,
             air: 250,
             selected_slot: 4,
+            hunger_effect_ticks: 410,
+            exhaustion: 2.5,
         };
         crate::persistence::save_player(&player_path, &player_id, &data).unwrap();
 
@@ -3172,12 +3186,16 @@ mod tests {
         assert_eq!(server.sessions[&id].survival.hunger, 7);
         assert_eq!(server.sessions[&id].survival.air, 250);
         assert_eq!(server.sessions[&id].player.selected_slot, 4);
+        assert_eq!(server.sessions[&id].survival.hunger_effect_ticks, 410);
+        assert_eq!(server.sessions[&id].survival.exhaustion, 2.5);
         server.sessions.get_mut(&id).unwrap().inventory[2] = Some((ssc_world::APPLE, 9));
         server.save_player_data(id);
         let saved = crate::persistence::load_player(&player_path, &player_id)
             .unwrap()
             .unwrap();
         assert_eq!(saved.inventory[2], Some((ssc_world::APPLE, 9)));
+        assert_eq!(saved.hunger_effect_ticks, 410);
+        assert_eq!(saved.exhaustion, 2.5);
         let respawn_point = server.sessions[&id].spawn;
         server.sessions.get_mut(&id).unwrap().survival.die();
         server.tick(); // drop inventory at the death location before respawning
@@ -3310,6 +3328,8 @@ mod tests {
                 hunger: 0,
                 air: 0,
                 selected_slot: 0,
+                hunger_effect_ticks: 0,
+                exhaustion: 0.0,
             },
         )
         .unwrap();

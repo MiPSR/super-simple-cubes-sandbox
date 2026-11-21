@@ -20,6 +20,7 @@ const RECORD_SIZE: u64 = 14;
 const MAX_EDITS: u32 = 4_000_000;
 const PLAYER_MAGIC: &[u8; 8] = b"SSCPLY01";
 const PLAYER_MAGIC_V2: &[u8; 8] = b"SSCPLY02";
+const PLAYER_MAGIC_V3: &[u8; 8] = b"SSCPLY03";
 const ITEMS_MAGIC: &[u8; 8] = b"SSCITM01";
 const MOBS_MAGIC: &[u8; 8] = b"SSCMOB01";
 const MAX_SAVED_ITEMS: u32 = 1_000_000;
@@ -57,6 +58,8 @@ pub struct PlayerSave {
     pub hunger: u8,
     pub air: u16,
     pub selected_slot: u8,
+    pub hunger_effect_ticks: u16,
+    pub exhaustion: f32,
 }
 
 impl Default for PlayerSave {
@@ -68,6 +71,8 @@ impl Default for PlayerSave {
             hunger: crate::survival::MAX_HUNGER,
             air: crate::survival::MAX_AIR,
             selected_slot: 0,
+            hunger_effect_ticks: 0,
+            exhaustion: 0.0,
         }
     }
 }
@@ -197,7 +202,8 @@ pub fn load_player(
     let file_len = file.metadata()?.len();
     let v1_len = 8 + 16 + crate::survival::INVENTORY_SIZE * 3;
     let v2_len = 8 + 16 + 20 + crate::survival::INVENTORY_SIZE * 3;
-    if file_len != v1_len as u64 && file_len != v2_len as u64 {
+    let v3_len = v2_len + 6;
+    if file_len != v1_len as u64 && file_len != v2_len as u64 && file_len != v3_len as u64 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid player save length",
@@ -213,13 +219,17 @@ pub fn load_player(
         ));
     }
     let v2 = &bytes[..8] == PLAYER_MAGIC_V2;
-    if (!v2 && &bytes[..8] != PLAYER_MAGIC) || &bytes[8..24] != player_id {
+    let v3 = &bytes[..8] == PLAYER_MAGIC_V3;
+    if (!v2 && !v3 && &bytes[..8] != PLAYER_MAGIC) || &bytes[8..24] != player_id {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "player save identity or format mismatch",
         ));
     }
-    if v2 != (expected_len == v2_len) {
+    if (v2 && expected_len != v2_len)
+        || (v3 && expected_len != v3_len)
+        || (!v2 && !v3 && expected_len != v1_len)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "player save version and length mismatch",
@@ -227,7 +237,7 @@ pub fn load_player(
     }
     let mut data = PlayerSave::default();
     data.inventory.clear();
-    let inventory_offset = if v2 {
+    let inventory_offset = if v2 || v3 {
         let position = [
             f32::from_le_bytes(bytes[24..28].try_into().expect("fixed save slice")),
             f32::from_le_bytes(bytes[28..32].try_into().expect("fixed save slice")),
@@ -258,7 +268,21 @@ pub fn load_player(
         data.hunger = hunger;
         data.air = air;
         data.selected_slot = selected_slot;
-        44
+        if v3 {
+            data.hunger_effect_ticks =
+                u16::from_le_bytes(bytes[44..46].try_into().expect("fixed save slice"));
+            data.exhaustion =
+                f32::from_le_bytes(bytes[46..50].try_into().expect("fixed save slice"));
+            if data.hunger_effect_ticks > 600
+                || !data.exhaustion.is_finite()
+                || !(0.0..=10.0).contains(&data.exhaustion)
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid player effects"));
+            }
+            50
+        } else {
+            44
+        }
     } else {
         24
     };
@@ -330,6 +354,9 @@ pub fn save_player(
         || data.hunger > crate::survival::MAX_HUNGER
         || data.air > crate::survival::MAX_AIR
         || data.selected_slot >= 9
+        || data.hunger_effect_ticks > 600
+        || !data.exhaustion.is_finite()
+        || !(0.0..=10.0).contains(&data.exhaustion)
     {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid player vitals"));
     }
@@ -338,7 +365,7 @@ pub fn save_player(
     }
     let temp_path = path.with_extension("tmp");
     let mut file = File::create(&temp_path)?;
-    file.write_all(PLAYER_MAGIC_V2)?;
+    file.write_all(PLAYER_MAGIC_V3)?;
     file.write_all(player_id)?;
     for coordinate in position {
         file.write_all(&coordinate.to_le_bytes())?;
@@ -347,6 +374,8 @@ pub fn save_player(
     file.write_all(&[data.hunger])?;
     file.write_all(&data.air.to_le_bytes())?;
     file.write_all(&[data.selected_slot])?;
+    file.write_all(&data.hunger_effect_ticks.to_le_bytes())?;
+    file.write_all(&data.exhaustion.to_le_bytes())?;
     for slot in &data.inventory {
         if let Some((item, count)) = slot {
             file.write_all(&item.to_le_bytes())?;
@@ -690,6 +719,8 @@ mod tests {
             hunger: 7,
             air: 250,
             selected_slot: 4,
+            hunger_effect_ticks: 321,
+            exhaustion: 2.25,
         };
 
         save_player(&path, &player_id, &data).unwrap();
@@ -699,6 +730,59 @@ mod tests {
             io::ErrorKind::InvalidData
         );
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn old_player_saves_migrate_without_effects() {
+        let path =
+            std::env::temp_dir().join(format!("ssc-player-migration-{}.dat", std::process::id()));
+        let player_id = [0x42; 16];
+        let mut data = PlayerSave::default();
+        data.position = Some([8.5, 70.0, -4.5]);
+        data.inventory[0] = Some((ssc_world::APPLE, 3));
+        data.hunger_effect_ticks = 300;
+        data.exhaustion = 2.5;
+        save_player(&path, &player_id, &data).unwrap();
+
+        let mut v2 = fs::read(&path).unwrap();
+        v2[..8].copy_from_slice(PLAYER_MAGIC_V2);
+        v2.drain(44..50);
+        fs::write(&path, &v2).unwrap();
+        let loaded = load_player(&path, &player_id).unwrap().unwrap();
+        assert_eq!(loaded.position, data.position);
+        assert_eq!(loaded.inventory, data.inventory);
+        assert_eq!(loaded.hunger_effect_ticks, 0);
+        assert_eq!(loaded.exhaustion, 0.0);
+
+        let mut v1 = v2;
+        v1[..8].copy_from_slice(PLAYER_MAGIC);
+        v1.drain(24..44);
+        fs::write(&path, &v1).unwrap();
+        let loaded = load_player(&path, &player_id).unwrap().unwrap();
+        assert_eq!(loaded.position, None);
+        assert_eq!(loaded.inventory, data.inventory);
+        assert_eq!(loaded.hunger_effect_ticks, 0);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn invalid_player_effects_are_rejected() {
+        let path =
+            std::env::temp_dir().join(format!("ssc-player-effects-{}.dat", std::process::id()));
+        let player_id = [0x43; 16];
+        let mut data = PlayerSave::default();
+        data.position = Some([8.5, 70.0, 8.5]);
+        save_player(&path, &player_id, &data).unwrap();
+        let valid = fs::read(&path).unwrap();
+        let mut invalid = valid.clone();
+        invalid[44..46].copy_from_slice(&601u16.to_le_bytes());
+        fs::write(&path, &invalid).unwrap();
+        assert_eq!(load_player(&path, &player_id).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        invalid = valid;
+        invalid[46..50].copy_from_slice(&f32::NAN.to_le_bytes());
+        fs::write(&path, &invalid).unwrap();
+        assert_eq!(load_player(&path, &player_id).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

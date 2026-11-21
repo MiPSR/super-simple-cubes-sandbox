@@ -43,7 +43,8 @@ runnable through Nix.
   `nix run .#ssc-client -- --connect host:port`.
 - Saves: both local play and the dedicated server use `ssc-world.bin` by
   default; pass `--world PATH` to select another save file. Player state
-  (inventory, position, vitals and selected slot) is saved by an anonymous
+  (inventory, position, vitals, Hunger-effect duration, exhaustion and selected
+  slot) is saved by an anonymous
   client UUID stored at
   `$XDG_DATA_HOME/super-simple-cubes/anonymous-player-id` (or
   `~/.local/share/super-simple-cubes/anonymous-player-id`). Delete that file

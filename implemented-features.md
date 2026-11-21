@@ -25,8 +25,9 @@ Every implemented wiki feature gets a line here. Status legend:
 - `partial` — Optional atomic world saves (`--world PATH`): deterministic
   seed, day/night clock and block edits, autosaved once a minute and on
   shutdown. Version-1 saves migrate with the default morning time. Anonymous
-  player state persists by client-generated UUID (inventory, position, vitals
-  and selected hotbar slot); dropped stacks persist with physics state;
+  player state persists by client-generated UUID (inventory, position, vitals,
+  Hunger-effect duration, exhaustion and selected hotbar slot); legacy player
+  saves migrate with default effect state. Dropped stacks persist with physics state;
   mob kind, health, position and AI timers persist too. Mobs and dropped
   items pause while no players are online; distant dropped items also pause
   until a player approaches. Collision terrain is generated
