@@ -1051,12 +1051,35 @@ impl Server {
 
     fn tick_items(&mut self, dt: f32) {
         let mut expired = Vec::new();
+        let players: Vec<Vec3> = self
+            .sessions
+            .values()
+            .filter(|session| session.player.joined && !session.survival.dead)
+            .map(|session| session.player.pos + Vec3::new(0.0, 0.9, 0.0))
+            .collect();
         for (id, item) in self.items.iter_mut() {
             item.age += 1;
             item.pickup_delay = item.pickup_delay.saturating_sub(1);
             if item.age >= ITEM_LIFETIME_TICKS || item.pos.y <= ssc_world::MIN_Y as f32 {
                 expired.push(*id);
                 continue;
+            }
+            if let Some(target) = players
+                .iter()
+                .filter_map(|player| {
+                    let delta = *player - item.pos;
+                    let distance = delta.length();
+                    (distance < 8.0 && distance > 0.001).then_some((delta, distance))
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(delta, distance)| delta / distance)
+            {
+                // Gentle server-authoritative homing toward nearby players.
+                item.vel += target * (8.0 * dt);
+                let speed = item.vel.length();
+                if speed > 12.0 {
+                    item.vel = item.vel * (12.0 / speed);
+                }
             }
             item.vel.y = (item.vel.y - GRAVITY * dt).max(-TERMINAL_VELOCITY);
             let result = crate::physics::move_entity(
@@ -2442,6 +2465,27 @@ mod tests {
             Some((ssc_world::APPLE, 3))
         );
         assert!(rig.server.items.is_empty());
+    }
+
+    #[test]
+    fn dropped_items_are_attracted_toward_nearby_players() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let player_pos = rig.server.sessions[&1].player.pos;
+        rig.server.spawn_item_entity(
+            ssc_world::APPLE,
+            1,
+            player_pos + Vec3::new(4.0, 0.0, 0.0),
+        );
+        let item = rig.server.items.values_mut().next().unwrap();
+        item.vel = Vec3::ZERO;
+        item.pickup_delay = 100;
+
+        rig.server.tick_items(0.05);
+
+        assert!(
+            rig.server.items.values().next().unwrap().vel.x < 0.0,
+            "item velocity should point toward the player"
+        );
     }
 
     #[test]

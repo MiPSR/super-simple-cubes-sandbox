@@ -108,7 +108,8 @@ Every implemented wiki feature gets a line here. Status legend:
   with rotten flesh applying Hunger I for 30 s at an 80% chance. No
   effect icon yet. Server-owned dropped stacks have basic gravity, same-item
   merging, 10-tick pickup delay, 5-minute despawn and partial inventory
-  pickup. Bobbing, magnetism and merge radius/timing refinements pending.
+  pickup, plus gentle attraction toward nearby players. Bobbing and merge
+  radius/timing refinements pending.
   36-slot inventories (9 hotbar + 27 storage, stack 64) are server-owned
   and synced. No tools or crafting ingredients yet.
 - `partial` — Gamepad (owner-approved gilrs, engine-side input abstraction):
