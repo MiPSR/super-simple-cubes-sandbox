@@ -64,8 +64,8 @@ Every implemented wiki feature gets a line here. Status legend:
   tool-required — hand-only until tools exist), block drops into a 36-slot
   inventory (stone→cobble, grass→dirt, leaves→apple at 5%), placing
   consumes items, eating (apple +4 hunger), death → auto-respawn after 2 s
-  at spawn (Minecraft uses a death screen + manual respawn; inventory is
-  kept on death). No tools, armor, XP, crafting, death drops, inventory
+  at spawn (Minecraft uses a death screen + manual respawn); death drops
+  inventory as world items. No tools, armor, XP, crafting, inventory
   persistence or mode switching mid-session yet.
 - `partial` — Game modes: creative (default hotbar blocks, instant dig,
   no consumption, E = block picker, double-jump flight with server

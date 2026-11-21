@@ -135,6 +135,8 @@ struct Session {
     inventory: Vec<crate::survival::Slot>,
     /// Survival-mode state (ignored in creative).
     survival: crate::survival::SurvivalState,
+    /// Whether this death already emitted inventory drops.
+    inventory_dropped_on_death: bool,
     /// Respawn point (set at join).
     spawn: Vec3,
     /// Sync flags: send Inventory/Status when dirty.
@@ -190,6 +192,7 @@ impl Session {
             },
             inventory,
             survival: crate::survival::SurvivalState::default(),
+            inventory_dropped_on_death: false,
             spawn: Vec3::new(8.5, 128.0, 8.5),
             inv_dirty: true,
             status_dirty: true,
@@ -368,6 +371,7 @@ impl Server {
                     p.pos = spawn;
                     p.vel = Vec3::ZERO;
                     session.survival.respawn();
+                    session.inventory_dropped_on_death = false;
                     session.status_dirty = true;
                     fxs.push(PlayerFx {
                         id: *id,
@@ -602,6 +606,29 @@ impl Server {
             for id in despawn {
                 self.mobs.remove(&id);
                 let _ = self.broadcast(&ServerPacket::EntityRemove { id });
+            }
+        }
+
+        if self.cfg.game_mode == GameMode::Survival {
+            let dead_players: Vec<(EntityId, Vec3, Vec<(ssc_world::ItemId, u8)>)> = self
+                .sessions
+                .iter_mut()
+                .filter(|(_, session)| {
+                    session.player.joined
+                        && session.survival.dead
+                        && !session.inventory_dropped_on_death
+                })
+                .map(|(id, session)| {
+                    session.inventory_dropped_on_death = true;
+                    session.inv_dirty = true;
+                    let drops = session.inventory.iter_mut().filter_map(Option::take).collect();
+                    (*id, session.player.pos, drops)
+                })
+                .collect();
+            for (_id, pos, drops) in dead_players {
+                for (item, count) in drops {
+                    self.spawn_item_entity(item, count, pos);
+                }
             }
         }
 
@@ -2196,6 +2223,31 @@ mod tests {
         assert!(packets
             .iter()
             .any(|p| matches!(p, ServerPacket::Status { health, .. } if *health > 0.0)));
+    }
+
+    #[test]
+    fn death_drops_inventory_once_and_respawn_does_not_duplicate_it() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((ssc_world::APPLE, 3));
+            session.inventory[1] = Some((ssc_world::DIRT, 5));
+            let mut fx = crate::survival::TickEffects::default();
+            session.survival.apply_damage(30.0, &mut fx);
+        }
+
+        rig.server.tick();
+        assert!(rig.server.sessions[&1]
+            .inventory
+            .iter()
+            .all(Option::is_none));
+        assert_eq!(rig.server.items.values().map(|item| item.count as u16).sum::<u16>(), 8);
+
+        rig.server.sessions.get_mut(&1).unwrap().survival.respawn_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
+        rig.server.tick();
+        assert_eq!(rig.server.items.values().map(|item| item.count as u16).sum::<u16>(), 8);
+        assert!(!rig.server.sessions[&1].survival.dead);
     }
 
     #[test]
