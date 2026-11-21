@@ -58,7 +58,8 @@ Every implemented wiki feature gets a line here. Status legend:
   level. Below Y=0 the stone body becomes deepslate, with a mixed transition
   from Y=0 through Y=7. Seeded coal and iron ore clusters replace stone/deepslate in depth-limited
   bands (coal Y≥0, iron Y≤64) and drop coal/raw iron, respectively. Ore
-  frequency and shapes are approximate; deepslate iron ore exists, but
+  frequency and shapes are approximate; small gravel pockets also replace
+  the underground stone/deepslate body. Deepslate iron ore exists, but
   other ores, biomes, structures and flowing water are pending.
 - `partial` — Water: static lakes rendered translucent (blend pass,
   back-to-front, no depth writes), same-type face merging; swimming
@@ -75,6 +76,10 @@ Every implemented wiki feature gets a line here. Status legend:
   generate below Y=0; breaking deepslate drops cobbled deepslate and both
   iron ore variants drop raw iron with a stone pickaxe. Deepslate coal ore, deepslate variants
   of other ores and exact Bedrock distribution are pending.
+- `partial` — Gravel deposits occur underground; breaking gravel drops flint
+  at the wiki's unenchanted 10% chance, otherwise gravel. Gravel generation
+  shape/distribution is approximate, and generated/placed gravel does not
+  yet fall when unsupported; no shovels or Fortune/Silk Touch yet.
 
 ## Player
 

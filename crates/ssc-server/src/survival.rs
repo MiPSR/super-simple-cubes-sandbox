@@ -386,6 +386,9 @@ pub fn drop_for(block: BlockId, rng: f32) -> Option<ItemId> {
         // Higher than vanilla so food is reachable without saplings.
         return (rng < ssc_world::LEAF_APPLE_CHANCE).then_some(ssc_world::APPLE);
     }
+    if block == ssc_world::GRAVEL && rng < 0.10 {
+        return Some(ssc_world::FLINT);
+    }
     ssc_world::items::block_drop(block)
 }
 
@@ -613,6 +616,8 @@ mod tests {
             Some(ssc_world::APPLE)
         );
         assert_eq!(drop_for(ssc_world::OAK_LEAVES, 0.5), None);
+        assert_eq!(drop_with_tool(ssc_world::GRAVEL, 0.099, None), Some(ssc_world::FLINT));
+        assert_eq!(drop_with_tool(ssc_world::GRAVEL, 0.1, None), Some(ssc_world::GRAVEL));
     }
 
     #[test]

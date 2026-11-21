@@ -8,7 +8,7 @@
 
 use ssc_world::{
     Column, SubChunk, AIR, BEDROCK, COAL_ORE, DEEPSLATE, DEEPSLATE_IRON_ORE, DIRT, GRASS_BLOCK,
-    IRON_ORE, MAX_Y, MIN_Y, OAK_LEAVES, OAK_LOG, SAND, SANDSTONE, SNOW_BLOCK, STONE,
+    GRAVEL, IRON_ORE, MAX_Y, MIN_Y, OAK_LEAVES, OAK_LOG, SAND, SANDSTONE, SNOW_BLOCK, STONE,
     SUBCHUNKS_PER_COLUMN, WATER,
 };
 
@@ -104,6 +104,21 @@ impl WorldGen {
                 } else {
                     ore
                 };
+            }
+        }
+        // Small gravel deposits, including below Y=0. Generated deposits
+        // remain suspended at cave edges until block updates are simulated.
+        let gravel_hash = hash3(
+            cell_x,
+            cell_z,
+            self.seed ^ 0x6A4E_1_u64 ^ (cell_y as u64).wrapping_mul(0xA24B_8D9C),
+        );
+        if gravel_hash % 4 == 0 {
+            let dx = local_x - 2 - ((gravel_hash >> 8) % 4) as i32;
+            let dy = local_y - 2 - ((gravel_hash >> 16) % 4) as i32;
+            let dz = local_z - 2 - ((gravel_hash >> 24) % 4) as i32;
+            if dx * dx + dy * dy + dz * dz <= 4 {
+                return GRAVEL;
             }
         }
         if self.deepslate_at(x, y, z) {
@@ -625,13 +640,34 @@ mod tests {
                     }
                     let block = col.get(lx, y, lz);
                     if y < 0 {
-                        assert!(matches!(block, DEEPSLATE | DEEPSLATE_IRON_ORE));
+                        assert!(matches!(block, DEEPSLATE | DEEPSLATE_IRON_ORE | GRAVEL));
                     }
                     if y >= 8 {
-                        assert!(matches!(block, STONE | COAL_ORE | IRON_ORE));
+                        assert!(matches!(block, STONE | COAL_ORE | IRON_ORE | GRAVEL));
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn gravel_deposits_generate_deterministically_on_both_sides_of_origin() {
+        let gen = WorldGen::new(2137);
+        for (cx, cz) in [(-2, -1), (1, 2)] {
+            let a = gen.generate_column(cx, cz);
+            let b = gen.generate_column(cx, cz);
+            let mut count = 0;
+            for lx in 0..16 {
+                for lz in 0..16 {
+                    for y in -50..40 {
+                        if a.get(lx, y, lz) == GRAVEL {
+                            assert_eq!(b.get(lx, y, lz), GRAVEL);
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            assert!(count > 0, "expected gravel near column ({cx}, {cz})");
         }
     }
 
