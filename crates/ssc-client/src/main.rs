@@ -1330,6 +1330,11 @@ fn main() {
                     sounds = Some(std::path::PathBuf::from(v));
                 }
             }
+            "--world" => {
+                if let Some(v) = args.next() {
+                    cfg.world_path = Some(v.into());
+                }
+            }
             "--seed" => {
                 if let Some(v) = args.next() {
                     if let Ok(seed) = v.parse::<u64>() {
@@ -1366,6 +1371,9 @@ fn main() {
             }))
         }
         None => {
+            if cfg.world_path.is_none() {
+                cfg.world_path = Some("ssc-world.bin".into());
+            }
             eprintln!(
                 "[client] starting local server (seed {}, rd {})",
                 cfg.seed, cfg.render_distance

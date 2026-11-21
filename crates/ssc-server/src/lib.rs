@@ -10,6 +10,7 @@
 
 pub mod game;
 pub mod mobs;
+pub mod persistence;
 pub mod physics;
 pub mod raycast;
 pub mod survival;

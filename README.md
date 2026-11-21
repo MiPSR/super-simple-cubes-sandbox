@@ -41,10 +41,11 @@ runnable through Nix.
 - Local play: `nix run .#ssc-client` (spawns an embedded server thread).
 - Dedicated play: `nix run .#ssc-server`, then
   `nix run .#ssc-client -- --connect host:port`.
+- Saves: both local play and the dedicated server use `ssc-world.bin` by
+  default; pass `--world PATH` to select another save file.
 - Textured cube world (procedural placeholder atlas), server-authoritative
   20 TPS physics, dig/place with server-side raycasts, server-driven sound
   triggers (logged), frustum + face culling, first-cut Distant
   Horizons-style LOD.
 
 See `implemented-features.md` for the full parity tracker.
-

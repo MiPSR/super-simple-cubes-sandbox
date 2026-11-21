@@ -7,6 +7,7 @@
 //! client wire.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ssc_math::{
@@ -88,6 +89,8 @@ pub struct ServerConfig {
     pub lod_distance: i32,
     /// Game mode for new players.
     pub game_mode: GameMode,
+    /// Optional save path. `None` keeps test/embedded sessions ephemeral.
+    pub world_path: Option<PathBuf>,
     /// Local (in-process) mode: burst the initial stream instead of pacing
     /// it (memory wire has no bandwidth concerns).
     pub local: bool,
@@ -100,6 +103,7 @@ impl Default for ServerConfig {
             render_distance: DEFAULT_RENDER_DISTANCE,
             lod_distance: DEFAULT_LOD_DISTANCE,
             game_mode: GameMode::Survival,
+            world_path: None,
             local: false,
         }
     }
@@ -211,6 +215,8 @@ pub struct Server {
     world: World,
     gen: WorldGen,
     edited: HashSet<ColumnKey>,
+    block_edits: crate::persistence::BlockEdits,
+    persistence_ready: bool,
     sessions: HashMap<EntityId, Session>,
     /// Mobs (ids from `FIRST_MOB_ID`).
     mobs: HashMap<EntityId, crate::mobs::Mob>,
@@ -240,10 +246,36 @@ impl Server {
     }
 
     fn empty(cfg: ServerConfig) -> Self {
+        let mut cfg = cfg;
+        let (seed, block_edits, persistence_ready) = match cfg.world_path.as_deref() {
+            Some(path) => match crate::persistence::load(path) {
+                Ok(Some((seed, edits))) => {
+                    eprintln!(
+                        "[server] loaded seed {seed} and {} block edits from {}",
+                        edits.values().map(HashMap::len).sum::<usize>(),
+                        path.display()
+                    );
+                    (seed, edits, true)
+                }
+                Ok(None) => (cfg.seed, HashMap::new(), true),
+                Err(err) => {
+                    eprintln!(
+                        "[server] could not load {}: {err}; saves disabled to protect it",
+                        path.display()
+                    );
+                    cfg.world_path = None;
+                    (cfg.seed, HashMap::new(), false)
+                }
+            },
+            None => (cfg.seed, HashMap::new(), true),
+        };
+        let edited = block_edits.keys().copied().collect();
         Self {
-            gen: WorldGen::new(cfg.seed),
+            gen: WorldGen::new(seed),
             world: World::default(),
-            edited: HashSet::new(),
+            edited,
+            block_edits,
+            persistence_ready,
             cfg,
             sessions: HashMap::new(),
             mobs: HashMap::new(),
@@ -269,6 +301,23 @@ impl Server {
     /// Dedicated mode: hook the accept channel; new wires become sessions.
     pub fn set_accept_channel(&mut self, rx: std::sync::mpsc::Receiver<Box<dyn Wire>>) {
         self.accept_rx = Some(rx);
+    }
+
+    fn save_world(&self) {
+        if !self.persistence_ready {
+            return;
+        }
+        let Some(path) = self.cfg.world_path.as_deref() else { return };
+        if let Err(err) = crate::persistence::save(path, self.gen.seed(), &self.block_edits) {
+            eprintln!("[server] world save to {} failed: {err}", path.display());
+        }
+    }
+
+    fn record_block_edit(&mut self, x: i32, y: i32, z: i32, block: BlockId) {
+        let key = (x.div_euclid(16), z.div_euclid(16));
+        let local = (x.rem_euclid(16), y, z.rem_euclid(16));
+        self.block_edits.entry(key).or_default().insert(local, block);
+        self.edited.insert(key);
     }
 
     /// Current time of day, 0..1 (0 = dawn). Minecraft pace: 24000
@@ -340,6 +389,7 @@ impl Server {
                 next_tick = now; // we're behind; don't accumulate debt
             }
         }
+        self.save_world();
         let _ = self.broadcast(&ServerPacket::Goodbye { reason: "server closed".into() });
     }
 
@@ -700,6 +750,9 @@ impl Server {
             }
             self.evict_unused_columns();
             self.spawn_mobs();
+        }
+        if self.tick % 1200 == 0 {
+            self.save_world();
         }
     }
 
@@ -1312,10 +1365,7 @@ impl Server {
 
     /// Ensure a column exists server-side and stream it fully to one player.
     fn stream_column(&mut self, id: EntityId, key: ColumnKey) {
-        if self.world.column(key.0, key.1).is_none() {
-            let col = self.gen.generate_column(key.0, key.1);
-            self.world.columns.insert(key, col);
-        }
+        self.ensure_column(key);
         // Collect sub-chunk payloads first (immutable borrow of the world),
         // then send (mutable borrow of the session). Wire layout:
         // SubChunk::to_wire — the single source of truth.
@@ -1347,8 +1397,23 @@ impl Server {
         session.streamed.insert(key);
     }
 
+    fn ensure_column(&mut self, key: ColumnKey) {
+        if self.world.column(key.0, key.1).is_none() {
+            let mut col = self.gen.generate_column(key.0, key.1);
+            if let Some(edits) = self.block_edits.get(&key) {
+                for (&(x, y, z), &block) in edits {
+                    col.set(x, y, z, block);
+                }
+            }
+            self.world.columns.insert(key, col);
+        }
+    }
+
     /// Stream the LOD summary of one column to one player.
     fn stream_lod(&mut self, id: EntityId, key: ColumnKey) {
+        if self.edited.contains(&key) {
+            self.ensure_column(key);
+        }
         let cells = self
             .gen
             .lod_summary(key.0, key.1, &self.world, &self.edited);
@@ -1619,7 +1684,7 @@ impl Server {
         if !self.world.set_block(x, y, z, AIR) {
             return;
         }
-        self.edited.insert((x.div_euclid(16), z.div_euclid(16)));
+        self.record_block_edit(x, y, z, AIR);
         let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block: AIR });
         self.send_sound(SoundId::Dig, x, y, z);
         // LOD must reflect the edit (server-driven LOD, specs.md §3).
@@ -1723,7 +1788,7 @@ impl Server {
         }
 
         if self.world.set_block(x, y, z, block) {
-            self.edited.insert((x.div_euclid(16), z.div_euclid(16)));
+            self.record_block_edit(x, y, z, block);
             let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block });
             self.send_sound(SoundId::Place, x, y, z);
             self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
@@ -2367,6 +2432,31 @@ mod tests {
         send_keys(&mut rig, 0);
         send_keys(&mut rig, keys::JUMP);
         assert!(!rig.server.sessions[&1].player.flying);
+    }
+
+    #[test]
+    fn saved_world_restores_seed_and_edits_before_column_streaming() {
+        let path = std::env::temp_dir().join(format!(
+            "ssc-server-world-{}.bin",
+            std::process::id()
+        ));
+        let mut cfg = ServerConfig::default();
+        cfg.seed = 123456;
+        cfg.world_path = Some(path.clone());
+
+        let mut original = Server::empty(cfg.clone());
+        original.world.set_block(-1, 80, -17, ssc_world::BRICKS);
+        original.record_block_edit(-1, 80, -17, ssc_world::BRICKS);
+        original.save_world();
+
+        let mut restored = Server::empty(cfg);
+        assert_eq!(restored.gen.seed(), 123456);
+        restored.ensure_column((-1, -2));
+        assert_eq!(
+            restored.world.get_block(-1, 80, -17),
+            Some(ssc_world::BRICKS)
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

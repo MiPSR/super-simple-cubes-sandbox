@@ -12,6 +12,7 @@ use ssc_server::{Server, ServerConfig};
 
 fn main() {
     let mut cfg = ServerConfig::default();
+    cfg.world_path = Some("ssc-world.bin".into());
     let mut port: u16 = 25565;
     let mut seed_specified = false;
 
@@ -56,6 +57,11 @@ fn main() {
                         Some(m) => cfg.game_mode = m,
                         None => eprintln!("bad --mode {v:?} (survival|creative), using survival"),
                     }
+                }
+            }
+            "--world" => {
+                if let Some(path) = args.next() {
+                    cfg.world_path = Some(path.into());
                 }
             }
             other => eprintln!("unknown argument {other:?}"),
