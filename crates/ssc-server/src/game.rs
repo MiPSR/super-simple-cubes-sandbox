@@ -2255,6 +2255,43 @@ impl Server {
                 }
             }
         }
+        self.settle_gravity_stack(x, y + 1, z);
+    }
+
+    /// Settle the contiguous sand/gravel stack above a changed support.
+    /// This is an immediate server-side block update; animated falling
+    /// entities, water displacement and entity suffocation are future work.
+    fn settle_gravity_stack(&mut self, x: i32, start_y: i32, z: i32) {
+        let mut y = start_y;
+        while y < ssc_world::MAX_Y {
+            let block = self.world.block_or_air(x, y, z);
+            if !matches!(block, ssc_world::SAND | ssc_world::GRAVEL) {
+                break;
+            }
+            let mut dest = y;
+            while dest > ssc_world::MIN_Y
+                && self.world.block_or_air(x, dest - 1, z) == AIR
+            {
+                dest -= 1;
+            }
+            if dest != y {
+                if !self.world.set_block(x, dest, z, block) {
+                    break;
+                }
+                self.world.set_block(x, y, z, AIR);
+                self.record_block_edit(x, y, z, AIR);
+                self.record_block_edit(x, dest, z, block);
+                let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block: AIR });
+                let _ = self.broadcast(&ServerPacket::BlockUpdate {
+                    x,
+                    y: dest,
+                    z,
+                    block,
+                });
+                self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
+            }
+            y += 1;
+        }
     }
 
     /// Right-click use: eat the selected food, or place the selected
@@ -2337,6 +2374,9 @@ impl Server {
             let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block });
             self.send_sound(SoundId::Place, x, y, z);
             self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
+            if matches!(block, ssc_world::SAND | ssc_world::GRAVEL) {
+                self.settle_gravity_stack(x, y, z);
+            }
             // Survival: consume one item.
             if self.cfg.game_mode == GameMode::Survival && count > 0 {
                 let slot = self.sessions[&id].player.selected_slot as usize % 9;
@@ -2543,6 +2583,41 @@ mod tests {
             sounds, 1,
             "expected exactly one place Sound, got {packets:?}"
         );
+    }
+
+    #[test]
+    fn gravel_and_sand_stack_settles_and_records_both_edits() {
+        let mut rig = Rig::new(1, 0.0);
+        let (x, z) = (8, 8);
+        rig.server.world.set_block(x, 50, z, ssc_world::STONE);
+        for y in 51..=56 {
+            rig.server.world.set_block(x, y, z, AIR);
+        }
+        rig.server.world.set_block(x, 55, z, ssc_world::GRAVEL);
+        rig.server.world.set_block(x, 56, z, ssc_world::SAND);
+        rig.server.settle_gravity_stack(x, 55, z);
+        assert_eq!(rig.server.world.block_or_air(x, 51, z), ssc_world::GRAVEL);
+        assert_eq!(rig.server.world.block_or_air(x, 52, z), ssc_world::SAND);
+        assert_eq!(rig.server.world.block_or_air(x, 55, z), AIR);
+        assert_eq!(rig.server.world.block_or_air(x, 56, z), AIR);
+        let edits = &rig.server.block_edits[&(0, 0)];
+        assert_eq!(edits[&(x, 51, z)], ssc_world::GRAVEL);
+        assert_eq!(edits[&(x, 52, z)], ssc_world::SAND);
+        assert_eq!(edits[&(x, 55, z)], AIR);
+        assert_eq!(edits[&(x, 56, z)], AIR);
+        let packets = rig.drain(0);
+        assert_eq!(packets.iter().filter(|packet| matches!(packet, ServerPacket::BlockUpdate { .. })).count(), 4);
+    }
+
+    #[test]
+    fn breaking_support_settles_gravel_above_it() {
+        let mut rig = Rig::new(1, 0.0);
+        rig.server.world.set_block(8, 53, 8, ssc_world::STONE);
+        rig.server.world.set_block(8, 54, 8, ssc_world::STONE);
+        rig.server.world.set_block(8, 55, 8, ssc_world::GRAVEL);
+        rig.server.break_block(1, 8, 54, 8);
+        assert_eq!(rig.server.world.block_or_air(8, 54, 8), ssc_world::GRAVEL);
+        assert_eq!(rig.server.world.block_or_air(8, 55, 8), AIR);
     }
 
     #[test]

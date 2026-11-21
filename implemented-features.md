@@ -78,8 +78,11 @@ Every implemented wiki feature gets a line here. Status legend:
   of other ores and exact Bedrock distribution are pending.
 - `partial` — Gravel deposits occur underground; breaking gravel drops flint
   at the wiki's unenchanted 10% chance, otherwise gravel. Gravel generation
-  shape/distribution is approximate, and generated/placed gravel does not
-  yet fall when unsupported; no shovels or Fortune/Silk Touch yet.
+  shape/distribution is approximate. Placed sand/gravel and stacks above
+  broken supports settle immediately with persisted block updates (no
+  animated falling entity, water displacement, suffocation or automatic
+  updates of suspended worldgen deposits yet); no shovels or Fortune/Silk
+  Touch yet.
 
 ## Player
 
