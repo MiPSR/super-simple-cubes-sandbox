@@ -55,5 +55,10 @@ runnable through Nix.
   20 TPS physics, dig/place with server-side raycasts, server-driven sound
   triggers (logged), frustum + face culling, first-cut Distant
   Horizons-style LOD.
+- Survival crafting: open inventory with E, then press 1 for 4 planks from a
+  log, 2 for 4 sticks from 2 planks, 3 for a wooden pickaxe (3 planks +
+  2 sticks), or 4 for a stone pickaxe (3 cobblestone + 2 sticks). Drag the
+  pickaxe into a hotbar slot to mine stone and ores for drops. This is an
+  interim inventory-wide recipe UI, not the full Minecraft crafting grid.
 
 See `implemented-features.md` for the full parity tracker.

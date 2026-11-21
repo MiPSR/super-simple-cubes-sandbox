@@ -11,15 +11,15 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ssc_math::{
-    look_dir, yaw_forward, yaw_right, GRAVITY, JUMP_VELOCITY, PLAYER_EYE_HEIGHT, REACH, SNEAK_SPEED,
-    SPRINT_SPEED, TERMINAL_VELOCITY, WALK_SPEED, Vec3,
+    look_dir, yaw_forward, yaw_right, Vec3, GRAVITY, JUMP_VELOCITY, PLAYER_EYE_HEIGHT, REACH,
+    SNEAK_SPEED, SPRINT_SPEED, TERMINAL_VELOCITY, WALK_SPEED,
 };
 use ssc_protocol::packets::{keys, ClientPacket, ServerPacket, SoundId};
 use ssc_protocol::wire::{memory_pair, MemoryWire, Wire};
 use ssc_protocol::PROTOCOL_VERSION;
 use ssc_world::{is_solid, BlockId, ColumnKey, World, AIR, SAND, SANDSTONE, SNOW_BLOCK, WATER};
 
-use crate::physics::{move_player, player_aabb, entity_aabb};
+use crate::physics::{entity_aabb, move_player, player_aabb};
 use crate::raycast::raycast;
 use crate::worldgen::WorldGen;
 
@@ -278,29 +278,29 @@ impl Server {
             None => (cfg.seed, 0.3, HashMap::new(), true),
         };
         let (saved_items, item_persistence_ready) = match cfg.world_path.as_deref() {
-            Some(path) => match crate::persistence::load_items(
-                &crate::persistence::item_save_path(path),
-            ) {
-                Ok(items) => (items.unwrap_or_default(), true),
-                Err(err) => {
-                    eprintln!(
-                        "[server] dropped-item save could not be loaded: {err}; preserving it"
-                    );
-                    (Vec::new(), false)
+            Some(path) => {
+                match crate::persistence::load_items(&crate::persistence::item_save_path(path)) {
+                    Ok(items) => (items.unwrap_or_default(), true),
+                    Err(err) => {
+                        eprintln!(
+                            "[server] dropped-item save could not be loaded: {err}; preserving it"
+                        );
+                        (Vec::new(), false)
+                    }
                 }
-            },
+            }
             None => (Vec::new(), false),
         };
         let (saved_mobs, mob_persistence_ready) = match cfg.world_path.as_deref() {
-            Some(path) => match crate::persistence::load_mobs(
-                &crate::persistence::mob_save_path(path),
-            ) {
-                Ok(mobs) => (mobs.unwrap_or_default(), true),
-                Err(err) => {
-                    eprintln!("[server] mob save could not be loaded: {err}; preserving it");
-                    (Vec::new(), false)
+            Some(path) => {
+                match crate::persistence::load_mobs(&crate::persistence::mob_save_path(path)) {
+                    Ok(mobs) => (mobs.unwrap_or_default(), true),
+                    Err(err) => {
+                        eprintln!("[server] mob save could not be loaded: {err}; preserving it");
+                        (Vec::new(), false)
+                    }
                 }
-            },
+            }
             None => (Vec::new(), false),
         };
         let edited = block_edits.keys().copied().collect();
@@ -383,7 +383,8 @@ impl Server {
     pub fn attach(&mut self, wire: Box<dyn Wire>) -> EntityId {
         let id = self.next_id;
         self.next_id += 1;
-        self.sessions.insert(id, Session::new(wire, self.cfg.game_mode));
+        self.sessions
+            .insert(id, Session::new(wire, self.cfg.game_mode));
         id
     }
 
@@ -396,13 +397,12 @@ impl Server {
         if !self.persistence_ready {
             return;
         }
-        let Some(path) = self.cfg.world_path.as_deref() else { return };
-        if let Err(err) = crate::persistence::save(
-            path,
-            self.gen.seed(),
-            self.time_of_day,
-            &self.block_edits,
-        ) {
+        let Some(path) = self.cfg.world_path.as_deref() else {
+            return;
+        };
+        if let Err(err) =
+            crate::persistence::save(path, self.gen.seed(), self.time_of_day, &self.block_edits)
+        {
             eprintln!("[server] world save to {} failed: {err}", path.display());
         }
     }
@@ -428,7 +428,10 @@ impl Server {
             .collect();
         let path = crate::persistence::item_save_path(world_path);
         if let Err(err) = crate::persistence::save_items(&path, &items) {
-            eprintln!("[server] dropped-item save to {} failed: {err}", path.display());
+            eprintln!(
+                "[server] dropped-item save to {} failed: {err}",
+                path.display()
+            );
         }
     }
 
@@ -541,7 +544,10 @@ impl Server {
     fn record_block_edit(&mut self, x: i32, y: i32, z: i32, block: BlockId) {
         let key = (x.div_euclid(16), z.div_euclid(16));
         let local = (x.rem_euclid(16), y, z.rem_euclid(16));
-        self.block_edits.entry(key).or_default().insert(local, block);
+        self.block_edits
+            .entry(key)
+            .or_default()
+            .insert(local, block);
         self.edited.insert(key);
     }
 
@@ -592,7 +598,7 @@ impl Server {
             let dead: Vec<EntityId> = self
                 .sessions
                 .iter()
-            .filter(|(_, s)| s.player.joined && !s.wire.is_alive())
+                .filter(|(_, s)| s.player.joined && !s.wire.is_alive())
                 .map(|(id, _)| *id)
                 .collect();
             for id in dead {
@@ -619,7 +625,9 @@ impl Server {
         self.save_item_entities();
         self.save_mobs();
         self.save_world();
-        let _ = self.broadcast(&ServerPacket::Goodbye { reason: "server closed".into() });
+        let _ = self.broadcast(&ServerPacket::Goodbye {
+            reason: "server closed".into(),
+        });
     }
 
     fn tick(&mut self) {
@@ -681,8 +689,7 @@ impl Server {
             let survival = self.cfg.game_mode == GameMode::Survival;
             let fx_tick = if survival {
                 session.survival.tick(crate::survival::TickInput {
-                    landed: !was_on_ground && p.on_ground
-                        && p.pos.y >= ssc_world::MIN_Y as f32,
+                    landed: !was_on_ground && p.on_ground && p.pos.y >= ssc_world::MIN_Y as f32,
                     in_water: p.in_water,
                     eye_in_water,
                     below_world: p.pos.y < ssc_world::MIN_Y as f32,
@@ -694,7 +701,9 @@ impl Server {
             } else {
                 Default::default()
             };
-            if fx_tick.health_changed || fx_tick.hunger_changed || fx_tick.air_changed
+            if fx_tick.health_changed
+                || fx_tick.hunger_changed
+                || fx_tick.air_changed
                 || fx_tick.effect_changed
             {
                 session.status_dirty = true;
@@ -705,6 +714,7 @@ impl Server {
             let mut dig_broadcast = None;
             let mut broke_block = None;
             if let Some(dig) = &mut session.survival.digging {
+                let held = session.inventory[p.selected_slot as usize % 9].map(|(item, _)| item);
                 let dir = look_dir(p.yaw, p.pitch);
                 let eye = p.pos + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0);
                 let same_target = raycast(&self.world, eye, dir, REACH)
@@ -715,8 +725,10 @@ impl Server {
                     // like Minecraft — progress restarts on the new block.
                     match raycast(&self.world, eye, dir, REACH) {
                         Some(hit)
-                            if crate::survival::dig_time(
-                                self.world.block_or_air(hit.block[0], hit.block[1], hit.block[2]),
+                            if crate::survival::dig_time_with_tool(
+                                self.world
+                                    .block_or_air(hit.block[0], hit.block[1], hit.block[2]),
+                                held,
                             )
                             .is_some() =>
                         {
@@ -734,7 +746,7 @@ impl Server {
                     }
                 } else {
                     let block = self.world.block_or_air(dig.x, dig.y, dig.z);
-                    let time = crate::survival::dig_time(block);
+                    let time = crate::survival::dig_time_with_tool(block, held);
                     match time {
                         Some(time) => {
                             dig.progress += dt / time;
@@ -768,7 +780,12 @@ impl Server {
         for fx in fxs {
             if fx.hurt {
                 let (x, y, z) = fx.pos;
-                self.send_sound(SoundId::Hurt, x.floor() as i32, y.floor() as i32, z.floor() as i32);
+                self.send_sound(
+                    SoundId::Hurt,
+                    x.floor() as i32,
+                    y.floor() as i32,
+                    z.floor() as i32,
+                );
             }
             if let Some((x, y, z, progress)) = fx.dig_broadcast {
                 let _ = self.broadcast(&ServerPacket::DigProgress { x, y, z, progress });
@@ -783,9 +800,8 @@ impl Server {
             let mut steps: Vec<(f32, f32, f32)> = Vec::new();
             for session in self.sessions.values() {
                 let p = &session.player;
-                let moving = p.keys
-                    & (keys::FORWARD | keys::BACKWARD | keys::LEFT | keys::RIGHT)
-                    != 0;
+                let moving =
+                    p.keys & (keys::FORWARD | keys::BACKWARD | keys::LEFT | keys::RIGHT) != 0;
                 if p.joined && p.on_ground && moving && !session.survival.dead {
                     steps.push((p.pos.x, p.pos.y, p.pos.z));
                 }
@@ -836,9 +852,7 @@ impl Server {
                     .flat_map(|mob| {
                         let cx = (mob.pos.x.floor() as i32).div_euclid(16);
                         let cz = (mob.pos.z.floor() as i32).div_euclid(16);
-                        (-1..=1).flat_map(move |dx| {
-                            (-1..=1).map(move |dz| (cx + dx, cz + dz))
-                        })
+                        (-1..=1).flat_map(move |dx| (-1..=1).map(move |dz| (cx + dx, cz + dz)))
                     })
                     .collect();
                 for key in mob_columns {
@@ -856,7 +870,9 @@ impl Server {
 
             // Zombie hits land on players (survival damage + sound).
             for (mob_id, idx) in mob_hits {
-                let Some((player_id, _)) = players.get(idx) else { continue };
+                let Some((player_id, _)) = players.get(idx) else {
+                    continue;
+                };
                 if self.cfg.game_mode != GameMode::Survival {
                     continue;
                 }
@@ -897,9 +913,7 @@ impl Server {
                 .filter(|(_, m)| {
                     m.pos.y <= ssc_world::MIN_Y as f32 + 1.0
                         || (!player_refs.is_empty()
-                            && player_refs
-                                .iter()
-                                .all(|p| (m.pos - *p).length() > 64.0))
+                            && player_refs.iter().all(|p| (m.pos - *p).length() > 64.0))
                 })
                 .map(|(id, _)| *id)
                 .collect();
@@ -921,7 +935,11 @@ impl Server {
                 .map(|(id, session)| {
                     session.inventory_dropped_on_death = true;
                     session.inv_dirty = true;
-                    let drops = session.inventory.iter_mut().filter_map(Option::take).collect();
+                    let drops = session
+                        .inventory
+                        .iter_mut()
+                        .filter_map(Option::take)
+                        .collect();
                     (*id, session.player.pos, drops)
                 })
                 .collect();
@@ -991,7 +1009,9 @@ impl Server {
             self.time_of_day -= 1.0;
         }
         if self.tick % 20 == 0 {
-            let _ = self.broadcast(&ServerPacket::TimeOfDay { t: self.time_of_day });
+            let _ = self.broadcast(&ServerPacket::TimeOfDay {
+                t: self.time_of_day,
+            });
         }
 
         // Refresh streaming sets periodically (and right after joins).
@@ -1141,7 +1161,9 @@ impl Server {
 
         let ids: Vec<EntityId> = self.items.keys().copied().collect();
         for item_id in ids {
-            let Some(item) = self.items.get(&item_id) else { continue };
+            let Some(item) = self.items.get(&item_id) else {
+                continue;
+            };
             let (item_value, mut count, pos) = (item.item, item.count, item.pos);
             if item.pickup_delay > 0 {
                 continue;
@@ -1155,9 +1177,10 @@ impl Server {
                 .collect();
             candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
             for (player_id, _) in candidates {
-                let Some(session) = self.sessions.get_mut(&player_id) else { continue };
-                let leftover =
-                    crate::survival::add_item(&mut session.inventory, item_value, count);
+                let Some(session) = self.sessions.get_mut(&player_id) else {
+                    continue;
+                };
+                let leftover = crate::survival::add_item(&mut session.inventory, item_value, count);
                 if leftover < count {
                     session.inv_dirty = true;
                     count = leftover;
@@ -1198,7 +1221,9 @@ impl Server {
         let mut ids: Vec<EntityId> = self.items.keys().copied().collect();
         ids.sort_unstable();
         for id in ids {
-            let Some(a) = self.items.get(&id) else { continue };
+            let Some(a) = self.items.get(&id) else {
+                continue;
+            };
             let cell = (
                 (a.pos.x * 2.0).floor() as i32,
                 (a.pos.y * 2.0).floor() as i32,
@@ -1294,17 +1319,21 @@ impl Server {
             }
             for attempt in 0..4 {
                 // A random-ish column in a 3-radius ring (8..24 blocks).
-                let ax = (pcx * 16 + 8 + (hash_tick(self.tick + attempt, pcx, pcz) % 32) as i32)
-                    - 16;
-                let az = (pcz * 16 + 8
-                    + (hash_tick(self.tick + attempt * 7, pcz, pcx) % 32) as i32)
-                    - 16;
+                let ax =
+                    (pcx * 16 + 8 + (hash_tick(self.tick + attempt, pcx, pcz) % 32) as i32) - 16;
+                let az =
+                    (pcz * 16 + 8 + (hash_tick(self.tick + attempt * 7, pcz, pcx) % 32) as i32)
+                        - 16;
                 let Some(y) = crate::mobs::spawn_column_ok(&self.world, ax, az) else {
                     continue;
                 };
                 // Column must exist server-side (spawn only in streamed
                 // areas so clients see the mob's ground).
-                if self.world.column(ax.div_euclid(16), az.div_euclid(16)).is_none() {
+                if self
+                    .world
+                    .column(ax.div_euclid(16), az.div_euclid(16))
+                    .is_none()
+                {
                     continue;
                 }
                 let (kind, want) = if want_zombie {
@@ -1317,9 +1346,10 @@ impl Server {
                 }
                 // No spawning right on top of players.
                 let pos = Vec3::new(ax as f32 + 0.5, y as f32 + 0.02, az as f32 + 0.5);
-                let too_close = self.sessions.values().any(|s| {
-                    s.player.joined && (s.player.pos - pos).length() < 12.0
-                });
+                let too_close = self
+                    .sessions
+                    .values()
+                    .any(|s| s.player.joined && (s.player.pos - pos).length() < 12.0);
                 if too_close {
                     continue;
                 }
@@ -1360,7 +1390,9 @@ impl Server {
                 }
             }
         }
-        let Some((target, t, is_mob)) = best else { return false };
+        let Some((target, t, is_mob)) = best else {
+            return false;
+        };
         // The nearest entity only takes priority when no solid voxel is
         // between its hitbox and the attacker's eyes.
         if raycast(&self.world, eye, dir, (t - 0.0001).max(0.0)).is_some() {
@@ -1375,7 +1407,12 @@ impl Server {
             }
             let pos = self.mobs.get(&target).map(|m| m.pos);
             if let Some(p) = pos {
-                self.send_sound(SoundId::Hurt, p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+                self.send_sound(
+                    SoundId::Hurt,
+                    p.x.floor() as i32,
+                    p.y.floor() as i32,
+                    p.z.floor() as i32,
+                );
             }
             // Death and entity removal are handled together during the
             // authoritative mob tick so clients don't receive remove/state/
@@ -1395,7 +1432,12 @@ impl Server {
                 session.status_dirty = true;
             }
             let p = self.sessions[&target].player.pos;
-            self.send_sound(SoundId::Hurt, p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+            self.send_sound(
+                SoundId::Hurt,
+                p.x.floor() as i32,
+                p.y.floor() as i32,
+                p.z.floor() as i32,
+            );
             true
         }
     }
@@ -1418,9 +1460,11 @@ fn step_player(world: &World, player: &mut Player, dt: f32, flying: bool) {
         (feet.y + 0.4).floor() as i32,
         feet.z.floor() as i32,
     ) == WATER
-        || world
-            .block_or_air(eye.x.floor() as i32, eye.y.floor() as i32, eye.z.floor() as i32)
-            == WATER;
+        || world.block_or_air(
+            eye.x.floor() as i32,
+            eye.y.floor() as i32,
+            eye.z.floor() as i32,
+        ) == WATER;
 
     let fwd = yaw_forward(yaw);
     let right = yaw_right(yaw);
@@ -1444,7 +1488,11 @@ fn step_player(world: &World, player: &mut Player, dt: f32, flying: bool) {
     let sprint = k & keys::SPRINT != 0 && k & keys::FORWARD != 0 && k & keys::SNEAK == 0;
     let sneak = k & keys::SNEAK != 0;
     let speed = if flying {
-        if sprint { 21.78 } else { 10.89 }
+        if sprint {
+            21.78
+        } else {
+            10.89
+        }
     } else if in_water {
         WALK_SPEED * 0.55 // swimming is slow
     } else if sprint {
@@ -1587,7 +1635,9 @@ impl Server {
     fn stream_to(&mut self, id: EntityId, max_cols: usize, max_lods: usize) {
         for _ in 0..max_cols {
             let key = {
-                let Some(session) = self.sessions.get_mut(&id) else { return };
+                let Some(session) = self.sessions.get_mut(&id) else {
+                    return;
+                };
                 match session.stream_queue.pop_front() {
                     Some(k) => k,
                     None => break,
@@ -1597,7 +1647,9 @@ impl Server {
         }
         for _ in 0..max_lods {
             let key = {
-                let Some(session) = self.sessions.get_mut(&id) else { return };
+                let Some(session) = self.sessions.get_mut(&id) else {
+                    return;
+                };
                 match session.lod_queue.pop_front() {
                     Some(k) => k,
                     None => break,
@@ -1620,7 +1672,9 @@ impl Server {
             }
         }
         wanted.sort_by_key(|(cx, cz)| (cx - pcx).abs() + (cz - pcz).abs());
-        let Some(session) = self.sessions.get_mut(&id) else { return };
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
         for key in wanted {
             if !session.streamed.contains(&key) && !session.stream_queue.contains(&key) {
                 session.stream_queue.push_back(key);
@@ -1650,9 +1704,13 @@ impl Server {
             .collect();
         for key in out_of_range {
             session.streamed.remove(&key);
-            let _ = session
-                .wire
-                .send(&ServerPacket::UnloadColumn { cx: key.0, cz: key.1 }.encode());
+            let _ = session.wire.send(
+                &ServerPacket::UnloadColumn {
+                    cx: key.0,
+                    cz: key.1,
+                }
+                .encode(),
+            );
         }
         let lod_out: Vec<ColumnKey> = session
             .lod_streamed
@@ -1662,9 +1720,13 @@ impl Server {
             .collect();
         for key in lod_out {
             session.lod_streamed.remove(&key);
-            let _ = session
-                .wire
-                .send(&ServerPacket::UnloadLod { cx: key.0, cz: key.1 }.encode());
+            let _ = session.wire.send(
+                &ServerPacket::UnloadLod {
+                    cx: key.0,
+                    cz: key.1,
+                }
+                .encode(),
+            );
         }
         session.last_player_col = (pcx, pcz);
     }
@@ -1685,7 +1747,9 @@ impl Server {
             }
             out
         };
-        let Some(session) = self.sessions.get_mut(&id) else { return };
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
         for (sub, blocks) in payloads {
             let _ = session.wire.send(
                 &ServerPacket::Subchunk {
@@ -1697,9 +1761,13 @@ impl Server {
                 .encode(),
             );
         }
-        let _ = session
-            .wire
-            .send(&ServerPacket::ColumnEnd { cx: key.0, cz: key.1 }.encode());
+        let _ = session.wire.send(
+            &ServerPacket::ColumnEnd {
+                cx: key.0,
+                cz: key.1,
+            }
+            .encode(),
+        );
         session.streamed.insert(key);
     }
 
@@ -1723,10 +1791,17 @@ impl Server {
         let cells = self
             .gen
             .lod_summary(key.0, key.1, &self.world, &self.edited);
-        let Some(session) = self.sessions.get_mut(&id) else { return };
-        let _ = session
-            .wire
-            .send(&ServerPacket::LodColumn { cx: key.0, cz: key.1, cells }.encode());
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        let _ = session.wire.send(
+            &ServerPacket::LodColumn {
+                cx: key.0,
+                cz: key.1,
+                cells,
+            }
+            .encode(),
+        );
         session.lod_streamed.insert(key);
     }
 
@@ -1785,7 +1860,9 @@ impl Server {
                 }
                 let creative = self.cfg.game_mode == GameMode::Creative;
                 let tick = self.tick;
-                let Some(session) = self.sessions.get_mut(&id) else { return Ok(()) };
+                let Some(session) = self.sessions.get_mut(&id) else {
+                    return Ok(());
+                };
                 if !session.player.joined {
                     return Err("input before hello".into());
                 }
@@ -1812,16 +1889,24 @@ impl Server {
                 session.player.pitch = pitch.clamp(-89.9, 89.9);
             }
             ClientPacket::SelectSlot { slot } => {
-                let Some(session) = self.sessions.get_mut(&id) else { return Ok(()) };
-                session.player.selected_slot = slot % 9;
+                let Some(session) = self.sessions.get_mut(&id) else {
+                    return Ok(());
+                };
+                let selected = slot % 9;
+                if session.player.selected_slot != selected {
+                    session.survival.digging = None;
+                }
+                session.player.selected_slot = selected;
             }
             ClientPacket::SetHotbarSlot { slot, block } => {
                 // Creative only: validate against the registry, write the
                 // item into the hotbar slot (infinite stack).
-                if !ssc_world::valid_item_id(block) {
+                if block == ssc_world::AIR || !ssc_world::valid_block_id(block) {
                     return Err(format!("invalid block id {block}"));
                 }
-                let Some(session) = self.sessions.get_mut(&id) else { return Ok(()) };
+                let Some(session) = self.sessions.get_mut(&id) else {
+                    return Ok(());
+                };
                 if !session.player.joined || self.cfg.game_mode != GameMode::Creative {
                     return Ok(());
                 }
@@ -1831,7 +1916,9 @@ impl Server {
             }
             ClientPacket::SwapSlots { a, b } => {
                 // Own-inventory item movement (survival inventory UI).
-                let Some(session) = self.sessions.get_mut(&id) else { return Ok(()) };
+                let Some(session) = self.sessions.get_mut(&id) else {
+                    return Ok(());
+                };
                 if !session.player.joined || session.survival.dead {
                     return Ok(());
                 }
@@ -1843,12 +1930,18 @@ impl Server {
                 let a = a as usize;
                 let b = b as usize;
                 if a != b {
+                    if a == session.player.selected_slot as usize
+                        || b == session.player.selected_slot as usize
+                    {
+                        session.survival.digging = None;
+                    }
                     match (session.inventory[a], session.inventory[b]) {
                         (Some((item, source_count)), Some((target_item, target_count)))
                             if item == target_item =>
                         {
-                            let capacity =
-                                ssc_world::item_info(item).max_stack.saturating_sub(target_count);
+                            let capacity = ssc_world::item_info(item)
+                                .max_stack
+                                .saturating_sub(target_count);
                             let moved = capacity.min(source_count);
                             if moved > 0 {
                                 session.inventory[b] = Some((item, target_count + moved));
@@ -1867,6 +1960,19 @@ impl Server {
                     }
                 }
             }
+            ClientPacket::Craft { recipe } => {
+                let Some(session) = self.sessions.get_mut(&id) else {
+                    return Ok(());
+                };
+                if session.player.joined
+                    && self.cfg.game_mode == GameMode::Survival
+                    && !session.survival.dead
+                    && crate::survival::craft(&mut session.inventory, recipe)
+                {
+                    session.inv_dirty = true;
+                    session.survival.digging = None;
+                }
+            }
             ClientPacket::DigStart => {
                 if self
                     .sessions
@@ -1877,7 +1983,9 @@ impl Server {
                 }
             }
             ClientPacket::DigStop => {
-                let Some(session) = self.sessions.get_mut(&id) else { return Ok(()) };
+                let Some(session) = self.sessions.get_mut(&id) else {
+                    return Ok(());
+                };
                 if let Some(dig) = session.survival.digging.take() {
                     let _ = self.broadcast(&ServerPacket::DigProgress {
                         x: dig.x,
@@ -1912,7 +2020,9 @@ impl Server {
             let _ = self.direct(
                 id,
                 &ServerPacket::Goodbye {
-                    reason: format!("protocol mismatch: client {version}, server {PROTOCOL_VERSION}"),
+                    reason: format!(
+                        "protocol mismatch: client {version}, server {PROTOCOL_VERSION}"
+                    ),
                 },
             );
             // The session will be reaped once the wire goes quiet/dead.
@@ -1933,19 +2043,19 @@ impl Server {
             return;
         }
         let (saved_player, player_data_writable) = match self.load_player_save(player_id) {
-                Ok(data) => (data, true),
-                Err(err) => {
-                    eprintln!("[server] player save could not be loaded: {err}");
-                    (None, false)
-                }
-            };
-        let Some(session) = self.sessions.get_mut(&id) else { return };
+            Ok(data) => (data, true),
+            Err(err) => {
+                eprintln!("[server] player save could not be loaded: {err}");
+                (None, false)
+            }
+        };
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
         // Death is an in-session timer, not a persistent state. If the player
         // quit after dying, reconnect them through the same fresh respawn path
         // rather than reviving at the saved death position with zero health.
-        let saved_death = saved_player
-            .as_ref()
-            .is_some_and(|data| data.health <= 0.0);
+        let saved_death = saved_player.as_ref().is_some_and(|data| data.health <= 0.0);
         let restored_position = saved_player
             .as_ref()
             .filter(|_| !saved_death)
@@ -2079,10 +2189,19 @@ impl Server {
             self.break_block(id, x, y, z);
         } else {
             let block = self.world.block_or_air(x, y, z);
-            if crate::survival::dig_time(block).is_some() {
+            if crate::survival::dig_time_with_tool(
+                block,
+                self.selected_item(id).map(|(item, _)| item),
+            )
+            .is_some()
+            {
                 if let Some(session) = self.sessions.get_mut(&id) {
-                    session.survival.digging =
-                        Some(crate::survival::DigState { x, y, z, progress: 0.0 });
+                    session.survival.digging = Some(crate::survival::DigState {
+                        x,
+                        y,
+                        z,
+                        progress: 0.0,
+                    });
                 }
             }
         }
@@ -2096,7 +2215,12 @@ impl Server {
             return;
         }
         self.record_block_edit(x, y, z, AIR);
-        let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block: AIR });
+        let _ = self.broadcast(&ServerPacket::BlockUpdate {
+            x,
+            y,
+            z,
+            block: AIR,
+        });
         self.send_sound(SoundId::Dig, x, y, z);
         // LOD must reflect the edit (server-driven LOD, specs.md §3).
         self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
@@ -2105,9 +2229,15 @@ impl Server {
         // yet — direct pickup, noted in implemented-features.md).
         if self.cfg.game_mode == GameMode::Survival {
             let rng = (hash_tick(self.tick, x, z) & 0xFFFF) as f32 / 65535.0;
-            if let Some(item) = crate::survival::drop_for(block, rng) {
+            if let Some(item) = crate::survival::drop_with_tool(
+                block,
+                rng,
+                self.selected_item(id).map(|(item, _)| item),
+            ) {
                 let leftover = {
-                    let Some(session) = self.sessions.get_mut(&id) else { return };
+                    let Some(session) = self.sessions.get_mut(&id) else {
+                        return;
+                    };
                     session.survival.exhaustion += 0.005; // mining costs hunger
                     let inv = &mut session.inventory;
                     crate::survival::add_item(inv, item, 1)
@@ -2130,7 +2260,9 @@ impl Server {
     /// Right-click use: eat the selected food, or place the selected
     /// block item (survival consumes, creative does not).
     fn handle_use(&mut self, id: EntityId) {
-        let Some((item, count)) = self.selected_item(id) else { return };
+        let Some((item, count)) = self.selected_item(id) else {
+            return;
+        };
         let item_info = ssc_world::item_info(item);
 
         // Eating (survival only — hunger doesn't exist in creative).
@@ -2140,7 +2272,9 @@ impl Server {
                 let rotten_flesh_causes_hunger = item == ssc_world::ROTTEN_FLESH
                     && hash_tick(self.tick, id as i32, slot as i32) % 5 != 0;
                 let ate = {
-                    let Some(session) = self.sessions.get_mut(&id) else { return };
+                    let Some(session) = self.sessions.get_mut(&id) else {
+                        return;
+                    };
                     let s = &mut session.survival;
                     let ate = s.eat(food);
                     if ate && rotten_flesh_causes_hunger {
@@ -2152,8 +2286,7 @@ impl Server {
                     // Consume one.
                     if let Some(session) = self.sessions.get_mut(&id) {
                         if let Some((i, c)) = session.inventory[slot] {
-                            session.inventory[slot] =
-                                if c <= 1 { None } else { Some((i, c - 1)) };
+                            session.inventory[slot] = if c <= 1 { None } else { Some((i, c - 1)) };
                         }
                         session.inv_dirty = true;
                         session.status_dirty = true;
@@ -2171,7 +2304,9 @@ impl Server {
         }
 
         // Placing.
-        let Some(block) = item_info.places else { return };
+        let Some(block) = item_info.places else {
+            return;
+        };
         let (yaw, pitch) = self.look_of(id);
         let dir = look_dir(yaw, pitch);
         let Some(hit) = raycast(&self.world, self.eye_of(id), dir, REACH) else {
@@ -2191,8 +2326,7 @@ impl Server {
         for session in self.sessions.values() {
             if session.player.joined
                 && !session.survival.dead
-                && player_aabb(session.player.pos)
-                    .intersects(&ssc_math::Aabb::block(x, y, z))
+                && player_aabb(session.player.pos).intersects(&ssc_math::Aabb::block(x, y, z))
             {
                 return;
             }
@@ -2208,8 +2342,7 @@ impl Server {
                 let slot = self.sessions[&id].player.selected_slot as usize % 9;
                 if let Some(session) = self.sessions.get_mut(&id) {
                     if let Some((i, c)) = session.inventory[slot] {
-                        session.inventory[slot] =
-                            if c <= 1 { None } else { Some((i, c - 1)) };
+                        session.inventory[slot] = if c <= 1 { None } else { Some((i, c - 1)) };
                     }
                     session.inv_dirty = true;
                 }
@@ -2233,7 +2366,11 @@ impl Server {
         let cells = self
             .gen
             .lod_summary(key.0, key.1, &self.world, &self.edited);
-        let _ = self.broadcast(&ServerPacket::LodColumn { cx: key.0, cz: key.1, cells });
+        let _ = self.broadcast(&ServerPacket::LodColumn {
+            cx: key.0,
+            cz: key.1,
+            cells,
+        });
         for session in self.sessions.values_mut() {
             session.lod_streamed.insert(key);
         }
@@ -2244,7 +2381,9 @@ impl Server {
     // -----------------------------------------------------------------------
 
     fn direct(&mut self, id: EntityId, pkt: &ServerPacket) -> Result<(), String> {
-        let Some(session) = self.sessions.get_mut(&id) else { return Ok(()) };
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return Ok(());
+        };
         session.wire.send(&pkt.encode())
     }
 
@@ -2366,7 +2505,10 @@ mod tests {
             .iter()
             .filter(|p| matches!(p, ServerPacket::Sound { .. }))
             .count();
-        assert_eq!(updates, 1, "expected exactly one BlockUpdate(AIR), got {packets:?}");
+        assert_eq!(
+            updates, 1,
+            "expected exactly one BlockUpdate(AIR), got {packets:?}"
+        );
         assert_eq!(sounds, 1, "expected exactly one dig Sound, got {packets:?}");
     }
 
@@ -2382,7 +2524,10 @@ mod tests {
             .filter(|p| {
                 matches!(
                     p,
-                    ServerPacket::BlockUpdate { block: ssc_world::BRICKS, .. }
+                    ServerPacket::BlockUpdate {
+                        block: ssc_world::BRICKS,
+                        ..
+                    }
                 )
             })
             .count();
@@ -2390,8 +2535,14 @@ mod tests {
             .iter()
             .filter(|p| matches!(p, ServerPacket::Sound { .. }))
             .count();
-        assert_eq!(updates, 1, "expected exactly one BlockUpdate(BRICKS), got {packets:?}");
-        assert_eq!(sounds, 1, "expected exactly one place Sound, got {packets:?}");
+        assert_eq!(
+            updates, 1,
+            "expected exactly one BlockUpdate(BRICKS), got {packets:?}"
+        );
+        assert_eq!(
+            sounds, 1,
+            "expected exactly one place Sound, got {packets:?}"
+        );
     }
 
     #[test]
@@ -2423,7 +2574,7 @@ mod tests {
     }
 
     #[test]
-    fn survival_dig_takes_time_and_drops_into_inventory() {
+    fn survival_dig_by_hand_breaks_stone_without_a_drop() {
         // Stone by hand: 7.5 s = 150 ticks.
         let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
         rig.server.handle_dig_start(1);
@@ -2456,14 +2607,75 @@ mod tests {
         assert!(packets
             .iter()
             .any(|p| matches!(p, ServerPacket::BlockUpdate { block: 0, .. })));
-        // The cobblestone drop landed in the inventory (sync packet).
-        assert!(packets
+        assert!(rig.server.sessions[&1]
+            .inventory
             .iter()
-            .any(|p| matches!(p, ServerPacket::Inventory { slots } if slots.iter().any(|(i, c)| *i == ssc_world::COBBLESTONE && *c == 1))));
-        assert_eq!(
-            rig.server.sessions[&1].inventory.iter().flatten().next(),
-            Some(&(ssc_world::COBBLESTONE, 1))
-        );
+            .all(Option::is_none));
+    }
+
+    #[test]
+    fn crafted_pickaxe_mines_stone_and_drops_cobblestone() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::OAK_LOG, 2));
+        for recipe in [0, 0, 1, 2] {
+            rig.server
+                .handle_packet(1, ClientPacket::Craft { recipe })
+                .unwrap();
+        }
+        let inv = &rig.server.sessions[&1].inventory;
+        let slot = inv
+            .iter()
+            .position(|entry| *entry == Some((ssc_world::WOODEN_PICKAXE, 1)))
+            .unwrap();
+        rig.server
+            .handle_packet(1, ClientPacket::SelectSlot { slot: slot as u8 })
+            .unwrap();
+        rig.server.handle_dig_start(1);
+        for _ in 0..25 {
+            rig.server.tick();
+        }
+        assert!(rig.server.sessions[&1]
+            .inventory
+            .iter()
+            .flatten()
+            .any(|(item, _)| *item == ssc_world::COBBLESTONE));
+    }
+
+    #[test]
+    fn dead_and_creative_players_cannot_craft_survival_tools() {
+        for mode in [GameMode::Survival, GameMode::Creative] {
+            let mut rig = Rig::new_mode(1, 0.0, mode);
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((ssc_world::OAK_LOG, 1));
+            if mode == GameMode::Survival {
+                session.survival.dead = true;
+            }
+            let before = session.inventory.clone();
+            rig.server.handle_packet(1, ClientPacket::Craft { recipe: 0 }).unwrap();
+            assert_eq!(rig.server.sessions[&1].inventory, before);
+        }
+    }
+
+    #[test]
+    fn iron_ore_needs_stone_pickaxe_to_drop_raw_iron() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        rig.server.world.set_block(8, 54, 8, ssc_world::IRON_ORE);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] =
+            Some((ssc_world::WOODEN_PICKAXE, 1));
+        rig.server.handle_dig_start(1);
+        for _ in 0..50 {
+            rig.server.tick();
+        }
+        assert!(rig.server.sessions[&1].inventory.iter().flatten().all(|(item, _)| *item != ssc_world::RAW_IRON));
+
+        rig.server.world.set_block(8, 54, 8, ssc_world::IRON_ORE);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] =
+            Some((ssc_world::STONE_PICKAXE, 1));
+        rig.server.handle_dig_start(1);
+        for _ in 0..28 {
+            rig.server.tick();
+        }
+        assert!(rig.server.sessions[&1].inventory.iter().flatten().any(|(item, _)| *item == ssc_world::RAW_IRON));
     }
 
     #[test]
@@ -2473,10 +2685,7 @@ mod tests {
         for _ in 0..60 {
             rig.server.tick();
         }
-        let _ = rig
-            .server
-            .handle_packet(1, ClientPacket::DigStop)
-            .unwrap();
+        let _ = rig.server.handle_packet(1, ClientPacket::DigStop).unwrap();
         assert!(rig.server.sessions[&1].survival.digging.is_none());
         for _ in 0..200 {
             rig.server.tick();
@@ -2501,7 +2710,10 @@ mod tests {
         }
         rig.server.handle_use(1);
         assert!(rig.server.world.get_block(9, 55, 8) == Some(ssc_world::BRICKS));
-        assert_eq!(rig.server.sessions[&1].inventory[0], Some((ssc_world::BRICKS, 1)));
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::BRICKS, 1))
+        );
         // A different target so the second placement isn't blocked by the
         // first block: aim straight down is the player's own cell, so
         // instead clear the world block and reuse the same cell.
@@ -2533,7 +2745,10 @@ mod tests {
             session.survival.hunger = 20;
         }
         rig.server.handle_use(1);
-        assert_eq!(rig.server.sessions[&1].inventory[0], Some((ssc_world::APPLE, 2)));
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::APPLE, 2))
+        );
     }
 
     #[test]
@@ -2571,11 +2786,8 @@ mod tests {
     fn dropped_items_are_attracted_toward_nearby_players() {
         let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
         let player_pos = rig.server.sessions[&1].player.pos;
-        rig.server.spawn_item_entity(
-            ssc_world::APPLE,
-            1,
-            player_pos + Vec3::new(4.0, 0.0, 0.0),
-        );
+        rig.server
+            .spawn_item_entity(ssc_world::APPLE, 1, player_pos + Vec3::new(4.0, 0.0, 0.0));
         let item = rig.server.items.values_mut().next().unwrap();
         item.vel = Vec3::ZERO;
         item.pickup_delay = 100;
@@ -2601,23 +2813,30 @@ mod tests {
         rig.server.tick_items(0.05);
 
         assert!(!rig.server.items.contains_key(&id));
-        assert!(rig.server.sessions[&1].inventory.iter().all(Option::is_none));
+        assert!(rig.server.sessions[&1]
+            .inventory
+            .iter()
+            .all(Option::is_none));
     }
 
     #[test]
     fn block_break_overflow_becomes_a_world_item() {
         let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
-        rig.server.sessions.get_mut(&1).unwrap().inventory.fill(Some((
-            ssc_world::STONE,
-            64,
-        )));
+        rig.server
+            .sessions
+            .get_mut(&1)
+            .unwrap()
+            .inventory
+            .fill(Some((ssc_world::STONE, 64)));
         rig.server.world.set_block(8, 54, 8, ssc_world::GRASS_BLOCK);
 
         rig.server.break_block(1, 8, 54, 8);
 
-        assert!(rig.server.items.values().any(|item| {
-            item.item == ssc_world::DIRT && item.count == 1
-        }));
+        assert!(rig
+            .server
+            .items
+            .values()
+            .any(|item| { item.item == ssc_world::DIRT && item.count == 1 }));
     }
 
     #[test]
@@ -2655,17 +2874,22 @@ mod tests {
             first.inventory[0] = Some((ssc_world::APPLE, 63));
             first.inv_dirty = false;
         }
-        rig.server.sessions.get_mut(&2).unwrap().player.pos =
-            pos + Vec3::new(0.5, 0.0, 0.0);
+        rig.server.sessions.get_mut(&2).unwrap().player.pos = pos + Vec3::new(0.5, 0.0, 0.0);
         rig.server.spawn_item_entity(ssc_world::APPLE, 2, pos);
         let item_id = rig.server.next_item_id - 1;
         rig.server.items.get_mut(&item_id).unwrap().pickup_delay = 0;
 
         rig.server.tick_items(0.05);
 
-        assert_eq!(rig.server.sessions[&1].inventory[0], Some((ssc_world::APPLE, 64)));
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::APPLE, 64))
+        );
         assert!(rig.server.sessions[&1].inv_dirty);
-        assert_eq!(rig.server.sessions[&2].inventory[0], Some((ssc_world::APPLE, 1)));
+        assert_eq!(
+            rig.server.sessions[&2].inventory[0],
+            Some((ssc_world::APPLE, 1))
+        );
         assert!(!rig.server.items.contains_key(&item_id));
     }
 
@@ -2710,8 +2934,7 @@ mod tests {
             let full_player = rig.server.sessions.get_mut(&1).unwrap();
             full_player.inventory.fill(Some((ssc_world::STONE, 64)));
         }
-        rig.server.sessions.get_mut(&2).unwrap().player.pos =
-            pos + Vec3::new(0.5, 0.0, 0.0);
+        rig.server.sessions.get_mut(&2).unwrap().player.pos = pos + Vec3::new(0.5, 0.0, 0.0);
         rig.server.spawn_item_entity(ssc_world::APPLE, 1, pos);
 
         for _ in 0..10 {
@@ -2751,12 +2974,29 @@ mod tests {
         }
         rig.server.tick();
         assert!(rig.drain(0).iter().any(|p| {
-            matches!(p, ServerPacket::Status { hunger_effect_ticks: 599, .. })
+            matches!(
+                p,
+                ServerPacket::Status {
+                    hunger_effect_ticks: 599,
+                    ..
+                }
+            )
         }));
-        rig.server.sessions.get_mut(&1).unwrap().survival.hunger_effect_ticks = 1;
+        rig.server
+            .sessions
+            .get_mut(&1)
+            .unwrap()
+            .survival
+            .hunger_effect_ticks = 1;
         rig.server.tick();
         assert!(rig.drain(0).iter().any(|p| {
-            matches!(p, ServerPacket::Status { hunger_effect_ticks: 0, .. })
+            matches!(
+                p,
+                ServerPacket::Status {
+                    hunger_effect_ticks: 0,
+                    ..
+                }
+            )
         }));
     }
 
@@ -2799,12 +3039,26 @@ mod tests {
             .inventory
             .iter()
             .all(Option::is_none));
-        assert_eq!(rig.server.items.values().map(|item| item.count as u16).sum::<u16>(), 8);
+        assert_eq!(
+            rig.server
+                .items
+                .values()
+                .map(|item| item.count as u16)
+                .sum::<u16>(),
+            8
+        );
 
         rig.server.sessions.get_mut(&1).unwrap().survival.respawn_at =
             Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
         rig.server.tick();
-        assert_eq!(rig.server.items.values().map(|item| item.count as u16).sum::<u16>(), 8);
+        assert_eq!(
+            rig.server
+                .items
+                .values()
+                .map(|item| item.count as u16)
+                .sum::<u16>(),
+            8
+        );
         assert!(!rig.server.sessions[&1].survival.dead);
     }
 
@@ -2835,7 +3089,13 @@ mod tests {
     fn creative_set_hotbar_slot_rejected_in_survival() {
         let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
         rig.server
-            .handle_packet(1, ClientPacket::SetHotbarSlot { slot: 0, block: ssc_world::BRICKS })
+            .handle_packet(
+                1,
+                ClientPacket::SetHotbarSlot {
+                    slot: 0,
+                    block: ssc_world::BRICKS,
+                },
+            )
             .unwrap();
         assert_eq!(rig.server.sessions[&1].inventory[0], None);
     }
@@ -2881,15 +3141,15 @@ mod tests {
     fn dead_players_cannot_dig_or_move_inventory() {
         let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
         let target = (8, 54, 8);
-        rig.server.world.set_block(target.0, target.1, target.2, ssc_world::DIRT);
+        rig.server
+            .world
+            .set_block(target.0, target.1, target.2, ssc_world::DIRT);
         {
             let session = rig.server.sessions.get_mut(&1).unwrap();
             session.inventory[0] = Some((ssc_world::APPLE, 1));
             session.survival.die();
         }
-        rig.server
-            .handle_packet(1, ClientPacket::DigStart)
-            .unwrap();
+        rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
         rig.server
             .handle_packet(1, ClientPacket::SwapSlots { a: 0, b: 1 })
             .unwrap();
@@ -2934,8 +3194,7 @@ mod tests {
         let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
         let spawn = rig.server.sessions[&1].player.pos;
         rig.server.sessions.get_mut(&1).unwrap().spawn = spawn;
-        rig.server.sessions.get_mut(&1).unwrap().player.pos.y =
-            ssc_world::MIN_Y as f32 - 0.1;
+        rig.server.sessions.get_mut(&1).unwrap().player.pos.y = ssc_world::MIN_Y as f32 - 0.1;
         for _ in 0..10 {
             rig.server.tick();
         }
@@ -2948,14 +3207,16 @@ mod tests {
             Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
         rig.server.tick();
         assert_eq!(rig.server.sessions[&1].player.pos, spawn);
-        assert_eq!(rig.server.sessions[&1].survival.health, crate::survival::MAX_HEALTH);
+        assert_eq!(
+            rig.server.sessions[&1].survival.health,
+            crate::survival::MAX_HEALTH
+        );
     }
 
     #[test]
     fn creative_players_survive_the_void_floor() {
         let mut rig = Rig::new(1, 0.0);
-        rig.server.sessions.get_mut(&1).unwrap().player.pos.y =
-            ssc_world::MIN_Y as f32 - 0.1;
+        rig.server.sessions.get_mut(&1).unwrap().player.pos.y = ssc_world::MIN_Y as f32 - 0.1;
         for _ in 0..50 {
             rig.server.tick();
         }
@@ -2971,15 +3232,11 @@ mod tests {
         rig.server.world.set_block(10, 56, 8, ssc_world::STONE);
         let before = rig.server.sessions[&2].survival.health;
 
-        rig.server
-            .handle_packet(1, ClientPacket::DigStart)
-            .unwrap();
+        rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
         assert_eq!(rig.server.sessions[&2].survival.health, before);
 
         rig.server.world.set_block(10, 56, 8, AIR);
-        rig.server
-            .handle_packet(1, ClientPacket::DigStart)
-            .unwrap();
+        rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
         assert_eq!(rig.server.sessions[&2].survival.health, before - 2.0);
     }
 
@@ -2996,15 +3253,11 @@ mod tests {
         );
         let before = rig.server.mobs[&mob_id].health;
         rig.server.world.set_block(10, 56, 8, ssc_world::STONE);
-        rig.server
-            .handle_packet(1, ClientPacket::DigStart)
-            .unwrap();
+        rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
         assert_eq!(rig.server.mobs[&mob_id].health, before);
 
         rig.server.world.set_block(10, 56, 8, AIR);
-        rig.server
-            .handle_packet(1, ClientPacket::DigStart)
-            .unwrap();
+        rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
         assert_eq!(rig.server.mobs[&mob_id].health, before - 2.0);
     }
 
@@ -3012,16 +3265,12 @@ mod tests {
     fn dead_players_do_not_intercept_attacks() {
         let mut rig = Rig::new_mode(3, 0.0, GameMode::Survival);
         let attacker = rig.server.sessions[&1].player.pos;
-        rig.server.sessions.get_mut(&2).unwrap().player.pos =
-            attacker + Vec3::new(2.0, 0.0, 0.0);
-        rig.server.sessions.get_mut(&3).unwrap().player.pos =
-            attacker + Vec3::new(4.0, 0.0, 0.0);
+        rig.server.sessions.get_mut(&2).unwrap().player.pos = attacker + Vec3::new(2.0, 0.0, 0.0);
+        rig.server.sessions.get_mut(&3).unwrap().player.pos = attacker + Vec3::new(4.0, 0.0, 0.0);
         rig.server.sessions.get_mut(&2).unwrap().survival.die();
         let health = rig.server.sessions[&3].survival.health;
 
-        rig.server
-            .handle_packet(1, ClientPacket::DigStart)
-            .unwrap();
+        rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
 
         assert_eq!(rig.server.sessions[&3].survival.health, health - 2.0);
     }
@@ -3045,9 +3294,7 @@ mod tests {
         );
         let health = rig.server.mobs[&(FIRST_MOB_ID + 1)].health;
 
-        rig.server
-            .handle_packet(1, ClientPacket::DigStart)
-            .unwrap();
+        rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
 
         assert_eq!(rig.server.mobs[&(FIRST_MOB_ID + 1)].health, health - 2.0);
     }
@@ -3076,15 +3323,17 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            assert!(ids.contains(&1) && ids.contains(&2), "client {c} got {ids:?}");
+            assert!(
+                ids.contains(&1) && ids.contains(&2),
+                "client {c} got {ids:?}"
+            );
         }
     }
 
     #[test]
     fn player_column_uses_floor_at_negative_coordinates() {
         let mut rig = Rig::new(1, 0.0);
-        rig.server.sessions.get_mut(&1).unwrap().player.pos =
-            Vec3::new(-0.5, 55.0, -16.1);
+        rig.server.sessions.get_mut(&1).unwrap().player.pos = Vec3::new(-0.5, 55.0, -16.1);
         assert_eq!(rig.server.player_col(1), (-1, -2));
     }
 
@@ -3125,10 +3374,8 @@ mod tests {
 
     #[test]
     fn saved_world_restores_seed_and_edits_before_column_streaming() {
-        let path = std::env::temp_dir().join(format!(
-            "ssc-server-world-{}.bin",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("ssc-server-world-{}.bin", std::process::id()));
         let mut cfg = ServerConfig::default();
         cfg.seed = 123456;
         cfg.world_path = Some(path.clone());
@@ -3152,10 +3399,8 @@ mod tests {
 
     #[test]
     fn anonymous_player_hello_restores_inventory_by_uuid() {
-        let world_path = std::env::temp_dir().join(format!(
-            "ssc-anonymous-world-{}.bin",
-            std::process::id()
-        ));
+        let world_path =
+            std::env::temp_dir().join(format!("ssc-anonymous-world-{}.bin", std::process::id()));
         let player_id = [0x31; 16];
         let player_path = crate::persistence::player_path(&world_path, &player_id);
         let mut inventory = vec![None; crate::survival::INVENTORY_SIZE];
@@ -3230,8 +3475,10 @@ mod tests {
 
     #[test]
     fn corrupt_anonymous_player_save_is_not_overwritten() {
-        let world_path =
-            std::env::temp_dir().join(format!("ssc-corrupt-player-world-{}.bin", std::process::id()));
+        let world_path = std::env::temp_dir().join(format!(
+            "ssc-corrupt-player-world-{}.bin",
+            std::process::id()
+        ));
         let player_id = [0xd4; 16];
         let player_path = crate::persistence::player_path(&world_path, &player_id);
         let original = b"invalid player data";
@@ -3277,10 +3524,7 @@ mod tests {
         server.spawn_item_entity(ssc_world::APPLE, 1, Vec3::new(8.5, 65.0, 8.5));
         server.mobs.insert(
             FIRST_MOB_ID,
-            crate::mobs::Mob::new(
-                crate::mobs::MobKind::Pig,
-                Vec3::new(8.5, 65.0, 8.5),
-            ),
+            crate::mobs::Mob::new(crate::mobs::MobKind::Pig, Vec3::new(8.5, 65.0, 8.5)),
         );
         server.save_item_entities();
         server.save_mobs();
@@ -3327,8 +3571,7 @@ mod tests {
         assert_eq!(rig.server.items[&id].pickup_delay, 5);
         assert_eq!(rig.server.items[&id].pos, far);
 
-        rig.server.sessions.get_mut(&1).unwrap().player.pos =
-            far + Vec3::new(3.0, 0.0, 0.0);
+        rig.server.sessions.get_mut(&1).unwrap().player.pos = far + Vec3::new(3.0, 0.0, 0.0);
         rig.server.tick_items(0.05);
         assert_eq!(rig.server.items[&id].age, 101);
         assert_eq!(rig.server.items[&id].pickup_delay, 4);
@@ -3420,18 +3663,12 @@ mod tests {
 
     #[test]
     fn dropped_items_restore_from_world_save() {
-        let world_path = std::env::temp_dir().join(format!(
-            "ssc-item-world-{}.bin",
-            std::process::id()
-        ));
+        let world_path =
+            std::env::temp_dir().join(format!("ssc-item-world-{}.bin", std::process::id()));
         let mut cfg = ServerConfig::default();
         cfg.world_path = Some(world_path.clone());
         let mut server = Server::empty(cfg.clone());
-        server.spawn_item_entity(
-            ssc_world::PORKCHOP,
-            2,
-            Vec3::new(-12.5, 65.0, 7.25),
-        );
+        server.spawn_item_entity(ssc_world::PORKCHOP, 2, Vec3::new(-12.5, 65.0, 7.25));
         server.items.values_mut().next().unwrap().vel = Vec3::new(0.5, -1.0, 0.25);
         server.items.values_mut().next().unwrap().age = 123;
         server.items.values_mut().next().unwrap().pickup_delay = 4;
@@ -3456,10 +3693,8 @@ mod tests {
         let mut cfg = ServerConfig::default();
         cfg.world_path = Some(world_path.clone());
         let mut server = Server::empty(cfg.clone());
-        let mut mob = crate::mobs::Mob::new(
-            crate::mobs::MobKind::Zombie,
-            Vec3::new(8.5, 49.0, 8.5),
-        );
+        let mut mob =
+            crate::mobs::Mob::new(crate::mobs::MobKind::Zombie, Vec3::new(8.5, 49.0, 8.5));
         mob.health = 12.0;
         mob.attack_cooldown = 7;
         let id = server.allocate_mob_id().unwrap();
@@ -3521,8 +3756,10 @@ mod tests {
 
     #[test]
     fn corrupt_world_save_is_not_overwritten() {
-        let path =
-            std::env::temp_dir().join(format!("ssc-server-world-corrupt-{}.bin", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "ssc-server-world-corrupt-{}.bin",
+            std::process::id()
+        ));
         let original = b"not a valid world save";
         std::fs::write(&path, original).unwrap();
 

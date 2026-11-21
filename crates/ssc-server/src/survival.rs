@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use ssc_world::{BlockId, ItemId, block_info};
+use ssc_world::{block_info, BlockId, ItemId};
 
 /// Inventory size: 9 hotbar slots + 27 storage.
 pub const INVENTORY_SIZE: usize = 36;
@@ -243,10 +243,7 @@ impl SurvivalState {
 
     /// Whether the respawn timer elapsed.
     pub fn should_respawn(&self) -> bool {
-        self.dead
-            && self
-                .respawn_at
-                .is_some_and(|at| Instant::now() >= at)
+        self.dead && self.respawn_at.is_some_and(|at| Instant::now() >= at)
     }
 
     /// Reset vitals after respawn. The server owns the separate inventory and
@@ -277,11 +274,26 @@ impl SurvivalState {
 /// Time (seconds) to break a block by hand: hardness × 1.5, or × 5 when
 /// a proper tool is required (and none exists yet). Bedrock/air: never.
 pub fn dig_time(block: BlockId) -> Option<f32> {
+    dig_time_with_tool(block, None)
+}
+
+/// Bedrock mining speed: a correct wooden/stone pickaxe mines at speed 2/4;
+/// without the correct tool, tool-required blocks take hardness × 5.
+pub fn dig_time_with_tool(block: BlockId, held: Option<ItemId>) -> Option<f32> {
     let bi = block_info(block);
     if bi.hardness.is_infinite() {
         return None;
     }
-    Some(bi.hardness * if bi.needs_tool { 5.0 } else { 1.5 })
+    let speed = match held {
+        Some(ssc_world::WOODEN_PICKAXE) => 2.0,
+        Some(ssc_world::STONE_PICKAXE) => 4.0,
+        _ => 1.0,
+    };
+    Some(if bi.needs_tool && speed == 1.0 {
+        bi.hardness * 5.0
+    } else {
+        bi.hardness * 1.5 / if bi.needs_tool { speed } else { 1.0 }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +333,53 @@ pub fn add_item(inv: &mut [Slot], item: ItemId, count: u8) -> u8 {
     left
 }
 
+/// Craft one output using materials anywhere in the 36-slot inventory.
+/// Atomic on failure (missing ingredients, unknown recipe or no output room).
+/// The recipe ID is chosen by the client, never the output or ingredients.
+pub fn craft(inv: &mut [Slot], recipe: u8) -> bool {
+    let (ingredients, output) = match recipe {
+        0 => (&[(ssc_world::OAK_LOG, 1)][..], (ssc_world::OAK_PLANKS, 4)),
+        1 => (&[(ssc_world::OAK_PLANKS, 2)][..], (ssc_world::STICK, 4)),
+        2 => (
+            &[(ssc_world::OAK_PLANKS, 3), (ssc_world::STICK, 2)][..],
+            (ssc_world::WOODEN_PICKAXE, 1),
+        ),
+        3 => (
+            &[(ssc_world::COBBLESTONE, 3), (ssc_world::STICK, 2)][..],
+            (ssc_world::STONE_PICKAXE, 1),
+        ),
+        _ => return false,
+    };
+    let mut next = inv.to_vec();
+    for &(item, count) in ingredients {
+        let mut remaining = count;
+        for slot in &mut next {
+            if let Some((held, available)) = *slot {
+                if held == item {
+                    let taken = available.min(remaining);
+                    remaining -= taken;
+                    *slot = if taken == available {
+                        None
+                    } else {
+                        Some((item, available - taken))
+                    };
+                    if remaining == 0 {
+                        break;
+                    }
+                }
+            }
+        }
+        if remaining != 0 {
+            return false;
+        }
+    }
+    if add_item(&mut next, output.0, output.1) != 0 {
+        return false;
+    }
+    inv.copy_from_slice(&next);
+    true
+}
+
 /// The item a broken block drops (with the leaf→apple chance).
 pub fn drop_for(block: BlockId, rng: f32) -> Option<ItemId> {
     if block == ssc_world::OAK_LEAVES {
@@ -328,6 +387,26 @@ pub fn drop_for(block: BlockId, rng: f32) -> Option<ItemId> {
         return (rng < ssc_world::LEAF_APPLE_CHANCE).then_some(ssc_world::APPLE);
     }
     ssc_world::items::block_drop(block)
+}
+
+/// Tool tiers currently represented in inventory. Iron ore requires stone
+/// or better; stone, deepslate and coal accept any pickaxe.
+pub fn drop_with_tool(block: BlockId, rng: f32, held: Option<ItemId>) -> Option<ItemId> {
+    if block_info(block).needs_tool {
+        let required_stone = matches!(block, ssc_world::IRON_ORE | ssc_world::DEEPSLATE_IRON_ORE);
+        let valid = if required_stone {
+            held == Some(ssc_world::STONE_PICKAXE)
+        } else {
+            matches!(
+                held,
+                Some(ssc_world::WOODEN_PICKAXE | ssc_world::STONE_PICKAXE)
+            )
+        };
+        if !valid {
+            return None;
+        }
+    }
+    drop_for(block, rng)
 }
 
 #[cfg(test)]
@@ -343,16 +422,36 @@ mod tests {
         // Bedrock: never.
         assert!(dig_time(ssc_world::BEDROCK).is_none());
         assert!(dig_time(ssc_world::AIR).is_none());
+        assert!(
+            (dig_time_with_tool(ssc_world::STONE, Some(ssc_world::WOODEN_PICKAXE)).unwrap()
+                - 1.125)
+                .abs()
+                < 0.01
+        );
+        assert!(
+            (dig_time_with_tool(ssc_world::STONE, Some(ssc_world::STONE_PICKAXE)).unwrap()
+                - 0.5625)
+                .abs()
+                < 0.01
+        );
     }
 
     #[test]
     fn fall_damage_needs_three_blocks() {
         let mut s = SurvivalState::default();
         // Fall 2 blocks: no damage.
-        let fx = s.tick(TickInput { landed: true, dy: -2.0, ..Default::default() });
+        let fx = s.tick(TickInput {
+            landed: true,
+            dy: -2.0,
+            ..Default::default()
+        });
         assert_eq!(fx.damage, 0.0);
         // Fall 6 blocks: 3 damage (6 − 3).
-        let fx = s.tick(TickInput { landed: true, dy: -6.0, ..Default::default() });
+        let fx = s.tick(TickInput {
+            landed: true,
+            dy: -6.0,
+            ..Default::default()
+        });
         assert_eq!(fx.damage, 3.0);
         // Water cancels.
         let fx = s.tick(TickInput {
@@ -368,13 +467,21 @@ mod tests {
     fn drowning_drains_air_then_health() {
         let mut s = SurvivalState::default();
         for _ in 0..MAX_AIR {
-            s.tick(TickInput { eye_in_water: true, ..Default::default() });
+            s.tick(TickInput {
+                eye_in_water: true,
+                ..Default::default()
+            });
         }
         assert_eq!(s.air, 0);
         // Then ~1 heart per second.
         let mut damage = 0.0;
         for _ in 0..20 {
-            damage += s.tick(TickInput { eye_in_water: true, ..Default::default() }).damage;
+            damage += s
+                .tick(TickInput {
+                    eye_in_water: true,
+                    ..Default::default()
+                })
+                .damage;
         }
         assert_eq!(damage, 2.0);
     }
@@ -384,25 +491,43 @@ mod tests {
         let mut s = SurvivalState::default();
         for _ in 0..9 {
             assert_eq!(
-                s.tick(TickInput { below_world: true, ..Default::default() }).damage,
+                s.tick(TickInput {
+                    below_world: true,
+                    ..Default::default()
+                })
+                .damage,
                 0.0
             );
         }
-        let fx = s.tick(TickInput { below_world: true, ..Default::default() });
+        let fx = s.tick(TickInput {
+            below_world: true,
+            ..Default::default()
+        });
         assert_eq!(fx.damage, 4.0);
         assert_eq!(s.health, 16.0);
         for _ in 0..5 {
-            s.tick(TickInput { below_world: true, ..Default::default() });
+            s.tick(TickInput {
+                below_world: true,
+                ..Default::default()
+            });
         }
         s.tick(TickInput::default());
         for _ in 0..9 {
             assert_eq!(
-                s.tick(TickInput { below_world: true, ..Default::default() }).damage,
+                s.tick(TickInput {
+                    below_world: true,
+                    ..Default::default()
+                })
+                .damage,
                 0.0
             );
         }
         assert_eq!(
-            s.tick(TickInput { below_world: true, ..Default::default() }).damage,
+            s.tick(TickInput {
+                below_world: true,
+                ..Default::default()
+            })
+            .damage,
             4.0
         );
     }
@@ -412,7 +537,11 @@ mod tests {
         let mut s = SurvivalState::default();
         // Sprint exhaustion: 0.025/tick → 1 hunger point per 160 ticks.
         for _ in 0..160 {
-            s.tick(TickInput { moving: true, sprinting: true, ..Default::default() });
+            s.tick(TickInput {
+                moving: true,
+                sprinting: true,
+                ..Default::default()
+            });
         }
         assert_eq!(s.hunger, MAX_HUNGER - 1);
         // Damage → regen path.
@@ -455,7 +584,10 @@ mod tests {
     fn inventory_stacks_and_fills_hotbar_first() {
         let mut inv: Vec<Slot> = vec![None; INVENTORY_SIZE];
         // 130 dirt → 64 + 64 + 2.
-        assert_eq!(add_item(&mut inv, ssc_world::items::for_block(ssc_world::DIRT), 130), 0);
+        assert_eq!(
+            add_item(&mut inv, ssc_world::items::for_block(ssc_world::DIRT), 130),
+            0
+        );
         assert_eq!(inv[0], Some((4, 64)));
         assert_eq!(inv[1], Some((4, 64)));
         assert_eq!(inv[2], Some((4, 2)));
@@ -476,7 +608,54 @@ mod tests {
             Some(ssc_world::items::for_block(ssc_world::DIRT))
         );
         // Leaves: apple at ~5%, nothing otherwise.
-        assert_eq!(drop_for(ssc_world::OAK_LEAVES, 0.01), Some(ssc_world::APPLE));
+        assert_eq!(
+            drop_for(ssc_world::OAK_LEAVES, 0.01),
+            Some(ssc_world::APPLE)
+        );
         assert_eq!(drop_for(ssc_world::OAK_LEAVES, 0.5), None);
+    }
+
+    #[test]
+    fn mining_drops_require_the_right_pickaxe_tier() {
+        assert_eq!(drop_with_tool(ssc_world::STONE, 0.0, None), None);
+        assert_eq!(
+            drop_with_tool(ssc_world::COAL_ORE, 0.0, Some(ssc_world::WOODEN_PICKAXE)),
+            Some(ssc_world::COAL)
+        );
+        assert_eq!(
+            drop_with_tool(ssc_world::IRON_ORE, 0.0, Some(ssc_world::WOODEN_PICKAXE)),
+            None
+        );
+        assert_eq!(
+            drop_with_tool(
+                ssc_world::DEEPSLATE_IRON_ORE,
+                0.0,
+                Some(ssc_world::STONE_PICKAXE)
+            ),
+            Some(ssc_world::RAW_IRON)
+        );
+        assert_eq!(
+            drop_with_tool(ssc_world::DEEPSLATE, 0.0, Some(ssc_world::WOODEN_PICKAXE)),
+            Some(ssc_world::COBBLED_DEEPSLATE)
+        );
+    }
+
+    #[test]
+    fn crafting_is_atomic_and_progresses_from_logs_to_picks() {
+        let mut inv = vec![None; INVENTORY_SIZE];
+        inv[34] = Some((ssc_world::OAK_LOG, 2));
+        assert!(!craft(&mut inv, 2));
+        assert_eq!(inv[34], Some((ssc_world::OAK_LOG, 2)));
+        for recipe in [0, 0, 1, 2] {
+            assert!(craft(&mut inv, recipe));
+        }
+        assert!(inv.contains(&Some((ssc_world::WOODEN_PICKAXE, 1))));
+        inv[35] = Some((ssc_world::COBBLESTONE, 3));
+        assert!(craft(&mut inv, 3));
+        assert!(inv.contains(&Some((ssc_world::STONE_PICKAXE, 1))));
+        assert!(!craft(&mut inv, 255));
+        let snapshot = inv.clone();
+        assert!(!craft(&mut inv, 3));
+        assert_eq!(inv, snapshot);
     }
 }

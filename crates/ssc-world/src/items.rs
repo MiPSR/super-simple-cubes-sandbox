@@ -28,6 +28,9 @@ pub const PORKCHOP: ItemId = 101;
 pub const ROTTEN_FLESH: ItemId = 102;
 pub const COAL: ItemId = 103;
 pub const RAW_IRON: ItemId = 104;
+pub const STICK: ItemId = 105;
+pub const WOODEN_PICKAXE: ItemId = 106;
+pub const STONE_PICKAXE: ItemId = 107;
 
 /// Static item description. No behavior — behavior lives in the server.
 pub struct ItemInfo {
@@ -108,6 +111,24 @@ pub fn item_info(id: ItemId) -> ItemInfo {
             places: None,
             food: None,
         },
+        STICK => ItemInfo {
+            name: "stick",
+            max_stack: 64,
+            places: None,
+            food: None,
+        },
+        WOODEN_PICKAXE => ItemInfo {
+            name: "wooden_pickaxe",
+            max_stack: 1,
+            places: None,
+            food: None,
+        },
+        STONE_PICKAXE => ItemInfo {
+            name: "stone_pickaxe",
+            max_stack: 1,
+            places: None,
+            food: None,
+        },
         _ => ItemInfo {
             name: "unknown",
             max_stack: 64,
@@ -121,7 +142,10 @@ pub fn item_info(id: ItemId) -> ItemInfo {
 pub fn valid_item_id(id: ItemId) -> bool {
     // Block-items: contiguous. Free items: only the ones we defined.
     let block_items = id >= FIRST_BLOCK_ITEM && id < super::BLOCK_COUNT;
-    let free_items = matches!(id, APPLE | PORKCHOP | ROTTEN_FLESH | COAL | RAW_IRON);
+    let free_items = matches!(
+        id,
+        APPLE | PORKCHOP | ROTTEN_FLESH | COAL | RAW_IRON | STICK | WOODEN_PICKAXE | STONE_PICKAXE
+    );
     id == EMPTY_ITEM || block_items || free_items
 }
 

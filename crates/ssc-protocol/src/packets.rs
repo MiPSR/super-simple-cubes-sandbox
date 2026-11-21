@@ -98,6 +98,8 @@ pub enum ClientPacket {
     SetHotbarSlot { slot: u8, block: u16 },
     /// Move items within the own inventory (slot indices 0..36).
     SwapSlots { a: u8, b: u8 },
+    /// Craft one server-defined recipe from the own inventory.
+    Craft { recipe: u8 },
 }
 
 impl ClientPacket {
@@ -137,6 +139,10 @@ impl ClientPacket {
                 w.put_u8(*a);
                 w.put_u8(*b);
             }
+            ClientPacket::Craft { recipe } => {
+                w.put_u8(9);
+                w.put_u8(*recipe);
+            }
         }
         w.into_bytes()
     }
@@ -159,9 +165,22 @@ impl ClientPacket {
             6 => ClientPacket::DigStart,
             7 => ClientPacket::DigStop,
             4 => ClientPacket::Place,
-            5 => ClientPacket::SetHotbarSlot { slot: r.get_u8()?, block: r.get_u16()? },
-            8 => ClientPacket::SwapSlots { a: r.get_u8()?, b: r.get_u8()? },
-            _ => return Err(crate::codec::DecodeError(format!("bad client packet tag {tag}"))),
+            5 => ClientPacket::SetHotbarSlot {
+                slot: r.get_u8()?,
+                block: r.get_u16()?,
+            },
+            8 => ClientPacket::SwapSlots {
+                a: r.get_u8()?,
+                b: r.get_u8()?,
+            },
+            9 => ClientPacket::Craft {
+                recipe: r.get_u8()?,
+            },
+            _ => {
+                return Err(crate::codec::DecodeError(format!(
+                    "bad client packet tag {tag}"
+                )))
+            }
         };
         r.expect_empty()?;
         Ok(pkt)
@@ -219,12 +238,7 @@ pub enum ServerPacket {
     /// An entity left the world.
     EntityRemove { id: u16 },
     /// A single block changed.
-    BlockUpdate {
-        x: i32,
-        y: i32,
-        z: i32,
-        block: u16,
-    },
+    BlockUpdate { x: i32, y: i32, z: i32, block: u16 },
     /// Server-driven sound trigger at a world position.
     Sound { sound: u16, x: f32, y: f32, z: f32 },
     /// Server is shutting down the session.
@@ -240,9 +254,19 @@ pub enum ServerPacket {
     Inventory { slots: Vec<(u16, u8)> },
     /// Survival status: health (0..20), hunger (0..20), air (0..300),
     /// remaining Hunger I duration in server ticks.
-    Status { health: f32, hunger: u8, air: u16, hunger_effect_ticks: u16 },
+    Status {
+        health: f32,
+        hunger: u8,
+        air: u16,
+        hunger_effect_ticks: u16,
+    },
     /// Dig progress broadcast (0..100; 101 = cancelled).
-    DigProgress { x: i32, y: i32, z: i32, progress: u8 },
+    DigProgress {
+        x: i32,
+        y: i32,
+        z: i32,
+        progress: u8,
+    },
     /// Server-owned dropped item stack.
     ItemState {
         id: u16,
@@ -258,7 +282,13 @@ impl ServerPacket {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = ByteWriter::new();
         match self {
-            ServerPacket::Welcome { entity_id, spawn, render_distance, hotbar, game_mode } => {
+            ServerPacket::Welcome {
+                entity_id,
+                spawn,
+                render_distance,
+                hotbar,
+                game_mode,
+            } => {
                 w.put_u8(0);
                 w.put_u16(*entity_id);
                 for v in spawn {
@@ -270,7 +300,12 @@ impl ServerPacket {
                 }
                 w.put_u8(*game_mode);
             }
-            ServerPacket::Subchunk { cx, cz, sub, blocks } => {
+            ServerPacket::Subchunk {
+                cx,
+                cz,
+                sub,
+                blocks,
+            } => {
                 w.put_u8(1);
                 w.put_i32(*cx);
                 w.put_i32(*cz);
@@ -300,7 +335,15 @@ impl ServerPacket {
                 w.put_i32(*cx);
                 w.put_i32(*cz);
             }
-            ServerPacket::EntityState { id, x, y, z, yaw, pitch, kind } => {
+            ServerPacket::EntityState {
+                id,
+                x,
+                y,
+                z,
+                yaw,
+                pitch,
+                kind,
+            } => {
                 w.put_u8(6);
                 w.put_u16(*id);
                 w.put_f32(*x);
@@ -355,7 +398,12 @@ impl ServerPacket {
                     w.put_u8(*count);
                 }
             }
-            ServerPacket::Status { health, hunger, air, hunger_effect_ticks } => {
+            ServerPacket::Status {
+                health,
+                hunger,
+                air,
+                hunger_effect_ticks,
+            } => {
                 w.put_u8(15);
                 w.put_f32(*health);
                 w.put_u8(*hunger);
@@ -369,7 +417,14 @@ impl ServerPacket {
                 w.put_i32(*z);
                 w.put_u8(*progress);
             }
-            ServerPacket::ItemState { id, item, count, x, y, z } => {
+            ServerPacket::ItemState {
+                id,
+                item,
+                count,
+                x,
+                y,
+                z,
+            } => {
                 w.put_u8(17);
                 w.put_u16(*id);
                 w.put_u16(*item);
@@ -388,18 +443,20 @@ impl ServerPacket {
         let pkt = match tag {
             0 => {
                 let entity_id = r.get_u16()?;
-                let spawn = [
-                    r.get_f32()?,
-                    r.get_f32()?,
-                    r.get_f32()?,
-                ];
+                let spawn = [r.get_f32()?, r.get_f32()?, r.get_f32()?];
                 let render_distance = r.get_u8()?;
                 let mut hotbar = [0u16; 9];
                 for b in &mut hotbar {
                     *b = r.get_u16()?;
                 }
                 let game_mode = r.get_u8()?;
-                ServerPacket::Welcome { entity_id, spawn, render_distance, hotbar, game_mode }
+                ServerPacket::Welcome {
+                    entity_id,
+                    spawn,
+                    render_distance,
+                    hotbar,
+                    game_mode,
+                }
             }
             1 => ServerPacket::Subchunk {
                 cx: r.get_i32()?,
@@ -407,8 +464,14 @@ impl ServerPacket {
                 sub: r.get_u8()?,
                 blocks: r.get_block_array()?,
             },
-            2 => ServerPacket::ColumnEnd { cx: r.get_i32()?, cz: r.get_i32()? },
-            3 => ServerPacket::UnloadColumn { cx: r.get_i32()?, cz: r.get_i32()? },
+            2 => ServerPacket::ColumnEnd {
+                cx: r.get_i32()?,
+                cz: r.get_i32()?,
+            },
+            3 => ServerPacket::UnloadColumn {
+                cx: r.get_i32()?,
+                cz: r.get_i32()?,
+            },
             4 => {
                 let cx = r.get_i32()?;
                 let cz = r.get_i32()?;
@@ -418,7 +481,10 @@ impl ServerPacket {
                 }
                 ServerPacket::LodColumn { cx, cz, cells }
             }
-            5 => ServerPacket::UnloadLod { cx: r.get_i32()?, cz: r.get_i32()? },
+            5 => ServerPacket::UnloadLod {
+                cx: r.get_i32()?,
+                cz: r.get_i32()?,
+            },
             6 => ServerPacket::EntityState {
                 id: r.get_u16()?,
                 x: r.get_f32()?,
@@ -441,8 +507,12 @@ impl ServerPacket {
                 y: r.get_f32()?,
                 z: r.get_f32()?,
             },
-            10 => ServerPacket::Goodbye { reason: r.get_string()? },
-            11 => ServerPacket::CreativeBlocks { ids: r.get_block_array()? },
+            10 => ServerPacket::Goodbye {
+                reason: r.get_string()?,
+            },
+            11 => ServerPacket::CreativeBlocks {
+                ids: r.get_block_array()?,
+            },
             12 => {
                 let mut slots = [0u16; 9];
                 for b in &mut slots {
@@ -501,6 +571,12 @@ mod tests {
             player_id: [0x5a; 16],
             name: "anonymous".into(),
         };
+        assert_eq!(ClientPacket::decode(&packet.encode()).unwrap(), packet);
+    }
+
+    #[test]
+    fn craft_recipe_survives_wire_round_trip() {
+        let packet = ClientPacket::Craft { recipe: 3 };
         assert_eq!(ClientPacket::decode(&packet.encode()).unwrap(), packet);
     }
 

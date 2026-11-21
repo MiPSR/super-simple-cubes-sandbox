@@ -733,6 +733,24 @@ mod tests {
     }
 
     #[test]
+    fn crafted_pickaxes_round_trip_without_becoming_stacks() {
+        let path = std::env::temp_dir().join(format!(
+            "ssc-crafted-player-{}.dat", std::process::id()
+        ));
+        let id = [0x98; 16];
+        let mut data = PlayerSave::default();
+        data.position = Some([8.5, 70.0, 8.5]);
+        data.inventory[1] = Some((ssc_world::WOODEN_PICKAXE, 1));
+        data.inventory[2] = Some((ssc_world::STONE_PICKAXE, 1));
+        data.inventory[3] = Some((ssc_world::STICK, 12));
+        save_player(&path, &id, &data).unwrap();
+        assert_eq!(load_player(&path, &id).unwrap().unwrap().inventory, data.inventory);
+        data.inventory[1] = Some((ssc_world::WOODEN_PICKAXE, 2));
+        assert_eq!(save_player(&path, &id, &data).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn old_player_saves_migrate_without_effects() {
         let path =
             std::env::temp_dir().join(format!("ssc-player-migration-{}.dat", std::process::id()));

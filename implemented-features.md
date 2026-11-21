@@ -58,8 +58,8 @@ Every implemented wiki feature gets a line here. Status legend:
   level. Below Y=0 the stone body becomes deepslate, with a mixed transition
   from Y=0 through Y=7. Seeded coal and iron ore clusters replace stone/deepslate in depth-limited
   bands (coal Y≥0, iron Y≤64) and drop coal/raw iron, respectively. Ore
-  frequency and shapes are approximate; there are no deepslate variants,
-  other ores, biomes, structures or flowing water yet.
+  frequency and shapes are approximate; deepslate iron ore exists, but
+  other ores, biomes, structures and flowing water are pending.
 - `partial` — Water: static lakes rendered translucent (blend pass,
   back-to-front, no depth writes), same-type face merging; swimming
   physics (slow sink, jump-to-rise, drag). No flow simulation, waves or
@@ -69,12 +69,11 @@ Every implemented wiki feature gets a line here. Status legend:
   `--textures <256×256 atlas.png>` (PNG decode through the approved
   `png` crate) — we cannot ship Mojang assets (specs §1).
 - `partial` — Coal and iron ore blocks (hardness 3) appear in generated
-  stone and drop one coal/raw iron on breaking. Resource drops do not yet
-  enforce the wiki's pickaxe tier because tools are not implemented;
-  no fortune, silk touch, or iron smelting yet.
+  stone and drop one coal/raw iron with the correct pickaxe tier.
+  No fortune, silk touch, or iron smelting yet.
 - `partial` — Deepslate (hardness 3) and deepslate iron ore (4.5)
   generate below Y=0; breaking deepslate drops cobbled deepslate and both
-  iron ore variants drop raw iron. Deepslate coal ore, deepslate variants
+  iron ore variants drop raw iron with a stone pickaxe. Deepslate coal ore, deepslate variants
   of other ores and exact Bedrock distribution are pending.
 
 ## Player
@@ -88,7 +87,7 @@ Every implemented wiki feature gets a line here. Status legend:
   (distance − 3), drowning (1 heart/s after 15 s), exhaustion-driven hunger
   (sprint 4× faster), regen 1 HP/4 s at hunger ≥ 18, starvation stops at
   half a heart (normal difficulty), timed digging (hardness × 1.5, × 5
-  tool-required — hand-only until tools exist), block drops into a 36-slot
+  for tool-required blocks without a pickaxe), block drops into a 36-slot
   inventory (stone→cobble, grass→dirt, leaves→apple at 5%), placing
   consumes items, eating (apple +4 hunger), death → auto-respawn after 2 s
   at spawn (Minecraft uses a death screen + manual respawn); death drops
@@ -96,8 +95,8 @@ Every implemented wiki feature gets a line here. Status legend:
   every 10 ticks (Bedrock-style void); an invisible floor at Y=−105 stops
   further descent. Void-floor landings do not add fall damage; logging out
   there restores a safe spawn position. Anonymous UUID saves preserve
-  inventory, position, vitals and selected slot. No tools, armor, XP,
-  crafting or mode switching mid-session yet.
+  inventory, position, vitals and selected slot. No armor, XP,
+  general crafting or mode switching mid-session yet.
 - `partial` — Game modes: creative (default hotbar blocks, instant dig,
   no consumption, E = block picker, double-jump flight with server
   authority) and survival (empty start, E =
@@ -110,8 +109,16 @@ Every implemented wiki feature gets a line here. Status legend:
   (server-side progress with re-target on look change, progress broadcast
   for the HUD), reach 4.5, server-side DDA voxel raycast, entity attacks
   blocked by solid terrain, placement
-  rejected inside any player; no survival dig particles/crack overlay,
-  tools or block-specific behaviors yet.
+  rejected inside any player; no survival dig particles/crack overlay
+  or additional tool types yet.
+- `partial` — Wooden and stone pickaxes mine tool-required blocks at
+  speed 2/4; stone/deepslate/coal require any pickaxe for a drop, and iron
+  ore requires stone. The server offers four inventory-wide recipes:
+  log→4 planks, 2 planks→4 sticks, 3 planks+2 sticks→wooden pickaxe,
+  3 cobblestone+2 sticks→stone pickaxe. Survival inventory keys 1–4
+  request these recipes, validated atomically by the server. Unlike wiki
+  crafting, this does not require shaped grid placement or a crafting table;
+  pickaxe durability and higher tool tiers are not implemented.
 - `dev` — Sound triggers (dig/place/step) are chosen and sent by the server
   and flow end-to-end; playback via owner-approved **kira** with distance
   attenuation + stereo panning; `--sounds DIR` loads real OGG/WAV packs
@@ -136,7 +143,7 @@ Every implemented wiki feature gets a line here. Status legend:
   gentle attraction toward nearby players. Client renders gentle
   bobbing and rotation; merge radius/timing refinements pending.
   36-slot inventories (9 hotbar + 27 storage, stack 64) are server-owned
-  and synced. No tools or crafting ingredients yet.
+  and synced. Sticks, coal and raw iron are non-block items.
 - `partial` — Gamepad (owner-approved gilrs, engine-side input abstraction):
   left stick moves, right stick looks (rate-normalized), A jumps, RT digs,
   LT places, Start = Escape; dead-zoned, works alongside keyboard/mouse.

@@ -19,10 +19,9 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use ssc_engine::{
-    Camera, DrawCmd, EngineEvent, EngineSettings, Flow, Frame, Key, KeyState, MeshId,
-    MouseButton,
+    Camera, DrawCmd, EngineEvent, EngineSettings, Flow, Frame, Key, KeyState, MeshId, MouseButton,
 };
-use ssc_math::{MOUSE_SENS, PLAYER_EYE_HEIGHT, Vec3};
+use ssc_math::{Vec3, MOUSE_SENS, PLAYER_EYE_HEIGHT};
 use ssc_protocol::packets::{keys, ClientPacket, ServerPacket, SoundId};
 use ssc_protocol::wire::{TcpWire, Wire};
 use ssc_protocol::PROTOCOL_VERSION;
@@ -69,7 +68,11 @@ enum JobResult {
         /// Visibility masks for all 24 sub-chunks (occlusion culling data).
         masks: Vec<(usize, mesh::FaceMasks)>,
     },
-    Region { rx: i32, rz: i32, mesh: Option<ssc_lod::LodMesh> },
+    Region {
+        rx: i32,
+        rz: i32,
+        mesh: Option<ssc_lod::LodMesh>,
+    },
 }
 
 fn spawn_worker(shared: Arc<RwLock<ClientWorld>>) -> (Sender<Job>, Receiver<JobResult>) {
@@ -85,10 +88,20 @@ fn spawn_worker(shared: Arc<RwLock<ClientWorld>>) -> (Sender<Job>, Receiver<JobR
                         let (meshes, masks) = mesh::build_column_meshes(&guard.world, key.0, key.1);
                         let _ = res_tx.send(JobResult::Column { key, meshes, masks });
                     }
-                    Job::Region { rx, rz, pcx, pcz, near_margin } => {
+                    Job::Region {
+                        rx,
+                        rz,
+                        pcx,
+                        pcz,
+                        near_margin,
+                    } => {
                         let guard = shared.read().unwrap_or_else(|e| e.into_inner());
                         let built = guard.build_region(rx, rz, pcx, pcz, near_margin);
-                        let _ = res_tx.send(JobResult::Region { rx, rz, mesh: built });
+                        let _ = res_tx.send(JobResult::Region {
+                            rx,
+                            rz,
+                            mesh: built,
+                        });
                     }
                 }
             }
@@ -322,7 +335,9 @@ impl App {
 
     /// Begin a server-authoritative inventory drag from a non-empty slot.
     fn inventory_press(&mut self, frame: &mut Frame) {
-        let Some((mx, my)) = frame.input().cursor else { return };
+        let Some((mx, my)) = frame.input().cursor else {
+            return;
+        };
         let (w, h) = frame.size();
         let Some(slot) = self.inventory_hit(mx, my, w as f32, h as f32) else {
             return;
@@ -349,7 +364,10 @@ impl App {
         });
         if let Some(target) = target {
             if source != target {
-                self.send(&ClientPacket::SwapSlots { a: source, b: target });
+                self.send(&ClientPacket::SwapSlots {
+                    a: source,
+                    b: target,
+                });
             }
         }
         self.inv_pick = None;
@@ -383,9 +401,13 @@ impl App {
     /// Handle a click while the creative picker is open: assign the
     /// clicked block to the selected hotbar slot (server confirms).
     fn picker_click(&mut self, frame: &mut Frame) {
-        let Some((mx, my)) = frame.input().cursor else { return };
+        let Some((mx, my)) = frame.input().cursor else {
+            return;
+        };
         let (w, h) = frame.size();
-        let Some(block) = self.picker_hit(mx, my, w as f32, h as f32) else { return };
+        let Some(block) = self.picker_hit(mx, my, w as f32, h as f32) else {
+            return;
+        };
         self.send(&ClientPacket::SetHotbarSlot {
             slot: self.selected_slot,
             block,
@@ -451,11 +473,21 @@ impl App {
         for ev in events {
             match *ev {
                 EngineEvent::Closed => return Flow::Exit,
-                EngineEvent::Key { key: Key::Escape, state: KeyState::Pressed } => {
+                EngineEvent::Key {
+                    key: Key::Escape,
+                    state: KeyState::Pressed,
+                } => {
                     let locked = frame.mouse_locked();
                     frame.set_mouse_locked(!locked);
                 }
-                EngineEvent::Key { key: Key::Digit(n), state: KeyState::Pressed } => {
+                EngineEvent::Key {
+                    key: Key::Digit(n),
+                    state: KeyState::Pressed,
+                } => {
+                    if self.picker_open && self.mode == 0 && (1..=4).contains(&n) {
+                        self.send(&ClientPacket::Craft { recipe: n - 1 });
+                        continue;
+                    }
                     self.selected_slot = n - 1;
                     if self.joined {
                         let item = self
@@ -471,13 +503,21 @@ impl App {
                                 ssc_world::item_info(item).name
                             );
                         }
-                        self.send(&ClientPacket::SelectSlot { slot: self.selected_slot });
+                        self.send(&ClientPacket::SelectSlot {
+                            slot: self.selected_slot,
+                        });
                     }
                 }
-                EngineEvent::Key { key: Key::F3, state: KeyState::Pressed } => {
+                EngineEvent::Key {
+                    key: Key::F3,
+                    state: KeyState::Pressed,
+                } => {
                     self.debug_hud = !self.debug_hud;
                 }
-                EngineEvent::Key { key: Key::E, state: KeyState::Pressed } => {
+                EngineEvent::Key {
+                    key: Key::E,
+                    state: KeyState::Pressed,
+                } => {
                     // E: inventory screen in survival, block picker in
                     // creative (both server-driven).
                     self.picker_open = !self.picker_open;
@@ -493,7 +533,10 @@ impl App {
                 // Immediate action on the press event: a quick click never
                 // shows up in the held-state snapshot (press and release
                 // land in the same frame's event batch).
-                EngineEvent::MouseButton { button: MouseButton::Left, state: KeyState::Pressed } => {
+                EngineEvent::MouseButton {
+                    button: MouseButton::Left,
+                    state: KeyState::Pressed,
+                } => {
                     if self.picker_open {
                         if self.mode == 1 {
                             self.picker_click(frame);
@@ -509,7 +552,10 @@ impl App {
                         frame.set_mouse_locked(true);
                     }
                 }
-                EngineEvent::MouseButton { button: MouseButton::Left, state: KeyState::Released } => {
+                EngineEvent::MouseButton {
+                    button: MouseButton::Left,
+                    state: KeyState::Released,
+                } => {
                     if self.picker_open && self.mode != 1 {
                         self.inventory_release(frame);
                     } else if !self.picker_open && frame.mouse_locked() {
@@ -517,7 +563,10 @@ impl App {
                         self.send(&ClientPacket::DigStop);
                     }
                 }
-                EngineEvent::MouseButton { button: MouseButton::Right, state: KeyState::Pressed } => {
+                EngineEvent::MouseButton {
+                    button: MouseButton::Right,
+                    state: KeyState::Pressed,
+                } => {
                     if !self.picker_open && frame.mouse_locked() {
                         self.send(&ClientPacket::Place);
                         self.last_place = Instant::now();
@@ -592,8 +641,8 @@ impl App {
                 self.yaw += i.pad_right.0 * STICK_LOOK_RATE * dt;
             }
             if i.pad_right.1 != 0.0 {
-                self.pitch = (self.pitch + i.pad_right.1 * STICK_LOOK_RATE * dt)
-                    .clamp(-1.5697, 1.5697);
+                self.pitch =
+                    (self.pitch + i.pad_right.1 * STICK_LOOK_RATE * dt).clamp(-1.5697, 1.5697);
             }
         }
         self.keys = mask;
@@ -609,7 +658,11 @@ impl App {
         }
         if Instant::now() - self.last_input_send >= INPUT_INTERVAL {
             self.last_input_send = Instant::now();
-            self.send(&ClientPacket::Input { keys: self.keys, yaw: self.yaw, pitch: self.pitch });
+            self.send(&ClientPacket::Input {
+                keys: self.keys,
+                yaw: self.yaw,
+                pitch: self.pitch,
+            });
         }
 
         // Held place: repeat while the button stays down (dig progress
@@ -673,7 +726,13 @@ impl App {
 
         // HUD (server-driven content where gameplay data is shown).
         // Crosshair.
-        frame.hud_text("+".into(), wf / 2.0 - 5.0, hf / 2.0 - 9.0, 18.0, [1.0, 1.0, 1.0, 0.9]);
+        frame.hud_text(
+            "+".into(),
+            wf / 2.0 - 5.0,
+            hf / 2.0 - 9.0,
+            18.0,
+            [1.0, 1.0, 1.0, 0.9],
+        );
         // Hotbar: the first 9 inventory slots (server-driven content).
         if self.joined {
             for i in 0..9usize {
@@ -775,13 +834,18 @@ impl App {
                 format!("ents {} rd {}", self.entities.len(), self.render_distance),
             ];
             for (i, line) in lines.iter().enumerate() {
-                frame.hud_text(line.clone(), 16.0, 8.0 + i as f32 * 18.0, 16.0, [1.0, 1.0, 1.0, 0.9]);
+                frame.hud_text(
+                    line.clone(),
+                    16.0,
+                    8.0 + i as f32 * 18.0,
+                    16.0,
+                    [1.0, 1.0, 1.0, 0.9],
+                );
             }
         }
         // Creative block picker (E in creative): the palette is server-sent.
         if self.picker_open && self.mode == 1 {
-            let (x0, y0, col_w, row_h, _pw, _ph) =
-                self.picker_layout(wf, hf);
+            let (x0, y0, col_w, row_h, _pw, _ph) = self.picker_layout(wf, hf);
             frame.hud_text(
                 format!("creative blocks - slot {}", self.selected_slot + 1),
                 x0 + 20.0,
@@ -807,10 +871,17 @@ impl App {
         if self.picker_open && self.mode == 0 {
             let (x0, y0, col_w, row_h) = self.inventory_layout(wf, hf);
             frame.hud_text(
-                "inventory - click two slots to swap (E to close)".to_string(),
+                "inventory - drag slots (E close)".to_string(),
                 x0 + 15.0,
-                y0 + 14.0,
-                16.0,
+                y0 + 7.0,
+                14.0,
+                [1.0, 0.85, 0.3, 1.0],
+            );
+            frame.hud_text(
+                "craft 1:planks 2:sticks 3:wood pick 4:stone pick".to_string(),
+                x0 + 15.0,
+                y0 + 24.0,
+                14.0,
                 [1.0, 0.85, 0.3, 1.0],
             );
             for i in 0..36usize {
@@ -862,8 +933,7 @@ impl App {
         let occlusion = mesh::visible_flood(eye_sub, &|k| self.face_masks.get(&k).copied());
 
         // Build the draw list.
-        let mut draws =
-            Vec::with_capacity(self.sub_meshes.len() + self.region_meshes.len());
+        let mut draws = Vec::with_capacity(self.sub_meshes.len() + self.region_meshes.len());
         let mut occluded = 0u32;
         for ((col, sub, translucent), (id, aabb)) in &self.sub_meshes {
             // Only opaque sub-chunk meshes participate in occlusion data
@@ -901,7 +971,11 @@ impl App {
             if e.kind == 3 {
                 pos.y += dropped_item_bob(animation_time, e.mesh as f32 * 0.618);
             }
-            let (half_width, height) = if e.kind == 3 { (0.125, 0.25) } else { (0.45, 1.9) };
+            let (half_width, height) = if e.kind == 3 {
+                (0.125, 0.25)
+            } else {
+                (0.45, 1.9)
+            };
             let aabb = ssc_math::Aabb::new(
                 Vec3::new(pos.x - half_width, pos.y - 0.05, pos.z - half_width),
                 Vec3::new(pos.x + half_width, pos.y + height, pos.z + half_width),
@@ -952,7 +1026,10 @@ impl App {
         if since >= Duration::from_secs(1) {
             let secs = since.as_secs_f32();
             let fps = self.frames as f32 / secs;
-            if std::env::var("SSC_DEBUG").map(|v| v == "1").unwrap_or(false) {
+            if std::env::var("SSC_DEBUG")
+                .map(|v| v == "1")
+                .unwrap_or(false)
+            {
                 let has_spawn_col = self.sub_meshes.keys().any(|k| k.0 == (0, 0));
                 eprintln!(
                     "[dbg] sub_meshes={} lod_regions={} queued_cols={} queued_regions={} spawn_col_mesh={}",
@@ -962,15 +1039,19 @@ impl App {
                     self.queued_regions.len(),
                     has_spawn_col
                 );
-                if let Some((k, (id, aabb))) = self
-                    .sub_meshes
-                    .iter()
-                    .find(|(k, _)| k.0 == (0, 0) && !k.2)
+                if let Some((k, (id, aabb))) =
+                    self.sub_meshes.iter().find(|(k, _)| k.0 == (0, 0) && !k.2)
                 {
                     eprintln!(
                         "[dbg] col(0,0) sub={} id={} aabb=({:.1},{:.1},{:.1})-({:.1},{:.1},{:.1})",
-                        k.1, id,
-                        aabb.min.x, aabb.min.y, aabb.min.z, aabb.max.x, aabb.max.y, aabb.max.z
+                        k.1,
+                        id,
+                        aabb.min.x,
+                        aabb.min.y,
+                        aabb.min.z,
+                        aabb.max.x,
+                        aabb.max.y,
+                        aabb.max.z
                     );
                 }
             }
@@ -1008,7 +1089,13 @@ impl App {
 
     fn handle_packet(&mut self, frame: &mut Frame, p: ServerPacket) -> Flow {
         match p {
-            ServerPacket::Welcome { entity_id, spawn, render_distance, hotbar, game_mode } => {
+            ServerPacket::Welcome {
+                entity_id,
+                spawn,
+                render_distance,
+                hotbar,
+                game_mode,
+            } => {
                 self.own_id = Some(entity_id);
                 self.hotbar = hotbar;
                 self.mode = game_mode;
@@ -1023,7 +1110,12 @@ impl App {
                     "[client] joined as entity {entity_id}: rd {render_distance}, spawn {s:?}"
                 );
             }
-            ServerPacket::Subchunk { cx, cz, sub, blocks } => {
+            ServerPacket::Subchunk {
+                cx,
+                cz,
+                sub,
+                blocks,
+            } => {
                 if blocks.len() != ssc_world::SUBCHUNK_VOLUME {
                     eprintln!("[client] bad subchunk size, dropping");
                     return Flow::Exit;
@@ -1068,7 +1160,15 @@ impl App {
                 let mut w = self.shared.write().unwrap_or_else(|e| e.into_inner());
                 w.apply_lod_unload(cx, cz);
             }
-            ServerPacket::EntityState { id, x, y, z, yaw, pitch, kind } => {
+            ServerPacket::EntityState {
+                id,
+                x,
+                y,
+                z,
+                yaw,
+                pitch,
+                kind,
+            } => {
                 if Some(id) == self.own_id {
                     // Own authoritative state: interpolate for smooth
                     // rendering (the server owns the logic, specs.md §2).
@@ -1080,10 +1180,10 @@ impl App {
                     match self.entities.get_mut(&id) {
                         Some(e) => {
                             if e.kind != kind {
-                                let (verts, indices) = self
-                                    .avatar_cache
-                                    .get(&kind)
-                                    .unwrap_or_else(|| self.avatar_cache.get(&0).expect("player avatar"));
+                                let (verts, indices) =
+                                    self.avatar_cache.get(&kind).unwrap_or_else(|| {
+                                        self.avatar_cache.get(&0).expect("player avatar")
+                                    });
                                 if let Err(err) = frame.upload_mesh(e.mesh, verts, indices) {
                                     eprintln!("[client] avatar update failed: {err}");
                                 }
@@ -1098,10 +1198,10 @@ impl App {
                             // First sighting: upload a placeholder avatar.
                             let mesh_id = self.next_mesh_id;
                             self.next_mesh_id += 1;
-                            let (verts, indices) = self
-                                .avatar_cache
-                                .get(&kind)
-                                .unwrap_or_else(|| self.avatar_cache.get(&0).expect("player avatar"));
+                            let (verts, indices) =
+                                self.avatar_cache.get(&kind).unwrap_or_else(|| {
+                                    self.avatar_cache.get(&0).expect("player avatar")
+                                });
                             if let Err(e) = frame.upload_mesh(mesh_id, verts, indices) {
                                 eprintln!("[client] avatar upload failed: {e}");
                             }
@@ -1126,7 +1226,14 @@ impl App {
                     frame.remove_mesh(e.mesh);
                 }
             }
-            ServerPacket::ItemState { id, item, count, x, y, z } => {
+            ServerPacket::ItemState {
+                id,
+                item,
+                count,
+                x,
+                y,
+                z,
+            } => {
                 if count == 0 || !ssc_world::valid_item_id(item) {
                     eprintln!("[client] invalid dropped-item state");
                     return Flow::Exit;
@@ -1200,7 +1307,12 @@ impl App {
                     self.hotbar[i] = slot.0;
                 }
             }
-            ServerPacket::Status { health, hunger, air, hunger_effect_ticks } => {
+            ServerPacket::Status {
+                health,
+                hunger,
+                air,
+                hunger_effect_ticks,
+            } => {
                 self.health = health;
                 self.hunger = hunger;
                 self.air = air;
@@ -1230,8 +1342,10 @@ impl App {
         // (Jobs are drained by the worker immediately, so entries are
         // removed on result; anything ancient is a bug guard.)
         let cutoff = Duration::from_secs(5);
-        self.queued_cols.retain(|_k, t| Instant::now() - *t < cutoff);
-        self.queued_regions.retain(|_k, t| Instant::now() - *t < cutoff);
+        self.queued_cols
+            .retain(|_k, t| Instant::now() - *t < cutoff);
+        self.queued_regions
+            .retain(|_k, t| Instant::now() - *t < cutoff);
     }
 
     fn pump_mesh_jobs(&mut self, _frame: &mut Frame) {
@@ -1256,7 +1370,13 @@ impl App {
         for (rx, rz) in regions {
             if !self.queued_regions.contains_key(&(rx, rz)) {
                 self.queued_regions.insert((rx, rz), Instant::now());
-                let _ = self.job_tx.send(Job::Region { rx, rz, pcx, pcz, near_margin });
+                let _ = self.job_tx.send(Job::Region {
+                    rx,
+                    rz,
+                    pcx,
+                    pcz,
+                    near_margin,
+                });
             }
         }
     }
@@ -1463,11 +1583,20 @@ mod tests {
     #[test]
     fn sky_is_blue_at_midday_and_dark_at_night() {
         let day = sky_color(0.4);
-        assert!(day[2] > 0.7 && day[2] > day[0], "midday should be blue: {day:?}");
+        assert!(
+            day[2] > 0.7 && day[2] > day[0],
+            "midday should be blue: {day:?}"
+        );
         let night = sky_color(0.9);
-        assert!(night[0] < 0.1 && night[1] < 0.1, "night should be dark: {night:?}");
+        assert!(
+            night[0] < 0.1 && night[1] < 0.1,
+            "night should be dark: {night:?}"
+        );
         let dawn = sky_color(0.05);
-        assert!(dawn[0] > day[0] && dawn[0] > 0.6, "dawn should be warm: {dawn:?}");
+        assert!(
+            dawn[0] > day[0] && dawn[0] > 0.6,
+            "dawn should be warm: {dawn:?}"
+        );
     }
 
     #[test]
