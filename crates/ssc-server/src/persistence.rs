@@ -117,4 +117,17 @@ mod tests {
         assert_eq!(loaded.0, 987654321);
         assert_eq!(loaded.1, edits);
     }
+
+    #[test]
+    fn truncated_or_unknown_saves_are_rejected() {
+        let path = std::env::temp_dir().join(format!(
+            "ssc-world-save-invalid-{}.bin",
+            std::process::id()
+        ));
+        for bytes in [&b"short"[..], &b"NOTWORLD"[..]] {
+            fs::write(&path, bytes).unwrap();
+            assert_eq!(load(&path).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        }
+        fs::remove_file(path).unwrap();
+    }
 }

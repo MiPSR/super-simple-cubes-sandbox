@@ -2460,6 +2460,22 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_world_save_is_not_overwritten() {
+        let path =
+            std::env::temp_dir().join(format!("ssc-server-world-corrupt-{}.bin", std::process::id()));
+        let original = b"not a valid world save";
+        std::fs::write(&path, original).unwrap();
+
+        let mut cfg = ServerConfig::default();
+        cfg.world_path = Some(path.clone());
+        let server = Server::empty(cfg);
+        server.save_world();
+
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn place_inside_any_player_is_rejected() {
         // Player 2 stands at (9.5, 55, 8.5); player 1's -1.2 aim places
         // into cell (9, 55, 8) — overlapping player 2 — so the placement
