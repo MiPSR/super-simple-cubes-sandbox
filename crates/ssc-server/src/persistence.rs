@@ -21,7 +21,9 @@ const MAX_EDITS: u32 = 4_000_000;
 const PLAYER_MAGIC: &[u8; 8] = b"SSCPLY01";
 const PLAYER_MAGIC_V2: &[u8; 8] = b"SSCPLY02";
 const ITEMS_MAGIC: &[u8; 8] = b"SSCITM01";
+const MOBS_MAGIC: &[u8; 8] = b"SSCMOB01";
 const MAX_SAVED_ITEMS: u32 = 1_000_000;
+const MAX_SAVED_MOBS: u32 = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SavedItem {
@@ -31,6 +33,20 @@ pub struct SavedItem {
     pub vel: [f32; 3],
     pub age: u32,
     pub pickup_delay: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SavedMob {
+    pub kind: u8,
+    pub pos: [f32; 3],
+    pub vel: [f32; 3],
+    pub yaw: f32,
+    pub health: f32,
+    pub wander_timer: u32,
+    pub wander_dir: Option<[f32; 2]>,
+    pub attack_cooldown: u32,
+    pub burn_timer: u8,
+    pub on_ground: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -453,6 +469,153 @@ pub fn save_items(path: &Path, items: &[SavedItem]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn mob_save_path(world_path: &Path) -> std::path::PathBuf {
+    world_path.with_extension("mobs")
+}
+
+pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    const HEADER: u64 = 12;
+    const RECORD: u64 = 51;
+    let file_len = file.metadata()?.len();
+    if file_len < HEADER {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated mob save"));
+    }
+    let mut header = [0u8; HEADER as usize];
+    file.read_exact(&mut header)?;
+    if &header[..8] != MOBS_MAGIC {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid mob save magic"));
+    }
+    let count = u32::from_le_bytes(header[8..12].try_into().expect("fixed mob header"));
+    if count > MAX_SAVED_MOBS || file_len != HEADER + count as u64 * RECORD {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid mob save length"));
+    }
+    let mut mobs = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let mut record = [0u8; RECORD as usize];
+        file.read_exact(&mut record)?;
+        let kind = record[0];
+        let flags = record[1];
+        let mut floats = [0.0f32; 8];
+        for (i, bytes) in record[2..34].chunks_exact(4).enumerate() {
+            floats[i] = f32::from_le_bytes(bytes.try_into().expect("fixed mob float"));
+        }
+        let wander_timer =
+            u32::from_le_bytes(record[34..38].try_into().expect("fixed mob timer"));
+        let attack_cooldown =
+            u32::from_le_bytes(record[46..50].try_into().expect("fixed mob cooldown"));
+        let burn_timer = record[50];
+        let max_health = match kind {
+            1 => 10.0,
+            2 => 20.0,
+            _ => {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "unknown mob kind"));
+            }
+        };
+        let pos = [floats[0], floats[1], floats[2]];
+        let vel = [floats[3], floats[4], floats[5]];
+        let yaw = floats[6];
+        let health = floats[7];
+        let wander_dir = if flags & 1 != 0 {
+            Some([
+                f32::from_le_bytes(record[38..42].try_into().expect("fixed mob direction")),
+                f32::from_le_bytes(record[42..46].try_into().expect("fixed mob direction")),
+            ])
+        } else {
+            None
+        };
+        let on_ground = flags & 2 != 0;
+        if flags & !3 != 0
+            || pos.iter().chain(vel.iter()).any(|v| !v.is_finite())
+            || !yaw.is_finite()
+            || !health.is_finite()
+            || !(0.0..=max_health).contains(&health)
+            || pos[0].abs() > 30_000_000.0
+            || pos[2].abs() > 30_000_000.0
+            || pos[1] < ssc_world::MIN_Y as f32 - 1.0
+            || pos[1] >= ssc_world::MAX_Y as f32
+            || wander_timer > 120
+            || attack_cooldown > 20
+            || burn_timer >= 20
+            || wander_dir.is_some_and(|d| d.iter().any(|v| !v.is_finite()))
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid mob state"));
+        }
+        mobs.push(SavedMob {
+            kind,
+            pos,
+            vel,
+            yaw,
+            health,
+            wander_timer,
+            wander_dir,
+            attack_cooldown,
+            burn_timer,
+            on_ground,
+        });
+    }
+    Ok(Some(mobs))
+}
+
+pub fn save_mobs(path: &Path, mobs: &[SavedMob]) -> io::Result<()> {
+    if mobs.len() > MAX_SAVED_MOBS as usize {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "too many mobs"));
+    }
+    if mobs.iter().any(|mob| {
+        let max_health = match mob.kind {
+            1 => 10.0,
+            2 => 20.0,
+            _ => return true,
+        };
+        mob.pos.iter().chain(mob.vel.iter()).any(|v| !v.is_finite())
+            || !mob.yaw.is_finite()
+            || !mob.health.is_finite()
+            || !(0.0..=max_health).contains(&mob.health)
+            || mob.pos[0].abs() > 30_000_000.0
+            || mob.pos[2].abs() > 30_000_000.0
+            || mob.pos[1] < ssc_world::MIN_Y as f32 - 1.0
+            || mob.pos[1] >= ssc_world::MAX_Y as f32
+            || mob.wander_timer > 120
+            || mob.attack_cooldown > 20
+            || mob.burn_timer >= 20
+            || mob.wander_dir.is_some_and(|d| d.iter().any(|v| !v.is_finite()))
+    }) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid mob state"));
+    }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    let temp_path = path.with_extension("tmp");
+    let mut file = File::create(&temp_path)?;
+    file.write_all(MOBS_MAGIC)?;
+    file.write_all(&(mobs.len() as u32).to_le_bytes())?;
+    for mob in mobs {
+        let flags = u8::from(mob.wander_dir.is_some()) | (u8::from(mob.on_ground) << 1);
+        file.write_all(&[mob.kind, flags])?;
+        for value in mob
+            .pos
+            .into_iter()
+            .chain(mob.vel)
+            .chain([mob.yaw, mob.health])
+        {
+            file.write_all(&value.to_le_bytes())?;
+        }
+        file.write_all(&mob.wander_timer.to_le_bytes())?;
+        let direction = mob.wander_dir.unwrap_or([0.0, 0.0]);
+        file.write_all(&direction[0].to_le_bytes())?;
+        file.write_all(&direction[1].to_le_bytes())?;
+        file.write_all(&mob.attack_cooldown.to_le_bytes())?;
+        file.write_all(&[mob.burn_timer])?;
+    }
+    file.sync_all()?;
+    fs::rename(temp_path, path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,6 +717,29 @@ mod tests {
         }];
         save_items(&path, &items).unwrap();
         assert_eq!(load_items(&path).unwrap().unwrap(), items);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn mob_state_round_trips() {
+        let path = std::env::temp_dir().join(format!(
+            "ssc-mob-save-{}.dat",
+            std::process::id()
+        ));
+        let mobs = vec![SavedMob {
+            kind: 2,
+            pos: [-32.5, 64.0, 16.25],
+            vel: [2.0, 0.0, -1.0],
+            yaw: 1.25,
+            health: 17.0,
+            wander_timer: 0,
+            wander_dir: Some([0.5, -0.5]),
+            attack_cooldown: 12,
+            burn_timer: 8,
+            on_ground: true,
+        }];
+        save_mobs(&path, &mobs).unwrap();
+        assert_eq!(load_mobs(&path).unwrap().unwrap(), mobs);
         fs::remove_file(path).unwrap();
     }
 }

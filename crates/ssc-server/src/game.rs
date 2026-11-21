@@ -224,6 +224,7 @@ pub struct Server {
     block_edits: crate::persistence::BlockEdits,
     persistence_ready: bool,
     item_persistence_ready: bool,
+    mob_persistence_ready: bool,
     sessions: HashMap<EntityId, Session>,
     /// Mobs (ids from `FIRST_MOB_ID`).
     mobs: HashMap<EntityId, crate::mobs::Mob>,
@@ -290,6 +291,18 @@ impl Server {
             },
             None => (Vec::new(), false),
         };
+        let (saved_mobs, mob_persistence_ready) = match cfg.world_path.as_deref() {
+            Some(path) => match crate::persistence::load_mobs(
+                &crate::persistence::mob_save_path(path),
+            ) {
+                Ok(mobs) => (mobs.unwrap_or_default(), true),
+                Err(err) => {
+                    eprintln!("[server] mob save could not be loaded: {err}; preserving it");
+                    (Vec::new(), false)
+                }
+            },
+            None => (Vec::new(), false),
+        };
         let edited = block_edits.keys().copied().collect();
         let mut server = Self {
             gen: WorldGen::new(seed),
@@ -298,6 +311,7 @@ impl Server {
             block_edits,
             persistence_ready,
             item_persistence_ready,
+            mob_persistence_ready,
             cfg,
             sessions: HashMap::new(),
             mobs: HashMap::new(),
@@ -326,6 +340,41 @@ impl Server {
                     pickup_delay: saved.pickup_delay,
                 },
             );
+        }
+        let mut mob_columns = HashSet::new();
+        for saved in saved_mobs {
+            let Some(id) = server.allocate_mob_id() else {
+                eprintln!("[server] mob entity capacity exhausted while loading save");
+                break;
+            };
+            let Some(kind) = crate::mobs::MobKind::from_u8(saved.kind) else {
+                continue;
+            };
+            let pos = Vec3::new(saved.pos[0], saved.pos[1], saved.pos[2]);
+            let mut mob = crate::mobs::Mob::new(kind, pos);
+            mob.vel = Vec3::new(saved.vel[0], saved.vel[1], saved.vel[2]);
+            mob.yaw = saved.yaw;
+            mob.health = saved.health;
+            mob.wander_timer = saved.wander_timer;
+            mob.wander_dir = saved
+                .wander_dir
+                .map(|dir| ssc_math::Vec2::new(dir[0], dir[1]));
+            mob.attack_cooldown = saved.attack_cooldown;
+            mob.burn_timer = saved.burn_timer;
+            mob.on_ground_hint = saved.on_ground;
+            let column = (
+                (pos.x.floor() as i32).div_euclid(16),
+                (pos.z.floor() as i32).div_euclid(16),
+            );
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    mob_columns.insert((column.0 + dx, column.1 + dz));
+                }
+            }
+            server.mobs.insert(id, mob);
+        }
+        for key in mob_columns {
+            server.ensure_column(key);
         }
         server
     }
@@ -380,6 +429,36 @@ impl Server {
         let path = crate::persistence::item_save_path(world_path);
         if let Err(err) = crate::persistence::save_items(&path, &items) {
             eprintln!("[server] dropped-item save to {} failed: {err}", path.display());
+        }
+    }
+
+    fn save_mobs(&self) {
+        if !self.mob_persistence_ready {
+            return;
+        }
+        let Some(world_path) = self.cfg.world_path.as_deref() else {
+            return;
+        };
+        let mobs: Vec<_> = self
+            .mobs
+            .values()
+            .filter(|mob| !mob.dead)
+            .map(|mob| crate::persistence::SavedMob {
+                kind: mob.kind.as_u8(),
+                pos: [mob.pos.x, mob.pos.y, mob.pos.z],
+                vel: [mob.vel.x, mob.vel.y, mob.vel.z],
+                yaw: mob.yaw,
+                health: mob.health,
+                wander_timer: mob.wander_timer,
+                wander_dir: mob.wander_dir.map(|dir| [dir.x, dir.y]),
+                attack_cooldown: mob.attack_cooldown,
+                burn_timer: mob.burn_timer,
+                on_ground: mob.on_ground_hint,
+            })
+            .collect();
+        let path = crate::persistence::mob_save_path(world_path);
+        if let Err(err) = crate::persistence::save_mobs(&path, &mobs) {
+            eprintln!("[server] mob save to {} failed: {err}", path.display());
         }
     }
 
@@ -524,6 +603,7 @@ impl Server {
         }
         self.save_all_player_data();
         self.save_item_entities();
+        self.save_mobs();
         self.save_world();
         let _ = self.broadcast(&ServerPacket::Goodbye { reason: "server closed".into() });
     }
@@ -731,12 +811,28 @@ impl Server {
             let mut mob_hits: Vec<(EntityId, usize)> = Vec::new();
             let mut dead_mobs: Vec<EntityId> = Vec::new();
             let daylight = self.time_of_day > 0.25 && self.time_of_day < 0.75;
-            for (id, mob) in self.mobs.iter_mut() {
-                if let Some(idx) = mob.tick(&self.world, &positions, dt, daylight) {
-                    mob_hits.push((*id, idx));
+            if !positions.is_empty() {
+                let mob_columns: HashSet<ColumnKey> = self
+                    .mobs
+                    .values()
+                    .flat_map(|mob| {
+                        let cx = (mob.pos.x.floor() as i32).div_euclid(16);
+                        let cz = (mob.pos.z.floor() as i32).div_euclid(16);
+                        (-1..=1).flat_map(move |dx| {
+                            (-1..=1).map(move |dz| (cx + dx, cz + dz))
+                        })
+                    })
+                    .collect();
+                for key in mob_columns {
+                    self.ensure_column(key);
                 }
-                if mob.dead {
-                    dead_mobs.push(*id);
+                for (id, mob) in self.mobs.iter_mut() {
+                    if let Some(idx) = mob.tick(&self.world, &positions, dt, daylight) {
+                        mob_hits.push((*id, idx));
+                    }
+                    if mob.dead {
+                        dead_mobs.push(*id);
+                    }
                 }
             }
 
@@ -782,9 +878,10 @@ impl Server {
                 .iter()
                 .filter(|(_, m)| {
                     m.pos.y <= ssc_world::MIN_Y as f32 + 1.0
-                        || player_refs
-                            .iter()
-                            .all(|p| (m.pos - *p).length() > 64.0)
+                        || (!player_refs.is_empty()
+                            && player_refs
+                                .iter()
+                                .all(|p| (m.pos - *p).length() > 64.0))
                 })
                 .map(|(id, _)| *id)
                 .collect();
@@ -889,6 +986,7 @@ impl Server {
         if self.tick % 1200 == 0 {
             self.save_all_player_data();
             self.save_item_entities();
+            self.save_mobs();
             self.save_world();
         }
     }
@@ -1575,8 +1673,20 @@ impl Server {
                 )
             })
             .collect();
+        let mob_columns: HashSet<ColumnKey> = self
+            .mobs
+            .values()
+            .flat_map(|mob| {
+                let cx = (mob.pos.x.floor() as i32).div_euclid(16);
+                let cz = (mob.pos.z.floor() as i32).div_euclid(16);
+                (-1..=1).flat_map(move |dx| (-1..=1).map(move |dz| (cx + dx, cz + dz)))
+            })
+            .collect();
         self.world.columns.retain(|(cx, cz), _| {
             if self.edited.contains(&(*cx, *cz)) {
+                return true;
+            }
+            if mob_columns.contains(&(*cx, *cz)) {
                 return true;
             }
             ranges
@@ -2724,6 +2834,46 @@ mod tests {
         assert_eq!(item.age, 123);
         assert_eq!(item.pickup_delay, 4);
         std::fs::remove_file(crate::persistence::item_save_path(&world_path)).unwrap();
+    }
+
+    #[test]
+    fn saved_mobs_load_with_terrain_and_pause_without_players() {
+        let world_path =
+            std::env::temp_dir().join(format!("ssc-mob-world-{}.bin", std::process::id()));
+        let mut cfg = ServerConfig::default();
+        cfg.world_path = Some(world_path.clone());
+        let mut server = Server::empty(cfg.clone());
+        let mut mob = crate::mobs::Mob::new(
+            crate::mobs::MobKind::Zombie,
+            Vec3::new(8.5, 49.0, 8.5),
+        );
+        mob.health = 12.0;
+        mob.attack_cooldown = 7;
+        let id = server.allocate_mob_id().unwrap();
+        server.mobs.insert(id, mob);
+        server.world.set_block(8, 48, 8, ssc_world::STONE);
+        server.record_block_edit(8, 48, 8, ssc_world::STONE);
+        server.save_world();
+        server.save_mobs();
+
+        let mut restored = Server::empty(cfg);
+        let restored_mob = restored.mobs.values().next().unwrap();
+        let position = restored_mob.pos;
+        assert_eq!(restored_mob.kind, crate::mobs::MobKind::Zombie);
+        assert_eq!(restored_mob.health, 12.0);
+        assert_eq!(restored_mob.attack_cooldown, 7);
+        assert_eq!(
+            restored.world.block_or_air(8, 48, 8),
+            ssc_world::STONE,
+            "mob's surrounding terrain is available before simulation"
+        );
+
+        restored.tick();
+
+        assert_eq!(restored.mobs.len(), 1);
+        assert_eq!(restored.mobs.values().next().unwrap().pos, position);
+        std::fs::remove_file(&world_path).unwrap();
+        std::fs::remove_file(crate::persistence::mob_save_path(&world_path)).unwrap();
     }
 
     #[test]

@@ -47,7 +47,8 @@ runnable through Nix.
   client UUID stored at
   `$XDG_DATA_HOME/super-simple-cubes/anonymous-player-id` (or
   `~/.local/share/super-simple-cubes/anonymous-player-id`). Delete that file
-  to use a new identity. Dropped items are saved alongside the world file.
+  to use a new identity. Dropped items and mobs are saved alongside the world
+  file.
   The UUID is not authentication; authenticated accounts are not implemented.
 - Textured cube world (procedural placeholder atlas), server-authoritative
   20 TPS physics, dig/place with server-side raycasts, server-driven sound
