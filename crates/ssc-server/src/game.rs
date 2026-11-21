@@ -1128,7 +1128,9 @@ impl Server {
                 if leftover < count {
                     session.inv_dirty = true;
                     count = leftover;
-                    break;
+                    if count == 0 {
+                        break;
+                    }
                 }
             }
             if let Some(item) = self.items.get_mut(&item_id) {
@@ -1781,7 +1783,7 @@ impl Server {
             ClientPacket::SwapSlots { a, b } => {
                 // Own-inventory item movement (survival inventory UI).
                 let Some(session) = self.sessions.get_mut(&id) else { return Ok(()) };
-                if !session.player.joined {
+                if !session.player.joined || session.survival.dead {
                     return Ok(());
                 }
                 if (a as usize) >= crate::survival::INVENTORY_SIZE
@@ -1820,7 +1822,7 @@ impl Server {
                 if self
                     .sessions
                     .get(&id)
-                    .is_some_and(|s| s.player.joined)
+                    .is_some_and(|s| s.player.joined && !s.survival.dead)
                 {
                     self.handle_dig_start(id);
                 }
@@ -2583,6 +2585,30 @@ mod tests {
     }
 
     #[test]
+    fn partial_pickup_passes_remainder_to_next_nearby_player() {
+        let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
+        let pos = rig.server.sessions[&1].player.pos;
+        {
+            let first = rig.server.sessions.get_mut(&1).unwrap();
+            first.inventory.fill(Some((ssc_world::STONE, 64)));
+            first.inventory[0] = Some((ssc_world::APPLE, 63));
+            first.inv_dirty = false;
+        }
+        rig.server.sessions.get_mut(&2).unwrap().player.pos =
+            pos + Vec3::new(0.5, 0.0, 0.0);
+        rig.server.spawn_item_entity(ssc_world::APPLE, 2, pos);
+        let item_id = rig.server.next_item_id - 1;
+        rig.server.items.get_mut(&item_id).unwrap().pickup_delay = 0;
+
+        rig.server.tick_items(0.05);
+
+        assert_eq!(rig.server.sessions[&1].inventory[0], Some((ssc_world::APPLE, 64)));
+        assert!(rig.server.sessions[&1].inv_dirty);
+        assert_eq!(rig.server.sessions[&2].inventory[0], Some((ssc_world::APPLE, 1)));
+        assert!(!rig.server.items.contains_key(&item_id));
+    }
+
+    #[test]
     fn nearby_item_stacks_merge_up_to_max_stack() {
         let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
         let pos = rig.server.sessions[&1].player.pos + Vec3::new(3.0, 0.0, 0.0);
@@ -2750,6 +2776,33 @@ mod tests {
         assert_eq!(
             rig.server.sessions[&1].inventory[1],
             Some((ssc_world::APPLE, 64))
+        );
+    }
+
+    #[test]
+    fn dead_players_cannot_dig_or_move_inventory() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let target = (8, 54, 8);
+        rig.server.world.set_block(target.0, target.1, target.2, ssc_world::DIRT);
+        {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((ssc_world::APPLE, 1));
+            session.survival.die();
+        }
+        rig.server
+            .handle_packet(1, ClientPacket::DigStart)
+            .unwrap();
+        rig.server
+            .handle_packet(1, ClientPacket::SwapSlots { a: 0, b: 1 })
+            .unwrap();
+
+        let session = &rig.server.sessions[&1];
+        assert!(session.survival.digging.is_none());
+        assert_eq!(session.inventory[0], Some((ssc_world::APPLE, 1)));
+        assert!(session.inventory[1].is_none());
+        assert_eq!(
+            rig.server.world.get_block(target.0, target.1, target.2),
+            Some(ssc_world::DIRT)
         );
     }
 
