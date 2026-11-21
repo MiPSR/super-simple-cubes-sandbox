@@ -76,7 +76,7 @@ pub fn item_info(id: ItemId) -> ItemInfo {
             name: "rotten_flesh",
             max_stack: 64,
             places: None,
-            food: Some(4), // hunger effect is not implemented yet
+            food: Some(4), // Hunger effect and its chance are handled server-side.
         },
         _ => ItemInfo { name: "unknown", max_stack: 64, places: None, food: None },
     }

@@ -229,8 +229,8 @@ impl SurvivalState {
                 .is_some_and(|at| Instant::now() >= at)
     }
 
-    /// Reset after respawn (inventory is kept — noted in
-    /// implemented-features.md; item entities don't exist yet).
+    /// Reset vitals after respawn. The server owns the separate inventory and
+    /// dropped-item state, so resetting this structure leaves both untouched.
     pub fn respawn(&mut self) {
         *self = SurvivalState::default();
     }

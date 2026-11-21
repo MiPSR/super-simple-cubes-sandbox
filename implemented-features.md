@@ -76,8 +76,9 @@ Every implemented wiki feature gets a line here. Status legend:
   inventory (stone→cobble, grass→dirt, leaves→apple at 5%), placing
   consumes items, eating (apple +4 hunger), death → auto-respawn after 2 s
   at spawn (Minecraft uses a death screen + manual respawn); death drops
-  inventory as world items. No tools, armor, XP, crafting, inventory
-  persistence or mode switching mid-session yet.
+  inventory as world items. Anonymous UUID saves preserve inventory, position,
+  vitals and selected slot. No tools, armor, XP, crafting or mode switching
+  mid-session yet.
 - `partial` — Game modes: creative (default hotbar blocks, instant dig,
   no consumption, E = block picker, double-jump flight with server
   authority) and survival (empty start, E =
