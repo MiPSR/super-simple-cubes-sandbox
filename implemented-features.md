@@ -89,7 +89,8 @@ Every implemented wiki feature gets a line here. Status legend:
   momentum/drag simulation, auto step-up or water-aware mob AI yet.
 - `partial` — Block interaction: creative instant dig / survival timed dig
   (server-side progress with re-target on look change, progress broadcast
-  for the HUD), reach 4.5, server-side DDA voxel raycast, placement
+  for the HUD), reach 4.5, server-side DDA voxel raycast, entity attacks
+  blocked by solid terrain, placement
   rejected inside any player; no survival dig particles/crack overlay,
   tools or block-specific behaviors yet.
 - `dev` — Sound triggers (dig/place/step) are chosen and sent by the server

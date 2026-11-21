@@ -1319,7 +1319,12 @@ impl Server {
                 }
             }
         }
-        let Some((target, _t, is_mob)) = best else { return false };
+        let Some((target, t, is_mob)) = best else { return false };
+        // The nearest entity only takes priority when no solid voxel is
+        // between its hitbox and the attacker's eyes.
+        if raycast(&self.world, eye, dir, (t - 0.0001).max(0.0)).is_some() {
+            return false;
+        }
 
         if is_mob {
             // Punch a mob: 2 damage by hand, knockback.
@@ -2804,6 +2809,49 @@ mod tests {
             rig.server.world.get_block(target.0, target.1, target.2),
             Some(ssc_world::DIRT)
         );
+    }
+
+    #[test]
+    fn solid_wall_blocks_pvp_but_not_unobstructed_attacks() {
+        let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
+        rig.server.world.set_block(10, 56, 8, ssc_world::STONE);
+        let before = rig.server.sessions[&2].survival.health;
+
+        rig.server
+            .handle_packet(1, ClientPacket::DigStart)
+            .unwrap();
+        assert_eq!(rig.server.sessions[&2].survival.health, before);
+
+        rig.server.world.set_block(10, 56, 8, AIR);
+        rig.server
+            .handle_packet(1, ClientPacket::DigStart)
+            .unwrap();
+        assert_eq!(rig.server.sessions[&2].survival.health, before - 2.0);
+    }
+
+    #[test]
+    fn solid_wall_blocks_mob_attacks() {
+        let mut rig = Rig::new_mode(1, -0.25, GameMode::Survival);
+        let mob_id = FIRST_MOB_ID;
+        rig.server.mobs.insert(
+            mob_id,
+            crate::mobs::Mob::new(
+                crate::mobs::MobKind::Pig,
+                rig.server.sessions[&1].player.pos + Vec3::new(3.0, 0.0, 0.0),
+            ),
+        );
+        let before = rig.server.mobs[&mob_id].health;
+        rig.server.world.set_block(10, 56, 8, ssc_world::STONE);
+        rig.server
+            .handle_packet(1, ClientPacket::DigStart)
+            .unwrap();
+        assert_eq!(rig.server.mobs[&mob_id].health, before);
+
+        rig.server.world.set_block(10, 56, 8, AIR);
+        rig.server
+            .handle_packet(1, ClientPacket::DigStart)
+            .unwrap();
+        assert_eq!(rig.server.mobs[&mob_id].health, before - 2.0);
     }
 
     #[test]
