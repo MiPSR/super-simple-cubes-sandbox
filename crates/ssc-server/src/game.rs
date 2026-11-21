@@ -552,11 +552,9 @@ impl Server {
                     let m = &self.mobs[&mob_id];
                     (m.kind, m.pos)
                 };
-                let drop = match kind {
-                    crate::mobs::MobKind::Pig => Some(ssc_world::PORKCHOP),
-                    crate::mobs::MobKind::Zombie => None, // rotten flesh: later
-                };
-                if let Some(item) = drop {
+                let drop_roll = hash_tick(self.tick, mob_id as i32, pos.x.floor() as i32);
+                let drop = crate::mobs::drop_for(kind, drop_roll);
+                if let Some((item, count)) = drop {
                     let mut receiver = None;
                     let mut best = f32::MAX;
                     for (pid, session) in self.sessions.iter() {
@@ -571,8 +569,11 @@ impl Server {
                     if best < 6.0 {
                         if let Some(pid) = receiver {
                             let session = self.sessions.get_mut(&pid).unwrap();
-                            let leftover =
-                                crate::survival::add_item(&mut session.inventory, item, 1);
+                            let leftover = crate::survival::add_item(
+                                &mut session.inventory,
+                                item,
+                                count,
+                            );
                             if leftover == 0 {
                                 session.inv_dirty = true;
                             }
@@ -681,8 +682,8 @@ impl Server {
             .filter(|s| s.player.joined)
             .map(|s| {
                 (
-                    (s.player.pos.x as i32).div_euclid(16),
-                    (s.player.pos.z as i32).div_euclid(16),
+                    (s.player.pos.x.floor() as i32).div_euclid(16),
+                    (s.player.pos.z.floor() as i32).div_euclid(16),
                 )
             })
             .collect();
@@ -698,6 +699,9 @@ impl Server {
         let want_zombie = night;
         let want_pig = !night;
         for (pcx, pcz) in player_cols {
+            if self.mobs.len() >= mob_cap {
+                break;
+            }
             for attempt in 0..4 {
                 // A random-ish column in a 3-radius ring (8..24 blocks).
                 let ax = (pcx * 16 + 8 + (hash_tick(self.tick + attempt, pcx, pcz) % 32) as i32)
@@ -952,8 +956,8 @@ impl Server {
     fn player_col(&self, id: EntityId) -> ColumnKey {
         let p = &self.sessions[&id].player.pos;
         (
-            (p.x as i32).div_euclid(16),
-            (p.z as i32).div_euclid(16),
+            (p.x.floor() as i32).div_euclid(16),
+            (p.z.floor() as i32).div_euclid(16),
         )
     }
 
@@ -1101,8 +1105,8 @@ impl Server {
             .map(|s| {
                 let p = &s.player.pos;
                 (
-                    (p.x as i32).div_euclid(16),
-                    (p.z as i32).div_euclid(16),
+                    (p.x.floor() as i32).div_euclid(16),
+                    (p.z.floor() as i32).div_euclid(16),
                 )
             })
             .collect();
@@ -1863,6 +1867,14 @@ mod tests {
                 .collect();
             assert!(ids.contains(&1) && ids.contains(&2), "client {c} got {ids:?}");
         }
+    }
+
+    #[test]
+    fn player_column_uses_floor_at_negative_coordinates() {
+        let mut rig = Rig::new(1, 0.0);
+        rig.server.sessions.get_mut(&1).unwrap().player.pos =
+            Vec3::new(-0.5, 55.0, -16.1);
+        assert_eq!(rig.server.player_col(1), (-1, -2));
     }
 
     #[test]

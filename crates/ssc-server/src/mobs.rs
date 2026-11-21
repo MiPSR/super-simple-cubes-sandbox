@@ -67,6 +67,18 @@ impl MobKind {
     }
 }
 
+/// Deterministic loot roll with vanilla-sized count ranges. The server
+/// supplies a per-entity seed; gameplay does not depend on client state.
+pub fn drop_for(kind: MobKind, roll: u64) -> Option<(ssc_world::ItemId, u8)> {
+    match kind {
+        MobKind::Pig => Some((ssc_world::PORKCHOP, 1 + (roll % 3) as u8)),
+        MobKind::Zombie => {
+            let count = (roll % 3) as u8;
+            (count > 0).then_some((ssc_world::ROTTEN_FLESH, count))
+        }
+    }
+}
+
 /// One mob.
 pub struct Mob {
     pub kind: MobKind,
@@ -284,5 +296,19 @@ mod tests {
         let world = flat_world();
         // Ground cells at y 48; the standing surface is the top face = 49.
         assert_eq!(spawn_column_ok(&world, 8, 8), Some(49));
+    }
+
+    #[test]
+    fn mob_loot_counts_match_documented_ranges() {
+        for roll in 0..12 {
+            let (item, count) = drop_for(MobKind::Pig, roll).unwrap();
+            assert_eq!(item, ssc_world::PORKCHOP);
+            assert!((1..=3).contains(&count));
+            if let Some((item, count)) = drop_for(MobKind::Zombie, roll) {
+                assert_eq!(item, ssc_world::ROTTEN_FLESH);
+                assert!((1..=2).contains(&count));
+            }
+        }
+        assert_eq!(drop_for(MobKind::Zombie, 0), None);
     }
 }

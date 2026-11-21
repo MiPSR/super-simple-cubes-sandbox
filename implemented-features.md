@@ -92,10 +92,12 @@ Every implemented wiki feature gets a line here. Status legend:
   ticks ≈ 20 min per cycle), broadcast once per second; the client maps
   time to a sky color (dawn/day/dusk/night keys — no lighting changes,
   per specs §3). No sun/moon rendering, sleep or clock item yet.
-- `partial` — Item system: block-items 1:1 with block ids + apple food
-  item + raw porkchop drop; 36-slot inventories (9 hotbar + 27 storage,
-  stack 64) fully server-owned and synced. No tools, non-block crafting
-  ingredients or item entities yet.
+- `partial` — Item system: block-items 1:1 with block ids, apple, raw
+  porkchop and rotten flesh; food restores 4/3/4 hunger respectively
+  (rotten flesh's hunger effect omitted). Mob drops go directly into the
+  nearest player's inventory within 6 blocks; no item entities or pickup
+  physics. 36-slot inventories (9 hotbar + 27 storage, stack 64) are
+  server-owned and synced. No tools or crafting ingredients yet.
 - `partial` — Gamepad (owner-approved gilrs, engine-side input abstraction):
   left stick moves, right stick looks (rate-normalized), A jumps, RT digs,
   LT places, Start = Escape; dead-zoned, works alongside keyboard/mouse.
@@ -105,8 +107,9 @@ Every implemented wiki feature gets a line here. Status legend:
   (night spawning, chase, melee damage, knockback, death), with entity-kind
   packets and placeholder client meshes. Spawn/despawn rules and AI are
   simplified; no pathfinding, sunlight burning, breeding, loot entities,
-  or full Bedrock mob roster. Pig drops raw porkchop; furnace/cooking is
-  not implemented.
+  or full Bedrock mob roster. Pigs drop 1–3 raw porkchops, zombies 0–2
+  rotten flesh; drops are simplified to direct inventory pickup rather
+  than item entities.
 
 ## Client
 

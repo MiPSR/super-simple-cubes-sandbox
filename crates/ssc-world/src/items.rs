@@ -21,8 +21,10 @@ pub const FIRST_FREE_ITEM: ItemId = 100;
 /// Apple: the survival food source (drops from oak leaves).
 pub const APPLE: ItemId = 100;
 /// Raw porkchop dropped by pigs. Cooking requires a furnace, not yet
-/// implemented; this item is therefore not edible in this milestone.
+/// implemented. It is edible raw (3 hunger points).
 pub const PORKCHOP: ItemId = 101;
+/// Rotten flesh dropped by zombies.
+pub const ROTTEN_FLESH: ItemId = 102;
 
 /// Static item description. No behavior — behavior lives in the server.
 pub struct ItemInfo {
@@ -68,7 +70,13 @@ pub fn item_info(id: ItemId) -> ItemInfo {
             name: "porkchop",
             max_stack: 64,
             places: None,
-            food: None,
+            food: Some(3), // raw porkchop restores 3 hunger points
+        },
+        ROTTEN_FLESH => ItemInfo {
+            name: "rotten_flesh",
+            max_stack: 64,
+            places: None,
+            food: Some(4), // hunger effect is not implemented yet
         },
         _ => ItemInfo { name: "unknown", max_stack: 64, places: None, food: None },
     }
@@ -78,7 +86,7 @@ pub fn item_info(id: ItemId) -> ItemInfo {
 pub fn valid_item_id(id: ItemId) -> bool {
     // Block-items: contiguous. Free items: only the ones we defined.
     let block_items = id >= FIRST_BLOCK_ITEM && id < super::BLOCK_COUNT;
-    let free_items = id == APPLE || id == PORKCHOP;
+    let free_items = id == APPLE || id == PORKCHOP || id == ROTTEN_FLESH;
     id == EMPTY_ITEM || block_items || free_items
 }
 
@@ -109,3 +117,16 @@ pub fn block_drop(b: BlockId) -> Option<ItemId> {
 
 /// Chance an oak leaf breaks into an apple.
 pub const LEAF_APPLE_CHANCE: f32 = 0.05;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn food_items_have_expected_values_and_are_wire_valid() {
+        for (item, hunger) in [(APPLE, 4), (PORKCHOP, 3), (ROTTEN_FLESH, 4)] {
+            assert_eq!(item_info(item).food, Some(hunger));
+            assert!(valid_item_id(item));
+        }
+    }
+}
