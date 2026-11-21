@@ -759,6 +759,13 @@ impl Server {
             item.vel.z *= 0.8;
         }
 
+        expired.sort_unstable();
+        expired.dedup();
+        for id in expired.drain(..) {
+            if self.items.remove(&id).is_some() {
+                let _ = self.broadcast(&ServerPacket::EntityRemove { id });
+            }
+        }
         self.merge_nearby_items();
 
         let ids: Vec<EntityId> = self.items.keys().copied().collect();
@@ -2055,6 +2062,22 @@ mod tests {
             Some((ssc_world::APPLE, 3))
         );
         assert!(rig.server.items.is_empty());
+    }
+
+    #[test]
+    fn expired_item_cannot_be_picked_up_on_its_last_tick() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let pos = rig.server.sessions[&1].player.pos;
+        rig.server.spawn_item_entity(ssc_world::APPLE, 1, pos);
+        let id = rig.server.next_item_id - 1;
+        let item = rig.server.items.get_mut(&id).unwrap();
+        item.age = ITEM_LIFETIME_TICKS - 1;
+        item.pickup_delay = 0;
+
+        rig.server.tick_items(0.05);
+
+        assert!(!rig.server.items.contains_key(&id));
+        assert!(rig.server.sessions[&1].inventory.iter().all(Option::is_none));
     }
 
     #[test]
