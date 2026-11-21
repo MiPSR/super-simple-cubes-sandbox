@@ -94,11 +94,12 @@ Every implemented wiki feature gets a line here. Status legend:
   time to a sky color (dawn/day/dusk/night keys — no lighting changes,
   per specs §3). No sun/moon rendering, sleep or clock item yet.
 - `partial` — Item system: block-items 1:1 with block ids, apple, raw
-  porkchop and rotten flesh; food restores 4/3/4 hunger respectively
-  (rotten flesh's hunger effect omitted). Mob drops go directly into the
-  nearest player's inventory within 6 blocks; no item entities or pickup
-  physics. 36-slot inventories (9 hotbar + 27 storage, stack 64) are
-  server-owned and synced. No tools or crafting ingredients yet.
+  porkchop and rotten flesh; food restores 4/3/4 hunger respectively,
+  with rotten flesh applying Hunger I for 30 s at an 80% chance. No
+  effect icon yet. Mob drops go directly into the nearest player's
+  inventory within 6 blocks; no item entities or pickup physics. 36-slot
+  inventories (9 hotbar + 27 storage, stack 64) are server-owned and
+  synced. No tools or crafting ingredients yet.
 - `partial` — Gamepad (owner-approved gilrs, engine-side input abstraction):
   left stick moves, right stick looks (rate-normalized), A jumps, RT digs,
   LT places, Start = Escape; dead-zoned, works alongside keyboard/mouse.

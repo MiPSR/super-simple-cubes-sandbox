@@ -1412,14 +1412,20 @@ impl Server {
         // Eating (survival only — hunger doesn't exist in creative).
         if let Some(food) = item_info.food {
             if self.cfg.game_mode == GameMode::Survival {
+                let slot = self.sessions[&id].player.selected_slot as usize % 9;
+                let rotten_flesh_causes_hunger = item == ssc_world::ROTTEN_FLESH
+                    && hash_tick(self.tick, id as i32, slot as i32) % 5 != 0;
                 let ate = {
                     let Some(session) = self.sessions.get_mut(&id) else { return };
                     let s = &mut session.survival;
-                    s.eat(food)
+                    let ate = s.eat(food);
+                    if ate && rotten_flesh_causes_hunger {
+                        s.apply_rotten_flesh_effect();
+                    }
+                    ate
                 };
                 if ate {
                     // Consume one.
-                    let slot = self.sessions[&id].player.selected_slot as usize % 9;
                     if let Some(session) = self.sessions.get_mut(&id) {
                         if let Some((i, c)) = session.inventory[slot] {
                             session.inventory[slot] =
@@ -1804,6 +1810,36 @@ mod tests {
         }
         rig.server.handle_use(1);
         assert_eq!(rig.server.sessions[&1].inventory[0], Some((ssc_world::APPLE, 2)));
+    }
+
+    #[test]
+    fn eating_raw_porkchop_restores_three_hunger() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((ssc_world::PORKCHOP, 1));
+            session.survival.hunger = 10;
+        }
+        rig.server.handle_use(1);
+        let session = &rig.server.sessions[&1];
+        assert_eq!(session.survival.hunger, 13);
+        assert_eq!(session.inventory[0], None);
+    }
+
+    #[test]
+    fn rotten_flesh_eating_applies_or_skips_hunger_effect_from_seeded_roll() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((ssc_world::ROTTEN_FLESH, 2));
+            session.survival.hunger = 10;
+        }
+        let should_apply = hash_tick(rig.server.tick, 1, 0) % 5 != 0;
+        rig.server.handle_use(1);
+        let session = &rig.server.sessions[&1];
+        assert_eq!(session.survival.hunger, 14);
+        assert_eq!(session.inventory[0], Some((ssc_world::ROTTEN_FLESH, 1)));
+        assert_eq!(session.survival.hunger_effect_ticks > 0, should_apply);
     }
 
     #[test]

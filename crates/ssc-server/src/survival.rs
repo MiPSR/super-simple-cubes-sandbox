@@ -36,6 +36,8 @@ pub struct SurvivalState {
     regen_timer: u32,
     starve_timer: u32,
     drown_timer: u32,
+    /// Remaining ticks for Hunger I (rotten flesh).
+    pub hunger_effect_ticks: u16,
     /// Hunger exhaustion (4.0 = one hunger point).
     pub exhaustion: f32,
 }
@@ -62,6 +64,7 @@ impl Default for SurvivalState {
             regen_timer: 0,
             starve_timer: 0,
             drown_timer: 0,
+            hunger_effect_ticks: 0,
             exhaustion: 0.0,
         }
     }
@@ -128,6 +131,11 @@ impl SurvivalState {
         }
         if input.jumped {
             self.exhaustion += 0.05;
+        }
+        if self.hunger_effect_ticks > 0 {
+            self.hunger_effect_ticks -= 1;
+            // Hunger I adds 0.005 exhaustion per tick.
+            self.exhaustion += 0.005;
         }
         while self.exhaustion >= 4.0 {
             self.exhaustion -= 4.0;
@@ -234,6 +242,11 @@ impl SurvivalState {
         }
         self.hunger = (self.hunger + points).min(MAX_HUNGER);
         true
+    }
+
+    /// Apply Hunger I for 30 seconds (600 server ticks).
+    pub fn apply_rotten_flesh_effect(&mut self) {
+        self.hunger_effect_ticks = 600;
     }
 }
 
@@ -363,6 +376,17 @@ mod tests {
             s.tick(TickInput::default());
         }
         assert_eq!(s.health, 11.0, "one heart per 4 s at full hunger");
+    }
+
+    #[test]
+    fn rotten_flesh_hunger_effect_runs_for_thirty_seconds() {
+        let mut s = SurvivalState::default();
+        s.apply_rotten_flesh_effect();
+        for _ in 0..600 {
+            s.tick(TickInput::default());
+        }
+        assert_eq!(s.hunger_effect_ticks, 0);
+        assert!((s.exhaustion - 3.0).abs() < 0.001);
     }
 
     #[test]
