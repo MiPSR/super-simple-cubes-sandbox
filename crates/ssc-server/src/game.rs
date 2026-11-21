@@ -1789,8 +1789,32 @@ impl Server {
                 {
                     return Err(format!("slot out of range: {a}/{b}"));
                 }
-                session.inventory.swap(a as usize, b as usize);
-                session.inv_dirty = true;
+                let a = a as usize;
+                let b = b as usize;
+                if a != b {
+                    match (session.inventory[a], session.inventory[b]) {
+                        (Some((item, source_count)), Some((target_item, target_count)))
+                            if item == target_item =>
+                        {
+                            let capacity =
+                                ssc_world::item_info(item).max_stack.saturating_sub(target_count);
+                            let moved = capacity.min(source_count);
+                            if moved > 0 {
+                                session.inventory[b] = Some((item, target_count + moved));
+                                session.inventory[a] = if source_count == moved {
+                                    None
+                                } else {
+                                    Some((item, source_count - moved))
+                                };
+                                session.inv_dirty = true;
+                            }
+                        }
+                        _ => {
+                            session.inventory.swap(a, b);
+                            session.inv_dirty = true;
+                        }
+                    }
+                }
             }
             ClientPacket::DigStart => {
                 if self
@@ -2693,6 +2717,27 @@ mod tests {
         let inv = &rig.server.sessions[&1].inventory;
         assert_eq!(inv[0], Some((ssc_world::DIRT, 5)));
         assert_eq!(inv[20], Some((ssc_world::APPLE, 1)));
+    }
+
+    #[test]
+    fn swap_slots_merges_matching_stacks_and_preserves_remainder() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((ssc_world::APPLE, 50));
+            session.inventory[1] = Some((ssc_world::APPLE, 30));
+        }
+        rig.server
+            .handle_packet(1, ClientPacket::SwapSlots { a: 0, b: 1 })
+            .unwrap();
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::APPLE, 16))
+        );
+        assert_eq!(
+            rig.server.sessions[&1].inventory[1],
+            Some((ssc_world::APPLE, 64))
+        );
     }
 
     #[test]

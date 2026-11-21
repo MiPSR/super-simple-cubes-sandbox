@@ -81,7 +81,8 @@ Every implemented wiki feature gets a line here. Status legend:
 - `partial` — Game modes: creative (default hotbar blocks, instant dig,
   no consumption, E = block picker, double-jump flight with server
   authority) and survival (empty start, E =
-  inventory screen, drag stacks between slots with server-authoritative swaps).
+  inventory screen, drag stacks between slots with server-authoritative
+  swaps and same-item stack merging.
 - `partial` — Movement: axis-separated swept-AABB collision with sub-stepping
   (no tunneling), jump, sneak/sprint speeds and basic swimming; no
   momentum/drag simulation, auto step-up or water-aware mob AI yet.
