@@ -20,6 +20,18 @@ const RECORD_SIZE: u64 = 14;
 const MAX_EDITS: u32 = 4_000_000;
 const PLAYER_MAGIC: &[u8; 8] = b"SSCPLY01";
 const PLAYER_MAGIC_V2: &[u8; 8] = b"SSCPLY02";
+const ITEMS_MAGIC: &[u8; 8] = b"SSCITM01";
+const MAX_SAVED_ITEMS: u32 = 1_000_000;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SavedItem {
+    pub item: ssc_world::ItemId,
+    pub count: u8,
+    pub pos: [f32; 3],
+    pub vel: [f32; 3],
+    pub age: u32,
+    pub pickup_delay: u8,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerSave {
@@ -332,6 +344,115 @@ pub fn save_player(
     Ok(())
 }
 
+pub fn item_save_path(world_path: &Path) -> std::path::PathBuf {
+    world_path.with_extension("items")
+}
+
+pub fn load_items(path: &Path) -> io::Result<Option<Vec<SavedItem>>> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    const HEADER: u64 = 12;
+    const RECORD: u64 = 33;
+    let file_len = file.metadata()?.len();
+    if file_len < HEADER {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated item save"));
+    }
+    let mut header = [0u8; HEADER as usize];
+    file.read_exact(&mut header)?;
+    if &header[..8] != ITEMS_MAGIC {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid item save magic"));
+    }
+    let count = u32::from_le_bytes(header[8..12].try_into().expect("fixed item header"));
+    if count > MAX_SAVED_ITEMS || file_len != HEADER + count as u64 * RECORD {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid item save length"));
+    }
+    let mut items = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let mut record = [0u8; RECORD as usize];
+        file.read_exact(&mut record)?;
+        let item = u16::from_le_bytes([record[0], record[1]]);
+        let amount = record[2];
+        let mut floats = [0.0f32; 6];
+        for (i, bytes) in record[3..27].chunks_exact(4).enumerate() {
+            floats[i] = f32::from_le_bytes(bytes.try_into().expect("fixed item float"));
+        }
+        let age = u32::from_le_bytes(record[27..31].try_into().expect("fixed item age"));
+        let pickup_delay = record[31];
+        // Byte 32 is reserved for forward-compatible item flags.
+        if record[32] != 0
+            || !ssc_world::valid_item_id(item)
+            || item == 0
+            || amount == 0
+            || amount > ssc_world::item_info(item).max_stack
+            || floats.iter().any(|v| !v.is_finite())
+            || floats[0].abs() > 30_000_000.0
+            || floats[2].abs() > 30_000_000.0
+            || !(ssc_world::MIN_Y as f32 - 1.0..ssc_world::MAX_Y as f32 + 1.0)
+                .contains(&floats[1])
+            || age >= 6_000
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid dropped item in save",
+            ));
+        }
+        items.push(SavedItem {
+            item,
+            count: amount,
+            pos: [floats[0], floats[1], floats[2]],
+            vel: [floats[3], floats[4], floats[5]],
+            age,
+            pickup_delay,
+        });
+    }
+    Ok(Some(items))
+}
+
+pub fn save_items(path: &Path, items: &[SavedItem]) -> io::Result<()> {
+    if items.len() > MAX_SAVED_ITEMS as usize {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "too many dropped items"));
+    }
+    if items.iter().any(|entry| {
+        !ssc_world::valid_item_id(entry.item)
+            || entry.item == 0
+            || entry.count == 0
+            || entry.count > ssc_world::item_info(entry.item).max_stack
+            || entry.pos.iter().chain(entry.vel.iter()).any(|v| !v.is_finite())
+            || entry.pos[0].abs() > 30_000_000.0
+            || entry.pos[2].abs() > 30_000_000.0
+            || !(ssc_world::MIN_Y as f32 - 1.0..ssc_world::MAX_Y as f32 + 1.0)
+                .contains(&entry.pos[1])
+            || entry.age >= 6_000
+    }) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid dropped item state",
+        ));
+    }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    let temp_path = path.with_extension("tmp");
+    let mut file = File::create(&temp_path)?;
+    file.write_all(ITEMS_MAGIC)?;
+    file.write_all(&(items.len() as u32).to_le_bytes())?;
+    for entry in items {
+        file.write_all(&entry.item.to_le_bytes())?;
+        file.write_all(&[entry.count])?;
+        for value in entry.pos.into_iter().chain(entry.vel) {
+            file.write_all(&value.to_le_bytes())?;
+        }
+        file.write_all(&entry.age.to_le_bytes())?;
+        file.write_all(&[entry.pickup_delay, 0])?;
+    }
+    file.sync_all()?;
+    fs::rename(temp_path, path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,5 +536,24 @@ mod tests {
             io::ErrorKind::InvalidData
         );
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn dropped_item_state_round_trips() {
+        let path = std::env::temp_dir().join(format!(
+            "ssc-item-save-{}.dat",
+            std::process::id()
+        ));
+        let items = vec![SavedItem {
+            item: ssc_world::APPLE,
+            count: 3,
+            pos: [-12.5, 64.25, 3.0],
+            vel: [0.25, 1.5, -0.5],
+            age: 321,
+            pickup_delay: 7,
+        }];
+        save_items(&path, &items).unwrap();
+        assert_eq!(load_items(&path).unwrap().unwrap(), items);
+        fs::remove_file(path).unwrap();
     }
 }

@@ -24,10 +24,10 @@ Every implemented wiki feature gets a line here. Status legend:
   server (TCP wire) from the same server library.
 - `partial` — Optional atomic world saves (`--world PATH`): deterministic
   seed, day/night clock and block edits, autosaved once a minute and on
-  shutdown. Version-1 saves migrate with the default morning time. Mobs,
-  and dropped items do not persist. Anonymous player inventories persist by
-  client-generated UUID along with position, vitals and selected hotbar slot;
-  these UUIDs are identifiers, not authentication.
+  shutdown. Version-1 saves migrate with the default morning time. Anonymous
+  player state persists by client-generated UUID (inventory, position, vitals
+  and selected hotbar slot); dropped stacks persist with physics state.
+  Mobs do not persist. UUIDs are identifiers, not authentication.
 - `dev` — Anonymous identity: a UUIDv4 is generated once per client data
   directory and sent in the protocol handshake. Dedicated servers persist
   per-UUID inventories and reject simultaneous connections claiming the same

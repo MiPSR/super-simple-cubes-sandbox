@@ -223,6 +223,7 @@ pub struct Server {
     edited: HashSet<ColumnKey>,
     block_edits: crate::persistence::BlockEdits,
     persistence_ready: bool,
+    item_persistence_ready: bool,
     sessions: HashMap<EntityId, Session>,
     /// Mobs (ids from `FIRST_MOB_ID`).
     mobs: HashMap<EntityId, crate::mobs::Mob>,
@@ -275,13 +276,28 @@ impl Server {
             },
             None => (cfg.seed, 0.3, HashMap::new(), true),
         };
+        let (saved_items, item_persistence_ready) = match cfg.world_path.as_deref() {
+            Some(path) => match crate::persistence::load_items(
+                &crate::persistence::item_save_path(path),
+            ) {
+                Ok(items) => (items.unwrap_or_default(), true),
+                Err(err) => {
+                    eprintln!(
+                        "[server] dropped-item save could not be loaded: {err}; preserving it"
+                    );
+                    (Vec::new(), false)
+                }
+            },
+            None => (Vec::new(), false),
+        };
         let edited = block_edits.keys().copied().collect();
-        Self {
+        let mut server = Self {
             gen: WorldGen::new(seed),
             world: World::default(),
             edited,
             block_edits,
             persistence_ready,
+            item_persistence_ready,
             cfg,
             sessions: HashMap::new(),
             mobs: HashMap::new(),
@@ -293,7 +309,25 @@ impl Server {
             tick: 0,
             time_of_day, // start in the morning for a new world
             running: true,
+        };
+        for saved in saved_items {
+            let Some(id) = server.allocate_item_id() else {
+                eprintln!("[server] item entity capacity exhausted while loading save");
+                break;
+            };
+            server.items.insert(
+                id,
+                ItemEntity {
+                    item: saved.item,
+                    count: saved.count,
+                    pos: Vec3::new(saved.pos[0], saved.pos[1], saved.pos[2]),
+                    vel: Vec3::new(saved.vel[0], saved.vel[1], saved.vel[2]),
+                    age: saved.age,
+                    pickup_delay: saved.pickup_delay,
+                },
+            );
         }
+        server
     }
 
     /// Register a client connection.
@@ -321,6 +355,31 @@ impl Server {
             &self.block_edits,
         ) {
             eprintln!("[server] world save to {} failed: {err}", path.display());
+        }
+    }
+
+    fn save_item_entities(&self) {
+        if !self.item_persistence_ready {
+            return;
+        }
+        let Some(world_path) = self.cfg.world_path.as_deref() else {
+            return;
+        };
+        let items: Vec<_> = self
+            .items
+            .values()
+            .map(|item| crate::persistence::SavedItem {
+                item: item.item,
+                count: item.count,
+                pos: [item.pos.x, item.pos.y, item.pos.z],
+                vel: [item.vel.x, item.vel.y, item.vel.z],
+                age: item.age,
+                pickup_delay: item.pickup_delay,
+            })
+            .collect();
+        let path = crate::persistence::item_save_path(world_path);
+        if let Err(err) = crate::persistence::save_items(&path, &items) {
+            eprintln!("[server] dropped-item save to {} failed: {err}", path.display());
         }
     }
 
@@ -464,6 +523,7 @@ impl Server {
             }
         }
         self.save_all_player_data();
+        self.save_item_entities();
         self.save_world();
         let _ = self.broadcast(&ServerPacket::Goodbye { reason: "server closed".into() });
     }
@@ -828,6 +888,7 @@ impl Server {
         }
         if self.tick % 1200 == 0 {
             self.save_all_player_data();
+            self.save_item_entities();
             self.save_world();
         }
     }
@@ -2632,6 +2693,37 @@ mod tests {
             .unwrap();
         assert_eq!(saved.inventory[2], Some((ssc_world::APPLE, 9)));
         std::fs::remove_dir_all(player_path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn dropped_items_restore_from_world_save() {
+        let world_path = std::env::temp_dir().join(format!(
+            "ssc-item-world-{}.bin",
+            std::process::id()
+        ));
+        let mut cfg = ServerConfig::default();
+        cfg.world_path = Some(world_path.clone());
+        let mut server = Server::empty(cfg.clone());
+        server.spawn_item_entity(
+            ssc_world::PORKCHOP,
+            2,
+            Vec3::new(-12.5, 65.0, 7.25),
+        );
+        server.items.values_mut().next().unwrap().vel = Vec3::new(0.5, -1.0, 0.25);
+        server.items.values_mut().next().unwrap().age = 123;
+        server.items.values_mut().next().unwrap().pickup_delay = 4;
+        server.save_item_entities();
+
+        let restored = Server::empty(cfg);
+        let item = restored.items.values().next().unwrap();
+        assert_eq!(restored.items.len(), 1);
+        assert_eq!(item.item, ssc_world::PORKCHOP);
+        assert_eq!(item.count, 2);
+        assert_eq!(item.pos, Vec3::new(-12.5, 65.0, 7.25));
+        assert_eq!(item.vel, Vec3::new(0.5, -1.0, 0.25));
+        assert_eq!(item.age, 123);
+        assert_eq!(item.pickup_delay, 4);
+        std::fs::remove_file(crate::persistence::item_save_path(&world_path)).unwrap();
     }
 
     #[test]
