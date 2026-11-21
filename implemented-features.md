@@ -69,7 +69,8 @@ Every implemented wiki feature gets a line here. Status legend:
   armor, XP, crafting, item entities, inventory persistence or mode
   switching mid-session yet.
 - `partial` — Game modes: creative (default hotbar blocks, instant dig,
-  no consumption, E = block picker) and survival (empty start, E =
+  no consumption, E = block picker, double-jump flight with server
+  authority) and survival (empty start, E =
   inventory screen, click two slots to swap — drag-and-drop pending).
 - `partial` — Movement: axis-separated swept-AABB collision with sub-stepping
   (no tunneling), jump, sneak/sprint speeds and basic swimming; no

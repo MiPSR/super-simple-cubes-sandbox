@@ -114,6 +114,10 @@ struct Player {
     yaw: f32,
     pitch: f32,
     keys: u16,
+    /// Creative flight is authoritative and toggled by a server-detected
+    /// double jump. `last_jump_tick` only tracks rising edges.
+    flying: bool,
+    last_jump_tick: Option<u64>,
     selected_slot: u8,
     on_ground: bool,
     in_water: bool,
@@ -164,6 +168,8 @@ impl Session {
                 yaw: 0.0,
                 pitch: 0.0,
                 keys: 0,
+                flying: false,
+                last_jump_tick: None,
                 selected_slot: 0,
                 on_ground: false,
                 in_water: false,
@@ -360,7 +366,8 @@ impl Server {
             let was_on_ground = p.on_ground;
             let old_y = p.pos.y;
             let jumped = p.keys & keys::JUMP != 0 && p.on_ground;
-            step_player(&self.world, p, dt);
+            let flying = p.flying;
+            step_player(&self.world, p, dt, flying);
             let moving = p.keys & (keys::FORWARD | keys::BACKWARD | keys::LEFT | keys::RIGHT) != 0;
             let sprinting = p.keys & keys::SPRINT != 0 && moving;
 
@@ -807,7 +814,7 @@ impl Server {
 // ---------------------------------------------------------------------------
 
 /// Simulate one player for one tick (server-authoritative).
-fn step_player(world: &World, player: &mut Player, dt: f32) {
+fn step_player(world: &World, player: &mut Player, dt: f32, flying: bool) {
     let k = player.keys;
     let yaw = player.yaw;
 
@@ -844,7 +851,9 @@ fn step_player(world: &World, player: &mut Player, dt: f32) {
     }
     let sprint = k & keys::SPRINT != 0 && k & keys::FORWARD != 0 && k & keys::SNEAK == 0;
     let sneak = k & keys::SNEAK != 0;
-    let speed = if in_water {
+    let speed = if flying {
+        if sprint { 21.78 } else { 10.89 }
+    } else if in_water {
         WALK_SPEED * 0.55 // swimming is slow
     } else if sprint {
         SPRINT_SPEED
@@ -860,7 +869,17 @@ fn step_player(world: &World, player: &mut Player, dt: f32) {
         (0.0, 0.0)
     };
 
-    if in_water {
+    if flying {
+        player.vel.x = target.0;
+        player.vel.z = target.1;
+        player.vel.y = if k & keys::JUMP != 0 {
+            10.89
+        } else if sneak {
+            -10.89
+        } else {
+            0.0
+        };
+    } else if in_water {
         // Buoyant drag physics: slow sink, jump key swims up.
         player.vel.x += (target.0 - player.vel.x) * 0.4;
         player.vel.z += (target.1 - player.vel.z) * 0.4;
@@ -1130,12 +1149,29 @@ impl Server {
         match pkt {
             ClientPacket::Hello { version, name } => self.on_hello(id, version, name),
             ClientPacket::Input { keys, yaw, pitch } => {
+                let creative = self.cfg.game_mode == GameMode::Creative;
+                let tick = self.tick;
                 let Some(session) = self.sessions.get_mut(&id) else { return Ok(()) };
                 if !session.player.joined {
                     return Err("input before hello".into());
                 }
                 // Dead players give no input (server decides, specs.md §2).
                 if !session.survival.dead {
+                    let jump_pressed =
+                        keys & keys::JUMP != 0 && session.player.keys & keys::JUMP == 0;
+                    if creative && jump_pressed {
+                        if session
+                            .player
+                            .last_jump_tick
+                            .is_some_and(|last| tick.saturating_sub(last) <= 7 && tick > last)
+                        {
+                            session.player.flying = !session.player.flying;
+                            if !session.player.flying {
+                                session.player.vel.y = 0.0;
+                            }
+                        }
+                        session.player.last_jump_tick = Some(tick);
+                    }
                     session.player.keys = keys;
                 }
                 session.player.yaw = yaw;
@@ -1875,6 +1911,41 @@ mod tests {
         rig.server.sessions.get_mut(&1).unwrap().player.pos =
             Vec3::new(-0.5, 55.0, -16.1);
         assert_eq!(rig.server.player_col(1), (-1, -2));
+    }
+
+    #[test]
+    fn creative_double_jump_toggles_server_authoritative_flight() {
+        let mut rig = Rig::new(1, 0.0);
+        let send_keys = |rig: &mut Rig, keys| {
+            rig.server
+                .handle_packet(
+                    1,
+                    ClientPacket::Input {
+                        keys,
+                        yaw: 0.0,
+                        pitch: 0.0,
+                    },
+                )
+                .unwrap();
+        };
+        let start_y = rig.server.sessions[&1].player.pos.y;
+
+        send_keys(&mut rig, keys::JUMP);
+        send_keys(&mut rig, 0);
+        for _ in 0..2 {
+            rig.server.tick();
+        }
+        send_keys(&mut rig, keys::JUMP);
+        assert!(rig.server.sessions[&1].player.flying);
+
+        for _ in 0..3 {
+            rig.server.tick();
+        }
+        assert!(rig.server.sessions[&1].player.pos.y > start_y);
+
+        send_keys(&mut rig, 0);
+        send_keys(&mut rig, keys::JUMP);
+        assert!(!rig.server.sessions[&1].player.flying);
     }
 
     #[test]
