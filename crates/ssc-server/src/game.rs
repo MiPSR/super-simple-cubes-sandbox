@@ -1063,6 +1063,15 @@ impl Server {
             .map(|session| session.player.pos + Vec3::new(0.0, 0.9, 0.0))
             .collect();
         for (id, item) in self.items.iter_mut() {
+            // Only active chunks tick entities. Other saved stacks stay put
+            // until a player returns, rather than falling through unloaded
+            // terrain or despawning while nobody is nearby.
+            if !players
+                .iter()
+                .any(|player| (item.pos - *player).length_squared() <= 64.0 * 64.0)
+            {
+                continue;
+            }
             item.age += 1;
             item.pickup_delay = item.pickup_delay.saturating_sub(1);
             if item.age >= ITEM_LIFETIME_TICKS || item.pos.y <= ssc_world::MIN_Y as f32 {
@@ -3218,6 +3227,29 @@ mod tests {
         assert_eq!(item.age, ITEM_LIFETIME_TICKS - 1);
         assert_eq!(item.pickup_delay, 1);
         assert_eq!(item.pos, position);
+    }
+
+    #[test]
+    fn distant_items_pause_until_a_player_approaches() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let far = Vec3::new(200.5, 65.0, 8.5);
+        rig.server.spawn_item_entity(ssc_world::APPLE, 1, far);
+        let id = rig.server.next_item_id - 1;
+        {
+            let item = rig.server.items.get_mut(&id).unwrap();
+            item.age = 100;
+            item.pickup_delay = 5;
+        }
+        rig.server.tick_items(0.05);
+        assert_eq!(rig.server.items[&id].age, 100);
+        assert_eq!(rig.server.items[&id].pickup_delay, 5);
+        assert_eq!(rig.server.items[&id].pos, far);
+
+        rig.server.sessions.get_mut(&1).unwrap().player.pos =
+            far + Vec3::new(3.0, 0.0, 0.0);
+        rig.server.tick_items(0.05);
+        assert_eq!(rig.server.items[&id].age, 101);
+        assert_eq!(rig.server.items[&id].pickup_delay, 4);
     }
 
     #[test]
