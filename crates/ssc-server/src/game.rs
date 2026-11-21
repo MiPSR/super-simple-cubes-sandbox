@@ -1889,12 +1889,25 @@ impl Server {
                 }
             };
         let Some(session) = self.sessions.get_mut(&id) else { return };
-        let restored_position = saved_player.as_ref().and_then(|data| data.position);
+        // Death is an in-session timer, not a persistent state. If the player
+        // quit after dying, reconnect them through the same fresh respawn path
+        // rather than reviving at the saved death position with zero health.
+        let saved_death = saved_player
+            .as_ref()
+            .is_some_and(|data| data.health <= 0.0);
+        let restored_position = saved_player
+            .as_ref()
+            .filter(|_| !saved_death)
+            .and_then(|data| data.position);
         if let Some(data) = saved_player {
             session.inventory = data.inventory;
-            session.survival.health = data.health;
-            session.survival.hunger = data.hunger;
-            session.survival.air = data.air;
+            if saved_death {
+                session.survival = crate::survival::SurvivalState::default();
+            } else {
+                session.survival.health = data.health;
+                session.survival.hunger = data.hunger;
+                session.survival.air = data.air;
+            }
             session.player.selected_slot = data.selected_slot;
         }
         session.player_id = Some(player_id);
@@ -2923,6 +2936,52 @@ mod tests {
         server.save_player_data(id);
 
         assert_eq!(std::fs::read(&player_path).unwrap(), original);
+        std::fs::remove_dir_all(player_path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn dead_player_save_reconnects_as_respawned() {
+        let world_path =
+            std::env::temp_dir().join(format!("ssc-dead-player-world-{}.bin", std::process::id()));
+        let player_id = [0xa7; 16];
+        let player_path = crate::persistence::player_path(&world_path, &player_id);
+        crate::persistence::save_player(
+            &player_path,
+            &player_id,
+            &crate::persistence::PlayerSave {
+                inventory: vec![None; crate::survival::INVENTORY_SIZE],
+                position: Some([4.5, 70.0, -2.5]),
+                health: 0.0,
+                hunger: 0,
+                air: 0,
+                selected_slot: 0,
+            },
+        )
+        .unwrap();
+
+        let mut cfg = ServerConfig::default();
+        cfg.world_path = Some(world_path);
+        cfg.game_mode = GameMode::Survival;
+        let mut server = Server::empty(cfg);
+        let (_client, server_wire) = memory_pair();
+        let id = server.attach(Box::new(server_wire));
+        server
+            .handle_packet(
+                id,
+                ClientPacket::Hello {
+                    version: PROTOCOL_VERSION,
+                    player_id,
+                    name: "respawning".into(),
+                },
+            )
+            .unwrap();
+
+        let session = &server.sessions[&id];
+        assert!(!session.survival.dead);
+        assert_eq!(session.survival.health, crate::survival::MAX_HEALTH);
+        assert_eq!(session.survival.hunger, crate::survival::MAX_HUNGER);
+        assert_eq!(session.survival.air, crate::survival::MAX_AIR);
+        assert_ne!(session.player.pos, Vec3::new(4.5, 70.0, -2.5));
         std::fs::remove_dir_all(player_path.parent().unwrap()).unwrap();
     }
 
