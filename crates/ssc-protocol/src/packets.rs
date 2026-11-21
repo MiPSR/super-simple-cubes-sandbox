@@ -100,6 +100,8 @@ pub enum ClientPacket {
     SwapSlots { a: u8, b: u8 },
     /// Craft one server-defined recipe from the own inventory.
     Craft { recipe: u8 },
+    /// Drop one item from the selected survival hotbar stack (Q).
+    DropSelected,
 }
 
 impl ClientPacket {
@@ -143,6 +145,7 @@ impl ClientPacket {
                 w.put_u8(9);
                 w.put_u8(*recipe);
             }
+            ClientPacket::DropSelected => w.put_u8(10),
         }
         w.into_bytes()
     }
@@ -176,6 +179,7 @@ impl ClientPacket {
             9 => ClientPacket::Craft {
                 recipe: r.get_u8()?,
             },
+            10 => ClientPacket::DropSelected,
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad client packet tag {tag}"
@@ -577,6 +581,12 @@ mod tests {
     #[test]
     fn craft_recipe_survives_wire_round_trip() {
         let packet = ClientPacket::Craft { recipe: 3 };
+        assert_eq!(ClientPacket::decode(&packet.encode()).unwrap(), packet);
+    }
+
+    #[test]
+    fn drop_selected_survives_wire_round_trip() {
+        let packet = ClientPacket::DropSelected;
         assert_eq!(ClientPacket::decode(&packet.encode()).unwrap(), packet);
     }
 

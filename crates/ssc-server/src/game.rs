@@ -1973,6 +1973,50 @@ impl Server {
                     session.survival.digging = None;
                 }
             }
+            ClientPacket::DropSelected => {
+                if self.cfg.game_mode != GameMode::Survival {
+                    return Ok(());
+                }
+                let Some(session) = self.sessions.get(&id) else {
+                    return Ok(());
+                };
+                if !session.player.joined || session.survival.dead {
+                    return Ok(());
+                }
+                let slot = session.player.selected_slot as usize % 9;
+                let Some((item, count)) = session.inventory[slot] else {
+                    return Ok(());
+                };
+                // Reserve the entity before mutating inventory, so an
+                // exhausted entity-id range cannot silently delete an item.
+                let Some(entity_id) = self.allocate_item_id() else {
+                    return Ok(());
+                };
+                let Some(session) = self.sessions.get_mut(&id) else {
+                    return Ok(());
+                };
+                let direction = look_dir(session.player.yaw, session.player.pitch);
+                let pos = session.player.pos + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0)
+                    + direction * 0.5;
+                session.inventory[slot] = if count == 1 {
+                    None
+                } else {
+                    Some((item, count - 1))
+                };
+                session.inv_dirty = true;
+                session.survival.digging = None;
+                self.items.insert(
+                    entity_id,
+                    ItemEntity {
+                        item,
+                        count: 1,
+                        pos,
+                        vel: direction * 4.0 + Vec3::new(0.0, 2.0, 0.0),
+                        age: 0,
+                        pickup_delay: 40,
+                    },
+                );
+            }
             ClientPacket::DigStart => {
                 if self
                     .sessions
@@ -2728,6 +2772,42 @@ mod tests {
             let before = session.inventory.clone();
             rig.server.handle_packet(1, ClientPacket::Craft { recipe: 0 }).unwrap();
             assert_eq!(rig.server.sessions[&1].inventory, before);
+        }
+    }
+
+    #[test]
+    fn dropping_selected_item_is_server_authoritative_and_delayed() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::FLINT, 2));
+        rig.server.handle_packet(1, ClientPacket::DropSelected).unwrap();
+        assert_eq!(rig.server.sessions[&1].inventory[0], Some((ssc_world::FLINT, 1)));
+        let entity = rig.server.items.values().next().unwrap();
+        assert_eq!((entity.item, entity.count), (ssc_world::FLINT, 1));
+        assert_eq!(entity.pickup_delay, 40);
+        rig.server.handle_packet(1, ClientPacket::DropSelected).unwrap();
+        rig.server.handle_packet(1, ClientPacket::DropSelected).unwrap();
+        assert_eq!(rig.server.sessions[&1].inventory[0], None);
+        assert_eq!(rig.server.items.values().map(|item| item.count as u16).sum::<u16>(), 2);
+        rig.server.tick();
+        assert!(rig.drain(0).iter().any(|packet| matches!(
+            packet,
+            ServerPacket::Inventory { slots } if slots[0] == (0, 0)
+        )));
+        assert_eq!(rig.server.items.values().map(|item| item.count as u16).sum::<u16>(), 2);
+    }
+
+    #[test]
+    fn dead_and_creative_players_cannot_drop_selected_item() {
+        for mode in [GameMode::Survival, GameMode::Creative] {
+            let mut rig = Rig::new_mode(1, 0.0, mode);
+            rig.server.sessions.get_mut(&1).unwrap().inventory[0] =
+                Some((ssc_world::OAK_LOG, 2));
+            if mode == GameMode::Survival {
+                rig.server.sessions.get_mut(&1).unwrap().survival.dead = true;
+            }
+            rig.server.handle_packet(1, ClientPacket::DropSelected).unwrap();
+            assert_eq!(rig.server.sessions[&1].inventory[0], Some((ssc_world::OAK_LOG, 2)));
+            assert!(rig.server.items.is_empty());
         }
     }
 

@@ -154,6 +154,10 @@ Every implemented wiki feature gets a line here. Status legend:
   bobbing and rotation; merge radius/timing refinements pending.
   36-slot inventories (9 hotbar + 27 storage, stack 64) are server-owned
   and synced. Sticks, coal and raw iron are non-block items.
+- `partial` — Q drops one item from the selected survival hotbar stack as
+  a server-owned world item with a 40-tick pickup delay and forward toss;
+  creative/dead/empty requests do nothing. Full-stack drops (Ctrl+Q) and
+  exact throw animation/velocity are pending.
 - `partial` — Gamepad (owner-approved gilrs, engine-side input abstraction):
   left stick moves, right stick looks (rate-normalized), A jumps, RT digs,
   LT places, Start = Escape; dead-zoned, works alongside keyboard/mouse.

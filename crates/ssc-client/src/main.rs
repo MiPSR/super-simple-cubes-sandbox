@@ -530,6 +530,14 @@ impl App {
                         frame.set_mouse_locked(true);
                     }
                 }
+                EngineEvent::Key {
+                    key: Key::Q,
+                    state: KeyState::Pressed,
+                } => {
+                    if self.joined && self.mode == 0 && !self.picker_open {
+                        self.send(&ClientPacket::DropSelected);
+                    }
+                }
                 // Immediate action on the press event: a quick click never
                 // shows up in the held-state snapshot (press and release
                 // land in the same frame's event batch).

@@ -10,4 +10,4 @@ pub mod packets;
 pub mod wire;
 
 /// Bumped on any wire-incompatible change.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
