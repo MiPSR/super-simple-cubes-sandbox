@@ -137,9 +137,21 @@ impl WorldGen {
     }
 
     /// Top block at (x, z) for the given terrain height.
-    fn top_block(&self, _x: i32, _z: i32, h: i32) -> u16 {
+    fn top_block(&self, x: i32, z: i32, h: i32) -> u16 {
         if h <= SEA_LEVEL + 1 {
-            SAND
+            // Small seeded gravel disks on submerged basin floors. Centers
+            // stay inside their 12×12 cells; world coordinates ensure the
+            // same disk is generated across sub-chunk/column boundaries.
+            let cx = x.div_euclid(12);
+            let cz = z.div_euclid(12);
+            let hash = hash3(cx, cz, self.seed ^ 0xB451_6A2E);
+            let dx = x.rem_euclid(12) - 3 - ((hash >> 8) % 6) as i32;
+            let dz = z.rem_euclid(12) - 3 - ((hash >> 16) % 6) as i32;
+            if h < SEA_LEVEL && hash % 3 == 0 && dx * dx + dz * dz <= 9 {
+                GRAVEL
+            } else {
+                SAND
+            }
         } else if h > SEA_LEVEL + 45 {
             SNOW_BLOCK
         } else {
@@ -719,6 +731,38 @@ mod tests {
             }
         }
         assert!(found, "seed 42 should have a basin below sea level");
+    }
+
+    #[test]
+    fn submerged_basins_have_gravel_disks_and_sand_between_them() {
+        let gen = WorldGen::new(42);
+        let mut gravel = None;
+        let mut sand = None;
+        for x in -96..96 {
+            for z in -96..96 {
+                let h = gen.height(x, z);
+                if h >= SEA_LEVEL {
+                    continue;
+                }
+                match gen.top_block(x, z, h) {
+                    GRAVEL => gravel.get_or_insert((x, h, z)),
+                    SAND => sand.get_or_insert((x, h, z)),
+                    _ => unreachable!(),
+                };
+                if gravel.is_some() && sand.is_some() {
+                    break;
+                }
+            }
+            if gravel.is_some() && sand.is_some() {
+                break;
+            }
+        }
+        for (expected, pos) in [(GRAVEL, gravel), (SAND, sand)] {
+            let (x, h, z) = pos.expect("seed 42 has both submerged gravel and sand");
+            let col = gen.generate_column(x.div_euclid(16), z.div_euclid(16));
+            assert_eq!(col.get(x.rem_euclid(16), h, z.rem_euclid(16)), expected);
+            assert_eq!(col.get(x.rem_euclid(16), SEA_LEVEL, z.rem_euclid(16)), WATER);
+        }
     }
 
     #[test]
