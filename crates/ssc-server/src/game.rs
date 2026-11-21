@@ -1954,6 +1954,8 @@ impl Server {
         session.player.pos = restored_position
             .map(|pos| Vec3::new(pos[0], pos[1], pos[2]))
             .unwrap_or_else(|| Vec3::new(spawn_x, spawn_y, spawn_z));
+        // A saved logout position is not the world's respawn point.
+        session.spawn = Vec3::new(spawn_x, spawn_y, spawn_z);
         session.player.vel = Vec3::ZERO;
         session.player.joined = true;
 
@@ -1971,7 +1973,6 @@ impl Server {
             session.player.pos.y,
             session.player.pos.z,
         ];
-        session.spawn = session.player.pos;
         session.inv_dirty = true;
         session.status_dirty = true;
         let game_mode = self.cfg.game_mode.as_u8();
@@ -3047,6 +3048,7 @@ mod tests {
             server.sessions[&id].player.pos,
             Vec3::new(12.5, 70.0, -9.25)
         );
+        assert_ne!(server.sessions[&id].spawn, server.sessions[&id].player.pos);
         assert_eq!(server.sessions[&id].survival.health, 13.0);
         assert_eq!(server.sessions[&id].survival.hunger, 7);
         assert_eq!(server.sessions[&id].survival.air, 250);
@@ -3057,6 +3059,13 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(saved.inventory[2], Some((ssc_world::APPLE, 9)));
+        let respawn_point = server.sessions[&id].spawn;
+        server.sessions.get_mut(&id).unwrap().survival.die();
+        server.tick(); // drop inventory at the death location before respawning
+        server.sessions.get_mut(&id).unwrap().survival.respawn_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
+        server.tick();
+        assert_eq!(server.sessions[&id].player.pos, respawn_point);
         std::fs::remove_dir_all(player_path.parent().unwrap()).unwrap();
     }
 
@@ -3186,6 +3195,7 @@ mod tests {
         assert_eq!(session.survival.hunger, crate::survival::MAX_HUNGER);
         assert_eq!(session.survival.air, crate::survival::MAX_AIR);
         assert_ne!(session.player.pos, Vec3::new(4.5, 70.0, -2.5));
+        assert_eq!(session.player.pos, session.spawn);
         std::fs::remove_dir_all(player_path.parent().unwrap()).unwrap();
     }
 
