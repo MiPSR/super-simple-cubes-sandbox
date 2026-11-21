@@ -533,7 +533,7 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
             || pos.iter().chain(vel.iter()).any(|v| !v.is_finite())
             || !yaw.is_finite()
             || !health.is_finite()
-            || !(0.0..=max_health).contains(&health)
+            || !(0.0 < health && health <= max_health)
             || pos[0].abs() > 30_000_000.0
             || pos[2].abs() > 30_000_000.0
             || pos[1] < ssc_world::MIN_Y as f32 - 1.0
@@ -574,7 +574,7 @@ pub fn save_mobs(path: &Path, mobs: &[SavedMob]) -> io::Result<()> {
         mob.pos.iter().chain(mob.vel.iter()).any(|v| !v.is_finite())
             || !mob.yaw.is_finite()
             || !mob.health.is_finite()
-            || !(0.0..=max_health).contains(&mob.health)
+            || !(0.0 < mob.health && mob.health <= max_health)
             || mob.pos[0].abs() > 30_000_000.0
             || mob.pos[2].abs() > 30_000_000.0
             || mob.pos[1] < ssc_world::MIN_Y as f32 - 1.0
@@ -741,5 +741,30 @@ mod tests {
         save_mobs(&path, &mobs).unwrap();
         assert_eq!(load_mobs(&path).unwrap().unwrap(), mobs);
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn dead_mob_save_is_rejected_without_overwriting_existing_data() {
+        let path = std::env::temp_dir().join(format!(
+            "ssc-dead-mob-save-{}.dat",
+            std::process::id()
+        ));
+        let existing = b"existing mob save";
+        fs::write(&path, existing).unwrap();
+        let mob = SavedMob {
+            kind: 1,
+            pos: [8.5, 65.0, 8.5],
+            vel: [0.0; 3],
+            yaw: 0.0,
+            health: 0.0,
+            wander_timer: 0,
+            wander_dir: None,
+            attack_cooldown: 0,
+            burn_timer: 0,
+            on_ground: true,
+        };
+        assert!(save_mobs(&path, &[mob]).is_err());
+        assert_eq!(fs::read(&path).unwrap(), existing);
+        fs::remove_file(&path).unwrap();
     }
 }
