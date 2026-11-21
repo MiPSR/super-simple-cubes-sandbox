@@ -25,7 +25,12 @@ Every implemented wiki feature gets a line here. Status legend:
 - `partial` — Optional atomic world saves (`--world PATH`): deterministic
   seed, day/night clock and block edits, autosaved once a minute and on
   shutdown. Version-1 saves migrate with the default morning time. Mobs,
-  dropped items and player inventories do not persist yet.
+  and dropped items do not persist. Anonymous player inventories persist by
+  client-generated UUID; these UUIDs are identifiers, not authentication.
+- `dev` — Anonymous identity: a UUIDv4 is generated once per client data
+  directory and sent in the protocol handshake. Dedicated servers persist
+  per-UUID inventories and reject simultaneous connections claiming the same
+  ID. This is not secure authentication; password-based accounts are deferred.
 - `partial` — Multi-player: one shared authoritative world, one session
   per client (dedicated accepts clients on a background thread), 20 Hz
   entity-state broadcast (own id included), per-player streaming and LOD

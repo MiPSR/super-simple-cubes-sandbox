@@ -12,8 +12,10 @@ else — `agents.md`, `implemented-features.md`, the code — must comply with i
   editions differ. Where logic conflicts, Bedrock semantics win.
 - Reference for game behavior: <https://minecraft.wiki/> (or another wiki if
   that one lacks the needed detail).
-- **No Microsoft bloat**: no login, no accounts, no store, no marketplace, no
-  telemetry.
+- **No Microsoft bloat**: no external login, accounts, store, marketplace, or
+  telemetry. Anonymous players receive a client-generated UUID used only as a
+  persistent identity for server-side player data; it does not authenticate or
+  prove ownership. Password-based authenticated players are a later phase.
 - **Mods are prohibited.** Anything that would be a mod must ship as a
   first-party feature of the codebase with an integrated UI/menu.
 

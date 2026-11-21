@@ -119,6 +119,13 @@ impl<'a> ByteReader<'a> {
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
+    pub fn get_16_bytes(&mut self) -> DecodeResult<[u8; 16]> {
+        let bytes = self.take(16)?;
+        let mut out = [0u8; 16];
+        out.copy_from_slice(bytes);
+        Ok(out)
+    }
+
     pub fn get_f32(&mut self) -> DecodeResult<f32> {
         let b = self.take(4)?;
         Ok(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))

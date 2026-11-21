@@ -77,7 +77,11 @@ impl SoundId {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientPacket {
     /// Initial handshake.
-    Hello { version: u32, name: String },
+    Hello {
+        version: u32,
+        player_id: [u8; 16],
+        name: String,
+    },
     /// Player input snapshot at ~20 Hz: movement keys + look angles.
     Input { keys: u16, yaw: f32, pitch: f32 },
     /// Hotbar slot selection.
@@ -100,9 +104,14 @@ impl ClientPacket {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = ByteWriter::new();
         match self {
-            ClientPacket::Hello { version, name } => {
+            ClientPacket::Hello {
+                version,
+                player_id,
+                name,
+            } => {
                 w.put_u8(0);
                 w.put_u32(*version);
+                w.put_bytes(player_id);
                 w.put_string(name);
             }
             ClientPacket::Input { keys, yaw, pitch } => {
@@ -138,6 +147,7 @@ impl ClientPacket {
         let pkt = match tag {
             0 => ClientPacket::Hello {
                 version: r.get_u32()?,
+                player_id: r.get_16_bytes()?,
                 name: r.get_string()?,
             },
             1 => ClientPacket::Input {
@@ -479,7 +489,17 @@ impl ServerPacket {
 
 #[cfg(test)]
 mod tests {
-    use super::ServerPacket;
+    use super::{ClientPacket, ServerPacket};
+
+    #[test]
+    fn hello_carries_anonymous_player_id() {
+        let packet = ClientPacket::Hello {
+            version: 7,
+            player_id: [0x5a; 16],
+            name: "anonymous".into(),
+        };
+        assert_eq!(ClientPacket::decode(&packet.encode()).unwrap(), packet);
+    }
 
     #[test]
     fn entity_kind_survives_wire_round_trip() {

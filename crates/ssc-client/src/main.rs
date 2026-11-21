@@ -9,6 +9,7 @@
 
 mod atlas;
 mod audio;
+mod identity;
 mod mesh;
 mod state;
 
@@ -189,6 +190,8 @@ struct App {
     last_occluded: u32,
     /// Server-driven time of day (0..1, 0 = dawn).
     day_time: f32,
+    /// Anonymous persistent identity for player-data storage.
+    player_id: identity::PlayerId,
 }
 
 /// Sky color for a time of day (0..1): dawn → day → dusk → night.
@@ -229,6 +232,7 @@ impl App {
         job_rx: Receiver<JobResult>,
         texture_path: Option<std::path::PathBuf>,
         sounds_dir: Option<std::path::PathBuf>,
+        player_id: identity::PlayerId,
     ) -> Self {
         let now = Instant::now();
         // Debug camera overrides (orientation testing / screenshots).
@@ -294,6 +298,7 @@ impl App {
             last_culled: 0,
             last_occluded: 0,
             day_time: 0.3,
+            player_id,
         }
     }
 
@@ -573,6 +578,7 @@ impl App {
             self.hello_sent = true;
             self.send(&ClientPacket::Hello {
                 version: PROTOCOL_VERSION,
+                player_id: self.player_id,
                 name: "player".into(),
             });
         }
@@ -1386,7 +1392,11 @@ fn main() {
     let shared = Arc::new(RwLock::new(ClientWorld::new()));
     let (job_tx, job_rx) = spawn_worker(shared.clone());
 
-    let mut app = App::new(wire, shared, job_tx, job_rx, textures, sounds);
+    let player_id = identity::load_or_create().unwrap_or_else(|err| {
+        eprintln!("[client] cannot load/create anonymous player ID: {err}");
+        std::process::exit(1);
+    });
+    let mut app = App::new(wire, shared, job_tx, job_rx, textures, sounds, player_id);
 
     let settings = EngineSettings {
         title: "Super Simple Cubes".into(),

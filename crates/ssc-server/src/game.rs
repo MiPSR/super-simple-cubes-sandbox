@@ -135,6 +135,10 @@ struct Player {
 struct Session {
     wire: Box<dyn Wire>,
     player: Player,
+    /// Stable anonymous identity supplied by the client (not authenticated).
+    player_id: Option<[u8; 16]>,
+    /// A corrupt player save is preserved rather than overwritten.
+    player_data_writable: bool,
     /// The player's inventory (36 slots; 0..9 = hotbar).
     inventory: Vec<crate::survival::Slot>,
     /// Survival-mode state (ignored in creative).
@@ -180,6 +184,8 @@ impl Session {
         };
         Self {
             wire,
+            player_id: None,
+            player_data_writable: true,
             player: Player {
                 name: String::new(),
                 pos: Vec3::new(8.5, 128.0, 8.5),
@@ -318,6 +324,43 @@ impl Server {
         }
     }
 
+    fn load_player_inventory(
+        &self,
+        player_id: [u8; 16],
+    ) -> std::io::Result<Option<Vec<crate::survival::Slot>>> {
+        let Some(world_path) = self.cfg.world_path.as_deref() else {
+            return Ok(None);
+        };
+        let path = crate::persistence::player_path(world_path, &player_id);
+        crate::persistence::load_player(&path, &player_id)
+    }
+
+    fn save_player_data(&self, entity_id: EntityId) {
+        let Some(session) = self.sessions.get(&entity_id) else {
+            return;
+        };
+        if !session.player_data_writable {
+            return;
+        }
+        let (Some(world_path), Some(player_id)) =
+            (self.cfg.world_path.as_deref(), session.player_id.as_ref())
+        else {
+            return;
+        };
+        let path = crate::persistence::player_path(world_path, player_id);
+        if let Err(err) =
+            crate::persistence::save_player(&path, player_id, &session.inventory)
+        {
+            eprintln!("[server] could not save anonymous player data: {err}");
+        }
+    }
+
+    fn save_all_player_data(&self) {
+        for id in self.sessions.keys().copied() {
+            self.save_player_data(id);
+        }
+    }
+
     fn record_block_edit(&mut self, x: i32, y: i32, z: i32, block: BlockId) {
         let key = (x.div_euclid(16), z.div_euclid(16));
         let local = (x.rem_euclid(16), y, z.rem_euclid(16));
@@ -377,6 +420,7 @@ impl Server {
                 .collect();
             for id in dead {
                 eprintln!("[server] client {id} disconnected");
+                self.save_player_data(id);
                 self.sessions.remove(&id);
                 let _ = self.broadcast(&ServerPacket::EntityRemove { id });
             }
@@ -394,6 +438,7 @@ impl Server {
                 next_tick = now; // we're behind; don't accumulate debt
             }
         }
+        self.save_all_player_data();
         self.save_world();
         let _ = self.broadcast(&ServerPacket::Goodbye { reason: "server closed".into() });
     }
@@ -757,6 +802,7 @@ impl Server {
             self.spawn_mobs();
         }
         if self.tick % 1200 == 0 {
+            self.save_all_player_data();
             self.save_world();
         }
     }
@@ -1461,7 +1507,11 @@ impl Server {
 impl Server {
     fn handle_packet(&mut self, id: EntityId, pkt: ClientPacket) -> Result<(), String> {
         match pkt {
-            ClientPacket::Hello { version, name } => self.on_hello(id, version, name),
+            ClientPacket::Hello {
+                version,
+                player_id,
+                name,
+            } => self.on_hello(id, version, player_id, name),
             ClientPacket::Input { keys, yaw, pitch } => {
                 let creative = self.cfg.game_mode == GameMode::Creative;
                 let tick = self.tick;
@@ -1556,7 +1606,14 @@ impl Server {
         Ok(())
     }
 
-    fn on_hello(&mut self, id: EntityId, version: u32, name: String) {
+    fn on_hello(&mut self, id: EntityId, version: u32, player_id: [u8; 16], name: String) {
+        if self
+            .sessions
+            .get(&id)
+            .is_some_and(|session| session.player.joined)
+        {
+            return;
+        }
         if version != PROTOCOL_VERSION {
             let _ = self.direct(
                 id,
@@ -1570,7 +1627,31 @@ impl Server {
             }
             return;
         }
+        if self.sessions.iter().any(|(other_id, session)| {
+            *other_id != id && session.player.joined && session.player_id == Some(player_id)
+        }) {
+            let _ = self.direct(
+                id,
+                &ServerPacket::Goodbye {
+                    reason: "this anonymous player ID is already connected".into(),
+                },
+            );
+            return;
+        }
+        let (saved_inventory, player_data_writable) =
+            match self.load_player_inventory(player_id) {
+                Ok(inventory) => (inventory, true),
+                Err(err) => {
+                    eprintln!("[server] player save could not be loaded: {err}");
+                    (None, false)
+                }
+            };
         let Some(session) = self.sessions.get_mut(&id) else { return };
+        if let Some(inventory) = saved_inventory {
+            session.inventory = inventory;
+        }
+        session.player_id = Some(player_id);
+        session.player_data_writable = player_data_writable;
         session.player.name = name;
 
         // Find a spawn point on dry land: spiral out from a per-player
@@ -2464,6 +2545,78 @@ mod tests {
             Some(ssc_world::BRICKS)
         );
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn anonymous_player_hello_restores_inventory_by_uuid() {
+        let world_path = std::env::temp_dir().join(format!(
+            "ssc-anonymous-world-{}.bin",
+            std::process::id()
+        ));
+        let player_id = [0x31; 16];
+        let player_path = crate::persistence::player_path(&world_path, &player_id);
+        let mut inventory = vec![None; crate::survival::INVENTORY_SIZE];
+        inventory[2] = Some((ssc_world::APPLE, 7));
+        crate::persistence::save_player(&player_path, &player_id, &inventory).unwrap();
+
+        let mut cfg = ServerConfig::default();
+        cfg.world_path = Some(world_path);
+        cfg.game_mode = GameMode::Survival;
+        let mut server = Server::empty(cfg);
+        let (_client, server_wire) = memory_pair();
+        let id = server.attach(Box::new(server_wire));
+        server
+            .handle_packet(
+                id,
+                ClientPacket::Hello {
+                    version: PROTOCOL_VERSION,
+                    player_id,
+                    name: "anonymous".into(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(server.sessions[&id].inventory, inventory);
+        assert_eq!(server.sessions[&id].player_id, Some(player_id));
+        server.sessions.get_mut(&id).unwrap().inventory[2] = Some((ssc_world::APPLE, 9));
+        server.save_player_data(id);
+        assert_eq!(
+            crate::persistence::load_player(&player_path, &player_id)
+                .unwrap()
+                .unwrap()[2],
+            Some((ssc_world::APPLE, 9))
+        );
+        std::fs::remove_dir_all(player_path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn simultaneous_connections_cannot_claim_the_same_anonymous_id() {
+        let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
+        let player_id = [0x42; 16];
+        rig.server.sessions.get_mut(&1).unwrap().player.joined = false;
+        rig.server.sessions.get_mut(&2).unwrap().player.joined = false;
+        for id in [1, 2] {
+            rig.server
+                .handle_packet(
+                    id,
+                    ClientPacket::Hello {
+                        version: PROTOCOL_VERSION,
+                        player_id,
+                        name: "duplicate".into(),
+                    },
+                )
+                .unwrap();
+        }
+        assert!(rig.server.sessions[&1].player.joined);
+        assert!(!rig.server.sessions[&2].player.joined);
+        assert!(rig
+            .drain(0)
+            .iter()
+            .all(|packet| !matches!(packet, ServerPacket::Goodbye { .. })));
+        assert!(rig
+            .drain(1)
+            .iter()
+            .any(|packet| matches!(packet, ServerPacket::Goodbye { .. })));
     }
 
     #[test]

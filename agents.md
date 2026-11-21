@@ -2,9 +2,9 @@
 
 Instructions for any AI agent or human contributor working on this repository.
 
-1. **Read `specs.md` first.** It is immutable. If code and specs disagree, fix
-   the code. If the spec itself seems wrong or blocking, ask the owner — do not
-   silently reinterpret it.
+1. **Read `specs.md` first.** It is the product source of truth. If code and
+   specs disagree, fix the code. If the spec itself seems wrong or blocking,
+   ask the owner; update the spec only with explicit owner direction.
 2. **Dependency policy**: never add a dependency without owner approval
    (audio / video / gamepad / anything exotic — ask first, with a comparison of
    the popular options). Prefer `std`-only implementations. Every dependency we
