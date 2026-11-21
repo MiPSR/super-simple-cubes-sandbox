@@ -23,8 +23,9 @@ Every implemented wiki feature gets a line here. Status legend:
 - `1:1` (infra) — Local play (in-process server, memory wire) and dedicated
   server (TCP wire) from the same server library.
 - `partial` — Optional atomic world saves (`--world PATH`): deterministic
-  seed plus block edits, autosaved once a minute and on shutdown. Mobs,
-  dropped items, player inventories and time of day do not persist yet.
+  seed, day/night clock and block edits, autosaved once a minute and on
+  shutdown. Version-1 saves migrate with the default morning time. Mobs,
+  dropped items and player inventories do not persist yet.
 - `partial` — Multi-player: one shared authoritative world, one session
   per client (dedicated accepts clients on a background thread), 20 Hz
   entity-state broadcast (own id included), per-player streaming and LOD

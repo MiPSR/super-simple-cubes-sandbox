@@ -12,34 +12,52 @@ use ssc_world::{BlockId, ColumnKey, MAX_Y, MIN_Y};
 
 pub type BlockEdits = HashMap<ColumnKey, HashMap<(i32, i32, i32), BlockId>>;
 
-const MAGIC: &[u8; 8] = b"SSCWLD01";
-const HEADER_SIZE: u64 = 20;
+const MAGIC_V1: &[u8; 8] = b"SSCWLD01";
+const MAGIC: &[u8; 8] = b"SSCWLD02";
+const HEADER_V1_SIZE: u64 = 20;
+const HEADER_SIZE: u64 = 24;
 const RECORD_SIZE: u64 = 14;
 const MAX_EDITS: u32 = 4_000_000;
 
 /// Load a save. `Ok(None)` means no save exists.
-pub fn load(path: &Path) -> io::Result<Option<(u64, BlockEdits)>> {
+pub fn load(path: &Path) -> io::Result<Option<(u64, f32, BlockEdits)>> {
     let mut file = match File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),
     };
     let file_len = file.metadata()?.len();
-    if file_len < HEADER_SIZE {
+    if file_len < HEADER_V1_SIZE {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "save header is truncated"));
     }
 
-    let mut header = [0u8; HEADER_SIZE as usize];
-    file.read_exact(&mut header)?;
-    if &header[..8] != MAGIC {
+    let mut prefix = [0u8; HEADER_V1_SIZE as usize];
+    file.read_exact(&mut prefix)?;
+    let (seed, time_of_day, count, header_size) = if &prefix[..8] == MAGIC {
+        let seed = u64::from_le_bytes(prefix[8..16].try_into().expect("fixed header slice"));
+        let time_of_day =
+            f32::from_le_bytes(prefix[16..20].try_into().expect("fixed header slice"));
+        let mut count_bytes = [0u8; 4];
+        file.read_exact(&mut count_bytes)?;
+        let count = u32::from_le_bytes(count_bytes);
+        if !time_of_day.is_finite() || !(0.0..1.0).contains(&time_of_day) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid world time in save",
+            ));
+        }
+        (seed, time_of_day, count, HEADER_SIZE)
+    } else if &prefix[..8] == MAGIC_V1 {
+        let seed = u64::from_le_bytes(prefix[8..16].try_into().expect("fixed header slice"));
+        let count = u32::from_le_bytes(prefix[16..20].try_into().expect("fixed header slice"));
+        // Version 1 had no stored clock; retain its original start time.
+        (seed, 0.3, count, HEADER_V1_SIZE)
+    } else {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "bad world save magic"));
-    }
-    let seed = u64::from_le_bytes(header[8..16].try_into().expect("fixed header slice"));
-    let count = u32::from_le_bytes(header[16..20].try_into().expect("fixed header slice"));
-    if count > MAX_EDITS || file_len != HEADER_SIZE + count as u64 * RECORD_SIZE {
+    };
+    if count > MAX_EDITS || file_len != header_size + count as u64 * RECORD_SIZE {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid world save length"));
     }
-
     let mut edits = BlockEdits::new();
     for _ in 0..count {
         let mut record = [0u8; RECORD_SIZE as usize];
@@ -58,11 +76,17 @@ pub fn load(path: &Path) -> io::Result<Option<(u64, BlockEdits)>> {
         let local = (x.rem_euclid(16), y, z.rem_euclid(16));
         edits.entry(key).or_default().insert(local, block);
     }
-    Ok(Some((seed, edits)))
+    Ok(Some((seed, time_of_day, edits)))
 }
 
 /// Atomically save the seed and explicit block edits.
-pub fn save(path: &Path, seed: u64, edits: &BlockEdits) -> io::Result<()> {
+pub fn save(path: &Path, seed: u64, time_of_day: f32, edits: &BlockEdits) -> io::Result<()> {
+    if !time_of_day.is_finite() || !(0.0..1.0).contains(&time_of_day) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "world time must be finite and in 0..1",
+        ));
+    }
     let mut records = Vec::new();
     for (&(cx, cz), column) in edits {
         for (&(lx, y, lz), &block) in column {
@@ -81,6 +105,7 @@ pub fn save(path: &Path, seed: u64, edits: &BlockEdits) -> io::Result<()> {
     let mut file = File::create(&temp_path)?;
     file.write_all(MAGIC)?;
     file.write_all(&seed.to_le_bytes())?;
+    file.write_all(&time_of_day.to_le_bytes())?;
     file.write_all(&(records.len() as u32).to_le_bytes())?;
     for (x, y, z, block) in records {
         file.write_all(&x.to_le_bytes())?;
@@ -110,12 +135,13 @@ mod tests {
             .or_default()
             .insert((15, 64, 0), ssc_world::BRICKS);
 
-        save(&path, 987654321, &edits).unwrap();
+        save(&path, 987654321, 0.625, &edits).unwrap();
         let loaded = load(&path).unwrap().unwrap();
         fs::remove_file(path).unwrap();
 
         assert_eq!(loaded.0, 987654321);
-        assert_eq!(loaded.1, edits);
+        assert_eq!(loaded.1, 0.625);
+        assert_eq!(loaded.2, edits);
     }
 
     #[test]
@@ -129,5 +155,25 @@ mod tests {
             assert_eq!(load(&path).unwrap_err().kind(), io::ErrorKind::InvalidData);
         }
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn version_one_save_loads_with_default_time() {
+        let path = std::env::temp_dir().join(format!(
+            "ssc-world-save-v1-{}.bin",
+            std::process::id()
+        ));
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC_V1);
+        bytes.extend_from_slice(&123u64.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        fs::write(&path, bytes).unwrap();
+
+        let loaded = load(&path).unwrap().unwrap();
+        fs::remove_file(path).unwrap();
+
+        assert_eq!(loaded.0, 123);
+        assert_eq!(loaded.1, 0.3);
+        assert!(loaded.2.is_empty());
     }
 }

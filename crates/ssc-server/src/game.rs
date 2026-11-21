@@ -247,27 +247,27 @@ impl Server {
 
     fn empty(cfg: ServerConfig) -> Self {
         let mut cfg = cfg;
-        let (seed, block_edits, persistence_ready) = match cfg.world_path.as_deref() {
+        let (seed, time_of_day, block_edits, persistence_ready) = match cfg.world_path.as_deref() {
             Some(path) => match crate::persistence::load(path) {
-                Ok(Some((seed, edits))) => {
+                Ok(Some((seed, time_of_day, edits))) => {
                     eprintln!(
-                        "[server] loaded seed {seed} and {} block edits from {}",
+                        "[server] loaded seed {seed}, time {time_of_day:.3} and {} block edits from {}",
                         edits.values().map(HashMap::len).sum::<usize>(),
                         path.display()
                     );
-                    (seed, edits, true)
+                    (seed, time_of_day, edits, true)
                 }
-                Ok(None) => (cfg.seed, HashMap::new(), true),
+                Ok(None) => (cfg.seed, 0.3, HashMap::new(), true),
                 Err(err) => {
                     eprintln!(
                         "[server] could not load {}: {err}; saves disabled to protect it",
                         path.display()
                     );
                     cfg.world_path = None;
-                    (cfg.seed, HashMap::new(), false)
+                    (cfg.seed, 0.3, HashMap::new(), false)
                 }
             },
-            None => (cfg.seed, HashMap::new(), true),
+            None => (cfg.seed, 0.3, HashMap::new(), true),
         };
         let edited = block_edits.keys().copied().collect();
         Self {
@@ -285,7 +285,7 @@ impl Server {
             next_item_id: FIRST_ITEM_ID,
             accept_rx: None,
             tick: 0,
-            time_of_day: 0.3, // start in the morning
+            time_of_day, // start in the morning for a new world
             running: true,
         }
     }
@@ -308,7 +308,12 @@ impl Server {
             return;
         }
         let Some(path) = self.cfg.world_path.as_deref() else { return };
-        if let Err(err) = crate::persistence::save(path, self.gen.seed(), &self.block_edits) {
+        if let Err(err) = crate::persistence::save(
+            path,
+            self.gen.seed(),
+            self.time_of_day,
+            &self.block_edits,
+        ) {
             eprintln!("[server] world save to {} failed: {err}", path.display());
         }
     }
@@ -2447,10 +2452,12 @@ mod tests {
         let mut original = Server::empty(cfg.clone());
         original.world.set_block(-1, 80, -17, ssc_world::BRICKS);
         original.record_block_edit(-1, 80, -17, ssc_world::BRICKS);
+        original.time_of_day = 0.625;
         original.save_world();
 
         let mut restored = Server::empty(cfg);
         assert_eq!(restored.gen.seed(), 123456);
+        assert_eq!(restored.time_of_day, 0.625);
         restored.ensure_column((-1, -2));
         assert_eq!(
             restored.world.get_block(-1, 80, -17),
