@@ -194,6 +194,8 @@ struct App {
     day_time: f32,
     /// Anonymous persistent identity for player-data storage.
     player_id: identity::PlayerId,
+    /// Client-local animation epoch (visual only).
+    started_at: Instant,
 }
 
 /// Sky color for a time of day (0..1): dawn → day → dusk → night.
@@ -224,6 +226,10 @@ fn sky_color(t: f32) -> [f32; 4] {
         a[2] + (b[2] - a[2]) * f,
         1.0,
     ]
+}
+
+fn dropped_item_bob(time: f32, phase: f32) -> f32 {
+    (time * 2.5 + phase).sin() * 0.08
 }
 
 impl App {
@@ -302,6 +308,7 @@ impl App {
             last_occluded: 0,
             day_time: 0.3,
             player_id,
+            started_at: now,
         }
     }
 
@@ -876,22 +883,30 @@ impl App {
             });
         }
         // Other players: placeholder box avatars, placed by model matrix.
+        let animation_time = (Instant::now() - self.started_at).as_secs_f32();
         for e in self.entities.values() {
-            let alpha =
-                ((Instant::now() - e.time).as_secs_f32() / 0.05).clamp(0.0, 1.0);
-            let pos = e.prev.lerp(e.cur, alpha);
+            let alpha = ((Instant::now() - e.time).as_secs_f32() / 0.05).clamp(0.0, 1.0);
+            let mut pos = e.prev.lerp(e.cur, alpha);
+            if e.kind == 3 {
+                pos.y += dropped_item_bob(animation_time, e.mesh as f32 * 0.618);
+            }
             let (half_width, height) = if e.kind == 3 { (0.125, 0.25) } else { (0.45, 1.9) };
             let aabb = ssc_math::Aabb::new(
                 Vec3::new(pos.x - half_width, pos.y - 0.05, pos.z - half_width),
                 Vec3::new(pos.x + half_width, pos.y + height, pos.z + half_width),
             );
+            let rotation = if e.kind == 3 {
+                animation_time * 0.8
+            } else {
+                -e.yaw
+            };
             let model = ssc_math::Mat4::from_translation(pos)
                 * if e.kind == 3 {
                     ssc_math::Mat4::from_scale(Vec3::splat(0.25))
                 } else {
                     ssc_math::Mat4::IDENTITY
                 }
-                * ssc_math::Mat4::from_rotation_y(-e.yaw);
+                * ssc_math::Mat4::from_rotation_y(rotation);
             draws.push(DrawCmd {
                 mesh: e.mesh,
                 aabb,
@@ -1441,5 +1456,13 @@ mod tests {
         assert!(night[0] < 0.1 && night[1] < 0.1, "night should be dark: {night:?}");
         let dawn = sky_color(0.05);
         assert!(dawn[0] > day[0] && dawn[0] > 0.6, "dawn should be warm: {dawn:?}");
+    }
+
+    #[test]
+    fn dropped_item_bob_is_bounded_and_animated() {
+        let a = dropped_item_bob(0.0, 0.0);
+        let b = dropped_item_bob(0.5, 0.0);
+        assert!(a.abs() <= 0.08 && b.abs() <= 0.08);
+        assert_ne!(a, b);
     }
 }
