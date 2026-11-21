@@ -1,8 +1,9 @@
 //! Mobs: server-authoritative entities with simple AI (`specs.md` §2 —
 //! all logic here, clients only render what the server broadcasts).
 //!
-//! v0 mobs: **pig** (passive, wanders, drops porkchop) and **zombie**
-//! (spawns at night, chases and hits players, burns nothing yet).
+//! Current mobs: **pig** (passive, wanders, drops porkchop) and **zombie**
+//! (spawns at night, chases and hits players, burns in daylight, drops rotten
+//! flesh).
 //! Placeholder visuals on the client (colored boxes); the entity-state
 //! broadcast carries the kind.
 
