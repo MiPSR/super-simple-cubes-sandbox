@@ -1303,11 +1303,14 @@ impl Server {
         // Candidate entities: mobs + other players.
         let mut candidates: Vec<(EntityId, ssc_math::Aabb, bool)> = Vec::new();
         for (mid, m) in &self.mobs {
+            if m.dead {
+                continue;
+            }
             let (hw, h) = m.kind.dims();
             candidates.push((*mid, entity_aabb(m.pos, hw, h), true));
         }
         for (pid, session) in &self.sessions {
-            if *pid != id && session.player.joined {
+            if *pid != id && session.player.joined && !session.survival.dead {
                 candidates.push((*pid, player_aabb(session.player.pos), false));
             }
         }
@@ -2852,6 +2855,50 @@ mod tests {
             .handle_packet(1, ClientPacket::DigStart)
             .unwrap();
         assert_eq!(rig.server.mobs[&mob_id].health, before - 2.0);
+    }
+
+    #[test]
+    fn dead_players_do_not_intercept_attacks() {
+        let mut rig = Rig::new_mode(3, 0.0, GameMode::Survival);
+        let attacker = rig.server.sessions[&1].player.pos;
+        rig.server.sessions.get_mut(&2).unwrap().player.pos =
+            attacker + Vec3::new(2.0, 0.0, 0.0);
+        rig.server.sessions.get_mut(&3).unwrap().player.pos =
+            attacker + Vec3::new(4.0, 0.0, 0.0);
+        rig.server.sessions.get_mut(&2).unwrap().survival.die();
+        let health = rig.server.sessions[&3].survival.health;
+
+        rig.server
+            .handle_packet(1, ClientPacket::DigStart)
+            .unwrap();
+
+        assert_eq!(rig.server.sessions[&3].survival.health, health - 2.0);
+    }
+
+    #[test]
+    fn dead_mobs_do_not_intercept_attacks() {
+        let mut rig = Rig::new_mode(1, -0.2, GameMode::Survival);
+        let attacker = rig.server.sessions[&1].player.pos;
+        let mut dead = crate::mobs::Mob::new(
+            crate::mobs::MobKind::Zombie,
+            attacker + Vec3::new(2.0, 0.0, 0.0),
+        );
+        dead.dead = true;
+        rig.server.mobs.insert(FIRST_MOB_ID, dead);
+        rig.server.mobs.insert(
+            FIRST_MOB_ID + 1,
+            crate::mobs::Mob::new(
+                crate::mobs::MobKind::Zombie,
+                attacker + Vec3::new(3.0, 0.0, 0.0),
+            ),
+        );
+        let health = rig.server.mobs[&(FIRST_MOB_ID + 1)].health;
+
+        rig.server
+            .handle_packet(1, ClientPacket::DigStart)
+            .unwrap();
+
+        assert_eq!(rig.server.mobs[&(FIRST_MOB_ID + 1)].health, health - 2.0);
     }
 
     #[test]
