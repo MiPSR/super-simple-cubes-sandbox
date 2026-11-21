@@ -1078,7 +1078,11 @@ impl App {
                     frame.remove_mesh(e.mesh);
                 }
             }
-            ServerPacket::ItemState { id, x, y, z, .. } => {
+            ServerPacket::ItemState { id, item, count, x, y, z } => {
+                if count == 0 || !ssc_world::valid_item_id(item) {
+                    eprintln!("[client] invalid dropped-item state");
+                    return Flow::Exit;
+                }
                 let pos = Vec3::new(x, y, z);
                 match self.entities.get_mut(&id) {
                     Some(e) => {

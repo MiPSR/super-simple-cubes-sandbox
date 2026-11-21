@@ -156,6 +156,7 @@ struct ItemEntity {
     pos: Vec3,
     vel: Vec3,
     age: u32,
+    pickup_delay: u8,
 }
 
 impl Session {
@@ -691,6 +692,7 @@ impl Server {
                 pos,
                 vel: Vec3::new(0.0, 1.5, 0.0),
                 age: 0,
+                pickup_delay: 10,
             },
         );
     }
@@ -736,6 +738,7 @@ impl Server {
         let mut expired = Vec::new();
         for (id, item) in self.items.iter_mut() {
             item.age += 1;
+            item.pickup_delay = item.pickup_delay.saturating_sub(1);
             if item.age >= ITEM_LIFETIME_TICKS || item.pos.y <= ssc_world::MIN_Y as f32 {
                 expired.push(*id);
                 continue;
@@ -756,25 +759,32 @@ impl Server {
             item.vel.z *= 0.8;
         }
 
+        self.merge_nearby_items();
+
         let ids: Vec<EntityId> = self.items.keys().copied().collect();
         for item_id in ids {
             let Some(item) = self.items.get(&item_id) else { continue };
             let (item_value, mut count, pos) = (item.item, item.count, item.pos);
-            let nearest = self
+            if item.pickup_delay > 0 {
+                continue;
+            }
+            let mut candidates: Vec<(EntityId, f32)> = self
                 .sessions
                 .iter()
                 .filter(|(_, s)| s.player.joined && !s.survival.dead)
                 .map(|(id, s)| (*id, (s.player.pos - pos).length()))
                 .filter(|(_, distance)| *distance <= 1.25)
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-                .map(|(id, _)| id);
-            let Some(player_id) = nearest else { continue };
-            let Some(session) = self.sessions.get_mut(&player_id) else { continue };
-            let leftover =
-                crate::survival::add_item(&mut session.inventory, item_value, count);
-            if leftover < count {
-                session.inv_dirty = true;
-                count = leftover;
+                .collect();
+            candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
+            for (player_id, _) in candidates {
+                let Some(session) = self.sessions.get_mut(&player_id) else { continue };
+                let leftover =
+                    crate::survival::add_item(&mut session.inventory, item_value, count);
+                if leftover < count {
+                    session.inv_dirty = true;
+                    count = leftover;
+                    break;
+                }
             }
             if let Some(item) = self.items.get_mut(&item_id) {
                 item.count = count;
@@ -789,6 +799,81 @@ impl Server {
             if self.items.remove(&id).is_some() {
                 let _ = self.broadcast(&ServerPacket::EntityRemove { id });
             }
+        }
+    }
+
+    fn merge_nearby_items(&mut self) {
+        // Index half-block cells so separated drops don't incur a global
+        // quadratic scan on every 20 Hz server tick.
+        let mut cells: HashMap<(i32, i32, i32), Vec<EntityId>> = HashMap::new();
+        for (&id, item) in &self.items {
+            let cell = (
+                (item.pos.x * 2.0).floor() as i32,
+                (item.pos.y * 2.0).floor() as i32,
+                (item.pos.z * 2.0).floor() as i32,
+            );
+            cells.entry(cell).or_default().push(id);
+        }
+
+        let mut ids: Vec<EntityId> = self.items.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let Some(a) = self.items.get(&id) else { continue };
+            let cell = (
+                (a.pos.x * 2.0).floor() as i32,
+                (a.pos.y * 2.0).floor() as i32,
+                (a.pos.z * 2.0).floor() as i32,
+            );
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        let Some(neighbors) = cells.get(&(cell.0 + dx, cell.1 + dy, cell.2 + dz))
+                        else {
+                            continue;
+                        };
+                        for &other_id in neighbors {
+                            if other_id <= id {
+                                continue;
+                            }
+                            let (Some(a), Some(b)) =
+                                (self.items.get(&id), self.items.get(&other_id))
+                            else {
+                                continue;
+                            };
+                            if a.count == 0
+                                || b.count == 0
+                                || a.item != b.item
+                                || (a.pos - b.pos).length_squared() > 0.25
+                            {
+                                continue;
+                            }
+                            let max_stack = ssc_world::item_info(a.item).max_stack;
+                            let transfer = max_stack.saturating_sub(a.count).min(b.count);
+                            if transfer == 0 {
+                                continue;
+                            }
+                            let age = a.age.min(b.age);
+                            if let Some(a) = self.items.get_mut(&id) {
+                                a.count += transfer;
+                                a.age = age;
+                            }
+                            if let Some(b) = self.items.get_mut(&other_id) {
+                                b.count -= transfer;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let empty: Vec<EntityId> = self
+            .items
+            .iter()
+            .filter(|(_, item)| item.count == 0)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in empty {
+            self.items.remove(&id);
+            let _ = self.broadcast(&ServerPacket::EntityRemove { id });
         }
     }
 
@@ -1961,13 +2046,31 @@ mod tests {
         let pos = rig.server.sessions[&1].player.pos;
         rig.server.spawn_item_entity(ssc_world::APPLE, 3, pos);
 
-        rig.server.tick_items(0.05);
+        for _ in 0..10 {
+            rig.server.tick_items(0.05);
+        }
 
         assert_eq!(
             rig.server.sessions[&1].inventory[0],
             Some((ssc_world::APPLE, 3))
         );
         assert!(rig.server.items.is_empty());
+    }
+
+    #[test]
+    fn block_break_overflow_becomes_a_world_item() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory.fill(Some((
+            ssc_world::STONE,
+            64,
+        )));
+        rig.server.world.set_block(8, 54, 8, ssc_world::GRASS_BLOCK);
+
+        rig.server.break_block(1, 8, 54, 8);
+
+        assert!(rig.server.items.values().any(|item| {
+            item.item == ssc_world::DIRT && item.count == 1
+        }));
     }
 
     #[test]
@@ -1983,7 +2086,9 @@ mod tests {
         let id = rig.server.next_item_id;
         rig.server.spawn_item_entity(ssc_world::APPLE, 2, pos);
 
-        rig.server.tick_items(0.05);
+        for _ in 0..10 {
+            rig.server.tick_items(0.05);
+        }
 
         assert_eq!(
             rig.server.sessions[&1].inventory[0],
@@ -1991,6 +2096,44 @@ mod tests {
         );
         assert!(rig.server.sessions[&1].inv_dirty);
         assert_eq!(rig.server.items[&id].count, 1);
+    }
+
+    #[test]
+    fn nearby_item_stacks_merge_up_to_max_stack() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let pos = rig.server.sessions[&1].player.pos + Vec3::new(3.0, 0.0, 0.0);
+        rig.server.spawn_item_entity(ssc_world::APPLE, 60, pos);
+        let first = rig.server.next_item_id - 1;
+        rig.server.spawn_item_entity(ssc_world::APPLE, 10, pos);
+        let second = rig.server.next_item_id - 1;
+
+        rig.server.tick_items(0.05);
+
+        assert_eq!(rig.server.items[&first].count, 64);
+        assert_eq!(rig.server.items[&second].count, 6);
+    }
+
+    #[test]
+    fn full_nearest_inventory_does_not_block_another_players_pickup() {
+        let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
+        let pos = rig.server.sessions[&1].player.pos;
+        {
+            let full_player = rig.server.sessions.get_mut(&1).unwrap();
+            full_player.inventory.fill(Some((ssc_world::STONE, 64)));
+        }
+        rig.server.sessions.get_mut(&2).unwrap().player.pos =
+            pos + Vec3::new(0.5, 0.0, 0.0);
+        rig.server.spawn_item_entity(ssc_world::APPLE, 1, pos);
+
+        for _ in 0..10 {
+            rig.server.tick_items(0.05);
+        }
+
+        assert_eq!(
+            rig.server.sessions[&2].inventory[0],
+            Some((ssc_world::APPLE, 1))
+        );
+        assert!(rig.server.items.is_empty());
     }
 
     #[test]

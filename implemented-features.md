@@ -95,11 +95,11 @@ Every implemented wiki feature gets a line here. Status legend:
 - `partial` — Item system: block-items 1:1 with block ids, apple, raw
   porkchop and rotten flesh; food restores 4/3/4 hunger respectively,
   with rotten flesh applying Hunger I for 30 s at an 80% chance. No
-  effect icon yet. Server-owned dropped stacks have basic gravity,
-  5-minute despawn and inventory pickup; stack merging, bobbing, magnetism
-  and pickup delay are pending. 36-slot inventories (9 hotbar + 27 storage,
-  stack 64) are server-owned and synced. No tools or crafting ingredients
-  yet.
+  effect icon yet. Server-owned dropped stacks have basic gravity, same-item
+  merging, 10-tick pickup delay, 5-minute despawn and partial inventory
+  pickup. Bobbing, magnetism and merge radius/timing refinements pending.
+  36-slot inventories (9 hotbar + 27 storage, stack 64) are server-owned
+  and synced. No tools or crafting ingredients yet.
 - `partial` — Gamepad (owner-approved gilrs, engine-side input abstraction):
   left stick moves, right stick looks (rate-normalized), A jumps, RT digs,
   LT places, Start = Escape; dead-zoned, works alongside keyboard/mouse.
