@@ -1050,6 +1050,11 @@ impl Server {
     }
 
     fn tick_items(&mut self, dt: f32) {
+        // Unoccupied worlds are inactive: items must not expire or move while
+        // nobody can keep their terrain loaded, including after a restart.
+        if !self.sessions.values().any(|s| s.player.joined) {
+            return;
+        }
         let mut expired = Vec::new();
         let players: Vec<Vec3> = self
             .sessions
@@ -3116,6 +3121,26 @@ mod tests {
         assert_eq!(std::fs::read(&mob_path).unwrap(), bad_mobs);
         std::fs::remove_file(item_path).unwrap();
         std::fs::remove_file(mob_path).unwrap();
+    }
+
+    #[test]
+    fn dropped_items_pause_without_players() {
+        let mut server = Server::empty(ServerConfig::default());
+        server.spawn_item_entity(ssc_world::APPLE, 1, Vec3::new(8.5, 65.0, 8.5));
+        let item_id = server.next_item_id - 1;
+        {
+            let item = server.items.get_mut(&item_id).unwrap();
+            item.age = ITEM_LIFETIME_TICKS - 1;
+            item.pickup_delay = 1;
+        }
+        let position = server.items[&item_id].pos;
+
+        server.tick_items(0.05);
+
+        let item = &server.items[&item_id];
+        assert_eq!(item.age, ITEM_LIFETIME_TICKS - 1);
+        assert_eq!(item.pickup_delay, 1);
+        assert_eq!(item.pos, position);
     }
 
     #[test]

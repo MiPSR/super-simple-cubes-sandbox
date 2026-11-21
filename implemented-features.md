@@ -27,8 +27,9 @@ Every implemented wiki feature gets a line here. Status legend:
   shutdown. Version-1 saves migrate with the default morning time. Anonymous
   player state persists by client-generated UUID (inventory, position, vitals
   and selected hotbar slot); dropped stacks persist with physics state;
-  mob kind, health, position and AI timers persist too. Mobs pause while no
-  players are online. UUIDs are identifiers, not authentication.
+  mob kind, health, position and AI timers persist too. Mobs and dropped
+  items pause while no players are online. UUIDs are identifiers, not
+  authentication.
 - `dev` — Anonymous identity: a UUIDv4 is generated once per client data
   directory and sent in the protocol handshake. Dedicated servers persist
   per-UUID inventories and reject simultaneous connections claiming the same
