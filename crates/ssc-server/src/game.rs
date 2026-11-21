@@ -2895,6 +2895,38 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_anonymous_player_save_is_not_overwritten() {
+        let world_path =
+            std::env::temp_dir().join(format!("ssc-corrupt-player-world-{}.bin", std::process::id()));
+        let player_id = [0xd4; 16];
+        let player_path = crate::persistence::player_path(&world_path, &player_id);
+        let original = b"invalid player data";
+        std::fs::create_dir_all(player_path.parent().unwrap()).unwrap();
+        std::fs::write(&player_path, original).unwrap();
+
+        let mut cfg = ServerConfig::default();
+        cfg.world_path = Some(world_path);
+        let mut server = Server::empty(cfg);
+        let (_client, server_wire) = memory_pair();
+        let id = server.attach(Box::new(server_wire));
+        server
+            .handle_packet(
+                id,
+                ClientPacket::Hello {
+                    version: PROTOCOL_VERSION,
+                    player_id,
+                    name: "anonymous".into(),
+                },
+            )
+            .unwrap();
+        server.sessions.get_mut(&id).unwrap().inventory[0] = Some((ssc_world::APPLE, 1));
+        server.save_player_data(id);
+
+        assert_eq!(std::fs::read(&player_path).unwrap(), original);
+        std::fs::remove_dir_all(player_path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn dropped_items_restore_from_world_save() {
         let world_path = std::env::temp_dir().join(format!(
             "ssc-item-world-{}.bin",
