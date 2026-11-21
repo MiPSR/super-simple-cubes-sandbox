@@ -28,8 +28,9 @@ Every implemented wiki feature gets a line here. Status legend:
   player state persists by client-generated UUID (inventory, position, vitals
   and selected hotbar slot); dropped stacks persist with physics state;
   mob kind, health, position and AI timers persist too. Mobs and dropped
-  items pause while no players are online. UUIDs are identifiers, not
-  authentication.
+  items pause while no players are online. Collision terrain is generated
+  before the first tick at a restored player position. UUIDs are identifiers,
+  not authentication.
 - `dev` — Anonymous identity: a UUIDv4 is generated once per client data
   directory and sent in the protocol handshake. Dedicated servers persist
   per-UUID inventories and reject simultaneous connections claiming the same

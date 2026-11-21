@@ -1990,6 +1990,15 @@ impl Server {
         // like all gameplay data (specs.md §2).
         let palette: Vec<BlockId> = (1..ssc_world::BLOCK_COUNT).collect();
         let _ = self.direct(id, &ServerPacket::CreativeBlocks { ids: palette });
+        // Movement is simulated before the bounded streaming queue is drained.
+        // Generate collision terrain at the joined (possibly saved) position
+        // now so the first server tick cannot fall through unloaded air.
+        let (pcx, pcz) = self.player_col(id);
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                self.ensure_column((pcx + dx, pcz + dz));
+            }
+        }
         self.refresh_streaming(id);
     }
 
@@ -3047,6 +3056,14 @@ mod tests {
         assert_eq!(
             server.sessions[&id].player.pos,
             Vec3::new(12.5, 70.0, -9.25)
+        );
+        assert!(
+            server.world.column(0, -1).is_some(),
+            "collision terrain must exist before the first player tick"
+        );
+        assert!(
+            server.world.column(1, -1).is_some(),
+            "neighbor terrain must exist at chunk boundaries"
         );
         assert_ne!(server.sessions[&id].spawn, server.sessions[&id].player.pos);
         assert_eq!(server.sessions[&id].survival.health, 13.0);
