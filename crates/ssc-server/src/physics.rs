@@ -84,9 +84,11 @@ pub fn move_entity(
         in_water |= entity_in_water(world, *pos, height);
     }
 
-    // Void safety: never fall out of the bottom of the world.
-    if pos.y < MIN_Y as f32 {
-        pos.y = MIN_Y as f32;
+    // Bedrock has an invisible one-way floor at about Y=-105 in the
+    // Overworld. The build limit (-64) is not a floor: survival players must
+    // be able to enter the void and take damage.
+    if pos.y < (MIN_Y - 41) as f32 {
+        pos.y = (MIN_Y - 41) as f32;
         vel.y = 0.0;
         on_ground = true;
     }
@@ -214,5 +216,21 @@ mod tests {
 
         assert!(result.in_water, "the swept path crossed a water block");
         assert!(pos.y < 51.0, "the test should pass through the water cell");
+    }
+
+    #[test]
+    fn void_floor_is_below_build_limit() {
+        let world = World::default();
+        let mut pos = Vec3::new(0.5, MIN_Y as f32 - 0.1, 0.5);
+        let mut vel = Vec3::new(0.0, -10.0, 0.0);
+        move_player(&world, &mut pos, &mut vel, 0.05);
+        assert!(pos.y < MIN_Y as f32);
+
+        pos.y = (MIN_Y - 41) as f32 + 0.1;
+        vel.y = -10.0;
+        let result = move_player(&world, &mut pos, &mut vel, 0.05);
+        assert_eq!(pos.y, (MIN_Y - 41) as f32);
+        assert!(result.on_ground);
+        assert_eq!(vel.y, 0.0);
     }
 }

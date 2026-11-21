@@ -36,6 +36,7 @@ pub struct SurvivalState {
     regen_timer: u32,
     starve_timer: u32,
     drown_timer: u32,
+    void_timer: u8,
     /// Remaining ticks for Hunger I (rotten flesh).
     pub hunger_effect_ticks: u16,
     /// Hunger exhaustion (4.0 = one hunger point).
@@ -64,6 +65,7 @@ impl Default for SurvivalState {
             regen_timer: 0,
             starve_timer: 0,
             drown_timer: 0,
+            void_timer: 0,
             hunger_effect_ticks: 0,
             exhaustion: 0.0,
         }
@@ -79,6 +81,8 @@ pub struct TickInput {
     pub in_water: bool,
     /// Eyes submerged (drowning).
     pub eye_in_water: bool,
+    /// Player feet crossed below the Overworld's minimum build height.
+    pub below_world: bool,
     /// Moving horizontally this tick.
     pub moving: bool,
     pub sprinting: bool,
@@ -109,7 +113,7 @@ impl SurvivalState {
         }
 
         // --- Fall damage -------------------------------------------------
-        if input.in_water {
+        if input.in_water || input.below_world {
             self.fall_distance = 0.0;
         } else if input.dy < 0.0 {
             self.fall_distance += -input.dy;
@@ -191,6 +195,18 @@ impl SurvivalState {
             self.air = (self.air + 4).min(MAX_AIR);
             self.drown_timer = 0;
             fx.air_changed = true;
+        }
+
+        // Bedrock: below Y=-64, 4 health damage every 10 game ticks.
+        // This continues even after landing on the invisible void floor.
+        if input.below_world {
+            self.void_timer += 1;
+            if self.void_timer >= 10 {
+                self.void_timer = 0;
+                fx.damage += 4.0;
+            }
+        } else {
+            self.void_timer = 0;
         }
 
         // --- Apply damage ---------------------------------------------------
@@ -357,6 +373,34 @@ mod tests {
             damage += s.tick(TickInput { eye_in_water: true, ..Default::default() }).damage;
         }
         assert_eq!(damage, 2.0);
+    }
+
+    #[test]
+    fn void_damage_starts_below_build_limit_and_resets_on_return() {
+        let mut s = SurvivalState::default();
+        for _ in 0..9 {
+            assert_eq!(
+                s.tick(TickInput { below_world: true, ..Default::default() }).damage,
+                0.0
+            );
+        }
+        let fx = s.tick(TickInput { below_world: true, ..Default::default() });
+        assert_eq!(fx.damage, 4.0);
+        assert_eq!(s.health, 16.0);
+        for _ in 0..5 {
+            s.tick(TickInput { below_world: true, ..Default::default() });
+        }
+        s.tick(TickInput::default());
+        for _ in 0..9 {
+            assert_eq!(
+                s.tick(TickInput { below_world: true, ..Default::default() }).damage,
+                0.0
+            );
+        }
+        assert_eq!(
+            s.tick(TickInput { below_world: true, ..Default::default() }).damage,
+            4.0
+        );
     }
 
     #[test]

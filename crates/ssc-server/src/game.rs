@@ -494,12 +494,16 @@ impl Server {
                 crate::survival::MAX_AIR,
             )
         } else {
+            // A player may disconnect during a fall through the void. That
+            // position cannot be restored (or encoded by PlayerSave), so
+            // retain their current vitals but resume at the safe spawn.
+            let pos = if session.player.pos.y < ssc_world::MIN_Y as f32 {
+                session.spawn
+            } else {
+                session.player.pos
+            };
             (
-                Some([
-                    session.player.pos.x,
-                    session.player.pos.y,
-                    session.player.pos.z,
-                ]),
+                Some([pos.x, pos.y, pos.z]),
                 session.survival.health,
                 session.survival.hunger,
                 session.survival.air,
@@ -667,9 +671,11 @@ impl Server {
             let survival = self.cfg.game_mode == GameMode::Survival;
             let fx_tick = if survival {
                 session.survival.tick(crate::survival::TickInput {
-                    landed: !was_on_ground && p.on_ground,
+                    landed: !was_on_ground && p.on_ground
+                        && p.pos.y >= ssc_world::MIN_Y as f32,
                     in_water: p.in_water,
                     eye_in_water,
+                    below_world: p.pos.y < ssc_world::MIN_Y as f32,
                     moving,
                     sprinting,
                     jumped,
@@ -2890,6 +2896,42 @@ mod tests {
     }
 
     #[test]
+    fn survival_void_damage_kills_and_respawns_below_world() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let spawn = rig.server.sessions[&1].player.pos;
+        rig.server.sessions.get_mut(&1).unwrap().spawn = spawn;
+        rig.server.sessions.get_mut(&1).unwrap().player.pos.y =
+            ssc_world::MIN_Y as f32 - 0.1;
+        for _ in 0..10 {
+            rig.server.tick();
+        }
+        assert_eq!(rig.server.sessions[&1].survival.health, 16.0);
+        for _ in 0..40 {
+            rig.server.tick();
+        }
+        assert!(rig.server.sessions[&1].survival.dead);
+        rig.server.sessions.get_mut(&1).unwrap().survival.respawn_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
+        rig.server.tick();
+        assert_eq!(rig.server.sessions[&1].player.pos, spawn);
+        assert_eq!(rig.server.sessions[&1].survival.health, crate::survival::MAX_HEALTH);
+    }
+
+    #[test]
+    fn creative_players_survive_the_void_floor() {
+        let mut rig = Rig::new(1, 0.0);
+        rig.server.sessions.get_mut(&1).unwrap().player.pos.y =
+            ssc_world::MIN_Y as f32 - 0.1;
+        for _ in 0..50 {
+            rig.server.tick();
+        }
+        let player = &rig.server.sessions[&1];
+        assert!(!player.survival.dead);
+        assert_eq!(player.survival.health, crate::survival::MAX_HEALTH);
+        assert_eq!(player.player.pos.y, (ssc_world::MIN_Y - 41) as f32);
+    }
+
+    #[test]
     fn solid_wall_blocks_pvp_but_not_unobstructed_attacks() {
         let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
         rig.server.world.set_block(10, 56, 8, ssc_world::STONE);
@@ -3296,6 +3338,41 @@ mod tests {
         assert_eq!(session.survival.air, crate::survival::MAX_AIR);
         assert_ne!(session.player.pos, Vec3::new(4.5, 70.0, -2.5));
         assert_eq!(session.player.pos, session.spawn);
+        std::fs::remove_dir_all(player_path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn disconnecting_in_the_void_saves_safe_respawn_position() {
+        let world_path =
+            std::env::temp_dir().join(format!("ssc-void-player-world-{}.bin", std::process::id()));
+        let player_id = [0xb8; 16];
+        let player_path = crate::persistence::player_path(&world_path, &player_id);
+        let mut cfg = ServerConfig::default();
+        cfg.world_path = Some(world_path);
+        cfg.game_mode = GameMode::Survival;
+        let mut server = Server::empty(cfg);
+        let (_client, server_wire) = memory_pair();
+        let id = server.attach(Box::new(server_wire));
+        server
+            .handle_packet(
+                id,
+                ClientPacket::Hello {
+                    version: PROTOCOL_VERSION,
+                    player_id,
+                    name: "falling".into(),
+                },
+            )
+            .unwrap();
+        let spawn = server.sessions[&id].spawn;
+        server.sessions.get_mut(&id).unwrap().player.pos.y = ssc_world::MIN_Y as f32 - 1.0;
+        server.sessions.get_mut(&id).unwrap().survival.health = 8.0;
+        server.save_player_data(id);
+
+        let saved = crate::persistence::load_player(&player_path, &player_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.position, Some([spawn.x, spawn.y, spawn.z]));
+        assert_eq!(saved.health, 8.0);
         std::fs::remove_dir_all(player_path.parent().unwrap()).unwrap();
     }
 
