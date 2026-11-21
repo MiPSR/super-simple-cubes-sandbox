@@ -150,8 +150,10 @@ struct App {
     air: u16,
     /// Dig progress broadcast ((x,y,z), percent) + expiry.
     dig_progress: Option<((i32, i32, i32), u8, Instant)>,
-    /// First clicked slot in the inventory screen (swap interaction).
+    /// Slot currently highlighted during an inventory drag.
     inv_pick: Option<u8>,
+    /// Slot being dragged until the left mouse button is released.
+    inv_drag: Option<u8>,
     joined: bool,
     render_distance: i32,
     last_player_col: ColumnKey,
@@ -270,6 +272,7 @@ impl App {
             air: 300,
             dig_progress: None,
             inv_pick: None,
+            inv_drag: None,
             joined: false,
             render_distance: 8,
             last_player_col: (0, 0),
@@ -308,33 +311,39 @@ impl App {
         }
     }
 
-    /// Survival inventory screen click: two clicks swap the slots
-    /// (server-side validation via SwapSlots).
-    fn inventory_click(&mut self, frame: &mut Frame) {
+    /// Begin a server-authoritative inventory drag from a non-empty slot.
+    fn inventory_press(&mut self, frame: &mut Frame) {
         let Some((mx, my)) = frame.input().cursor else { return };
         let (w, h) = frame.size();
-        let slot = match self.inventory_hit(mx, my, w as f32, h as f32) {
-            Some(s) => s,
-            None => return,
+        let Some(slot) = self.inventory_hit(mx, my, w as f32, h as f32) else {
+            return;
         };
-        match self.inv_pick {
-            Some(a) => {
-                if a != slot {
-                    self.send(&ClientPacket::SwapSlots { a, b: slot });
-                }
-                self.inv_pick = None;
-            }
-            None => {
-                // Only start a pick on non-empty slots.
-                if self
-                    .inventory
-                    .get(slot as usize)
-                    .is_some_and(|(i, _)| *i != 0)
-                {
-                    self.inv_pick = Some(slot);
-                }
+        if self
+            .inventory
+            .get(slot as usize)
+            .is_some_and(|(item, count)| *item != 0 && *count > 0)
+        {
+            self.inv_pick = Some(slot);
+            self.inv_drag = Some(slot);
+        }
+    }
+
+    /// Drop the dragged stack onto the release slot; the server validates and
+    /// applies the swap.
+    fn inventory_release(&mut self, frame: &mut Frame) {
+        let Some(source) = self.inv_drag.take() else {
+            return;
+        };
+        let target = frame.input().cursor.and_then(|(mx, my)| {
+            let (w, h) = frame.size();
+            self.inventory_hit(mx, my, w as f32, h as f32)
+        });
+        if let Some(target) = target {
+            if source != target {
+                self.send(&ClientPacket::SwapSlots { a: source, b: target });
             }
         }
+        self.inv_pick = None;
     }
 
     /// Inventory screen layout: 9 columns × 4 rows of slots.
@@ -464,6 +473,7 @@ impl App {
                     // creative (both server-driven).
                     self.picker_open = !self.picker_open;
                     self.inv_pick = None;
+                    self.inv_drag = None;
                     let locked = frame.mouse_locked();
                     if self.picker_open && locked {
                         frame.set_mouse_locked(false);
@@ -479,7 +489,7 @@ impl App {
                         if self.mode == 1 {
                             self.picker_click(frame);
                         } else {
-                            self.inventory_click(frame);
+                            self.inventory_press(frame);
                         }
                     } else if frame.mouse_locked() {
                         self.send(&ClientPacket::DigStart);
@@ -491,8 +501,10 @@ impl App {
                     }
                 }
                 EngineEvent::MouseButton { button: MouseButton::Left, state: KeyState::Released } => {
-                    // Release cancels the dig (survival progress).
-                    if !self.picker_open && frame.mouse_locked() {
+                    if self.picker_open && self.mode != 1 {
+                        self.inventory_release(frame);
+                    } else if !self.picker_open && frame.mouse_locked() {
+                        // Release cancels the dig (survival progress).
                         self.send(&ClientPacket::DigStop);
                     }
                 }
@@ -502,7 +514,11 @@ impl App {
                         self.last_place = Instant::now();
                     }
                 }
-                EngineEvent::Focused(false) => frame.set_mouse_locked(false),
+                EngineEvent::Focused(false) => {
+                    frame.set_mouse_locked(false);
+                    self.inv_drag = None;
+                    self.inv_pick = None;
+                }
                 _ => {}
             }
         }
