@@ -19,6 +19,30 @@ const HEADER_SIZE: u64 = 24;
 const RECORD_SIZE: u64 = 14;
 const MAX_EDITS: u32 = 4_000_000;
 const PLAYER_MAGIC: &[u8; 8] = b"SSCPLY01";
+const PLAYER_MAGIC_V2: &[u8; 8] = b"SSCPLY02";
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerSave {
+    pub inventory: Vec<crate::survival::Slot>,
+    pub position: Option<[f32; 3]>,
+    pub health: f32,
+    pub hunger: u8,
+    pub air: u16,
+    pub selected_slot: u8,
+}
+
+impl Default for PlayerSave {
+    fn default() -> Self {
+        Self {
+            inventory: vec![None; crate::survival::INVENTORY_SIZE],
+            position: None,
+            health: crate::survival::MAX_HEALTH,
+            hunger: crate::survival::MAX_HUNGER,
+            air: crate::survival::MAX_AIR,
+            selected_slot: 0,
+        }
+    }
+}
 
 /// Load a save. `Ok(None)` means no save exists.
 pub fn load(path: &Path) -> io::Result<Option<(u64, f32, BlockEdits)>> {
@@ -136,19 +160,22 @@ pub fn player_path(world_path: &Path, player_id: &[u8; 16]) -> std::path::PathBu
 pub fn load_player(
     path: &Path,
     player_id: &[u8; 16],
-) -> io::Result<Option<Vec<crate::survival::Slot>>> {
+) -> io::Result<Option<PlayerSave>> {
     let mut file = match File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),
     };
-    let expected_len = 8 + 16 + crate::survival::INVENTORY_SIZE * 3;
-    if file.metadata()?.len() != expected_len as u64 {
+    let file_len = file.metadata()?.len();
+    let v1_len = 8 + 16 + crate::survival::INVENTORY_SIZE * 3;
+    let v2_len = 8 + 16 + 20 + crate::survival::INVENTORY_SIZE * 3;
+    if file_len != v1_len as u64 && file_len != v2_len as u64 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid player save length",
         ));
     }
+    let expected_len = file_len as usize;
     let mut bytes = Vec::with_capacity(expected_len);
     file.read_to_end(&mut bytes)?;
     if bytes.len() != expected_len {
@@ -157,18 +184,61 @@ pub fn load_player(
             "player save changed while reading",
         ));
     }
-    if &bytes[..8] != PLAYER_MAGIC || &bytes[8..24] != player_id {
+    let v2 = &bytes[..8] == PLAYER_MAGIC_V2;
+    if (!v2 && &bytes[..8] != PLAYER_MAGIC) || &bytes[8..24] != player_id {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "player save identity or format mismatch",
         ));
     }
-    let mut inventory = Vec::with_capacity(crate::survival::INVENTORY_SIZE);
-    for slot in bytes[24..].chunks_exact(3) {
+    if v2 != (expected_len == v2_len) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "player save version and length mismatch",
+        ));
+    }
+    let mut data = PlayerSave::default();
+    data.inventory.clear();
+    let inventory_offset = if v2 {
+        let position = [
+            f32::from_le_bytes(bytes[24..28].try_into().expect("fixed save slice")),
+            f32::from_le_bytes(bytes[28..32].try_into().expect("fixed save slice")),
+            f32::from_le_bytes(bytes[32..36].try_into().expect("fixed save slice")),
+        ];
+        let health = f32::from_le_bytes(bytes[36..40].try_into().expect("fixed save slice"));
+        let hunger = bytes[40];
+        let air = u16::from_le_bytes(bytes[41..43].try_into().expect("fixed save slice"));
+        let selected_slot = bytes[43];
+        if position.iter().any(|v| !v.is_finite())
+            || position[1] < ssc_world::MIN_Y as f32
+            || position[1] >= ssc_world::MAX_Y as f32 - ssc_math::PLAYER_HEIGHT
+            || position[0].abs() > 30_000_000.0
+            || position[2].abs() > 30_000_000.0
+            || !health.is_finite()
+            || !(0.0..=crate::survival::MAX_HEALTH).contains(&health)
+            || hunger > crate::survival::MAX_HUNGER
+            || air > crate::survival::MAX_AIR
+            || selected_slot >= 9
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid player state in save",
+            ));
+        }
+        data.position = Some(position);
+        data.health = health;
+        data.hunger = hunger;
+        data.air = air;
+        data.selected_slot = selected_slot;
+        44
+    } else {
+        24
+    };
+    for slot in bytes[inventory_offset..].chunks_exact(3) {
         let item = u16::from_le_bytes([slot[0], slot[1]]);
         let count = slot[2];
         if item == 0 && count == 0 {
-            inventory.push(None);
+            data.inventory.push(None);
             continue;
         }
         if item == 0 || count == 0 || !ssc_world::valid_item_id(item) {
@@ -183,24 +253,24 @@ pub fn load_player(
                 "player inventory stack exceeds max size",
             ));
         }
-        inventory.push(Some((item, count)));
+        data.inventory.push(Some((item, count)));
     }
-    Ok(Some(inventory))
+    Ok(Some(data))
 }
 
 /// Atomically write a player's inventory.
 pub fn save_player(
     path: &Path,
     player_id: &[u8; 16],
-    inventory: &[crate::survival::Slot],
+    data: &PlayerSave,
 ) -> io::Result<()> {
-    if inventory.len() != crate::survival::INVENTORY_SIZE {
+    if data.inventory.len() != crate::survival::INVENTORY_SIZE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "player inventory has wrong slot count",
         ));
     }
-    if inventory.iter().flatten().any(|(item, count)| {
+    if data.inventory.iter().flatten().any(|(item, count)| {
         !ssc_world::valid_item_id(*item)
             || *count == 0
             || *count > ssc_world::item_info(*item).max_stack
@@ -210,14 +280,46 @@ pub fn save_player(
             "invalid item stack in player inventory",
         ));
     }
+    let Some(position) = data.position else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "player save needs a position",
+        ));
+    };
+    if position.iter().any(|v| !v.is_finite())
+        || position[1] < ssc_world::MIN_Y as f32
+        || position[1] >= ssc_world::MAX_Y as f32 - ssc_math::PLAYER_HEIGHT
+        || position[0].abs() > 30_000_000.0
+        || position[2].abs() > 30_000_000.0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid player position",
+        ));
+    }
+    if !data.health.is_finite()
+        || !(0.0..=crate::survival::MAX_HEALTH).contains(&data.health)
+        || data.hunger > crate::survival::MAX_HUNGER
+        || data.air > crate::survival::MAX_AIR
+        || data.selected_slot >= 9
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid player vitals"));
+    }
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
     let temp_path = path.with_extension("tmp");
     let mut file = File::create(&temp_path)?;
-    file.write_all(PLAYER_MAGIC)?;
+    file.write_all(PLAYER_MAGIC_V2)?;
     file.write_all(player_id)?;
-    for slot in inventory {
+    for coordinate in position {
+        file.write_all(&coordinate.to_le_bytes())?;
+    }
+    file.write_all(&data.health.to_le_bytes())?;
+    file.write_all(&[data.hunger])?;
+    file.write_all(&data.air.to_le_bytes())?;
+    file.write_all(&[data.selected_slot])?;
+    for slot in &data.inventory {
         if let Some((item, count)) = slot {
             file.write_all(&item.to_le_bytes())?;
             file.write_all(&[*count])?;
@@ -297,12 +399,17 @@ mod tests {
         let mut inventory = vec![None; crate::survival::INVENTORY_SIZE];
         inventory[0] = Some((ssc_world::APPLE, 12));
         inventory[35] = Some((ssc_world::BRICKS, 64));
+        let data = PlayerSave {
+            inventory,
+            position: Some([12.5, 70.0, -9.25]),
+            health: 13.0,
+            hunger: 7,
+            air: 250,
+            selected_slot: 4,
+        };
 
-        save_player(&path, &player_id, &inventory).unwrap();
-        assert_eq!(
-            load_player(&path, &player_id).unwrap().unwrap(),
-            inventory
-        );
+        save_player(&path, &player_id, &data).unwrap();
+        assert_eq!(load_player(&path, &player_id).unwrap().unwrap(), data);
         assert_eq!(
             load_player(&path, &[0x55; 16]).unwrap_err().kind(),
             io::ErrorKind::InvalidData

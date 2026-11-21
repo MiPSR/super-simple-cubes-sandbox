@@ -324,10 +324,10 @@ impl Server {
         }
     }
 
-    fn load_player_inventory(
+    fn load_player_save(
         &self,
         player_id: [u8; 16],
-    ) -> std::io::Result<Option<Vec<crate::survival::Slot>>> {
+    ) -> std::io::Result<Option<crate::persistence::PlayerSave>> {
         let Some(world_path) = self.cfg.world_path.as_deref() else {
             return Ok(None);
         };
@@ -348,9 +348,34 @@ impl Server {
             return;
         };
         let path = crate::persistence::player_path(world_path, player_id);
-        if let Err(err) =
-            crate::persistence::save_player(&path, player_id, &session.inventory)
-        {
+        let (position, health, hunger, air) = if session.survival.dead {
+            (
+                Some([session.spawn.x, session.spawn.y, session.spawn.z]),
+                crate::survival::MAX_HEALTH,
+                crate::survival::MAX_HUNGER,
+                crate::survival::MAX_AIR,
+            )
+        } else {
+            (
+                Some([
+                    session.player.pos.x,
+                    session.player.pos.y,
+                    session.player.pos.z,
+                ]),
+                session.survival.health,
+                session.survival.hunger,
+                session.survival.air,
+            )
+        };
+        let data = crate::persistence::PlayerSave {
+            inventory: session.inventory.clone(),
+            position,
+            health,
+            hunger,
+            air,
+            selected_slot: session.player.selected_slot,
+        };
+        if let Err(err) = crate::persistence::save_player(&path, player_id, &data) {
             eprintln!("[server] could not save anonymous player data: {err}");
         }
     }
@@ -1638,17 +1663,21 @@ impl Server {
             );
             return;
         }
-        let (saved_inventory, player_data_writable) =
-            match self.load_player_inventory(player_id) {
-                Ok(inventory) => (inventory, true),
+        let (saved_player, player_data_writable) = match self.load_player_save(player_id) {
+                Ok(data) => (data, true),
                 Err(err) => {
                     eprintln!("[server] player save could not be loaded: {err}");
                     (None, false)
                 }
             };
         let Some(session) = self.sessions.get_mut(&id) else { return };
-        if let Some(inventory) = saved_inventory {
-            session.inventory = inventory;
+        let restored_position = saved_player.as_ref().and_then(|data| data.position);
+        if let Some(data) = saved_player {
+            session.inventory = data.inventory;
+            session.survival.health = data.health;
+            session.survival.hunger = data.hunger;
+            session.survival.air = data.air;
+            session.player.selected_slot = data.selected_slot;
         }
         session.player_id = Some(player_id);
         session.player_data_writable = player_data_writable;
@@ -1676,7 +1705,9 @@ impl Server {
                 }
             }
         }
-        session.player.pos = Vec3::new(spawn_x, spawn_y, spawn_z);
+        session.player.pos = restored_position
+            .map(|pos| Vec3::new(pos[0], pos[1], pos[2]))
+            .unwrap_or_else(|| Vec3::new(spawn_x, spawn_y, spawn_z));
         session.player.vel = Vec3::ZERO;
         session.player.joined = true;
 
@@ -2557,7 +2588,15 @@ mod tests {
         let player_path = crate::persistence::player_path(&world_path, &player_id);
         let mut inventory = vec![None; crate::survival::INVENTORY_SIZE];
         inventory[2] = Some((ssc_world::APPLE, 7));
-        crate::persistence::save_player(&player_path, &player_id, &inventory).unwrap();
+        let data = crate::persistence::PlayerSave {
+            inventory: inventory.clone(),
+            position: Some([12.5, 70.0, -9.25]),
+            health: 13.0,
+            hunger: 7,
+            air: 250,
+            selected_slot: 4,
+        };
+        crate::persistence::save_player(&player_path, &player_id, &data).unwrap();
 
         let mut cfg = ServerConfig::default();
         cfg.world_path = Some(world_path);
@@ -2578,14 +2617,20 @@ mod tests {
 
         assert_eq!(server.sessions[&id].inventory, inventory);
         assert_eq!(server.sessions[&id].player_id, Some(player_id));
+        assert_eq!(
+            server.sessions[&id].player.pos,
+            Vec3::new(12.5, 70.0, -9.25)
+        );
+        assert_eq!(server.sessions[&id].survival.health, 13.0);
+        assert_eq!(server.sessions[&id].survival.hunger, 7);
+        assert_eq!(server.sessions[&id].survival.air, 250);
+        assert_eq!(server.sessions[&id].player.selected_slot, 4);
         server.sessions.get_mut(&id).unwrap().inventory[2] = Some((ssc_world::APPLE, 9));
         server.save_player_data(id);
-        assert_eq!(
-            crate::persistence::load_player(&player_path, &player_id)
-                .unwrap()
-                .unwrap()[2],
-            Some((ssc_world::APPLE, 9))
-        );
+        let saved = crate::persistence::load_player(&player_path, &player_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.inventory[2], Some((ssc_world::APPLE, 9)));
         std::fs::remove_dir_all(player_path.parent().unwrap()).unwrap();
     }
 
