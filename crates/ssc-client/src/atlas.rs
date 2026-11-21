@@ -50,7 +50,11 @@ fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgba {
     match tile {
         ssc_world::TILE_MISSING => {
             // Magenta/black 2×2 checker — unmissable.
-            if (x / 2 + y / 2) % 2 == 0 { [255, 0, 255, 255] } else { [10, 10, 10, 255] }
+            if (x / 2 + y / 2) % 2 == 0 {
+                [255, 0, 255, 255]
+            } else {
+                [10, 10, 10, 255]
+            }
         }
         ssc_world::TILE_STONE => {
             let n = smooth_noise2(x, y, 1);
@@ -107,7 +111,11 @@ fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgba {
             // Vertical bark streaks.
             let streak = noise2(x, 0, 11);
             let dark_col = streak > 0.65;
-            mix([107, 84, 51], if dark_col { 0.72 } else { 0.98 } + noise2(x, y, 11) * 0.08, 255)
+            mix(
+                [107, 84, 51],
+                if dark_col { 0.72 } else { 0.98 } + noise2(x, y, 11) * 0.08,
+                255,
+            )
         }
         ssc_world::TILE_PLANKS => {
             let seam_row = y % 4 == 3;
@@ -144,6 +152,18 @@ fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgba {
             let wave = smooth_noise2(x, y / 4, 17);
             mix([63, 118, 228], 0.85 + wave * 0.3, 178)
         }
+        ssc_world::TILE_COAL_ORE | ssc_world::TILE_IRON_ORE => {
+            let n = noise2(x / 3, y / 3, 23);
+            if n > 0.64 {
+                if tile == ssc_world::TILE_COAL_ORE {
+                    mix([37, 35, 35], 0.8 + n * 0.2, 255)
+                } else {
+                    mix([202, 164, 133], 0.8 + n * 0.2, 255)
+                }
+            } else {
+                mix([128, 128, 128], 0.82 + smooth_noise2(x, y, 1) * 0.36, 255)
+            }
+        }
         _ => [255, 0, 255, 255],
     }
 }
@@ -175,8 +195,7 @@ pub fn build_atlas_rgba() -> Vec<u8> {
 /// 256×256, 16×16 tiles of 16×16 px). Returns bottom-up RGBA ready for
 /// the engine upload.
 pub fn load_png_atlas(path: &std::path::Path) -> Result<Vec<u8>, String> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    let file = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
     let decoder = png::Decoder::new(std::io::BufReader::new(file));
     let mut reader = decoder
         .read_info()

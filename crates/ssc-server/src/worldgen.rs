@@ -3,13 +3,12 @@
 //! Owned implementation (no noise dependency, `specs.md` §4). Classic
 //! Gustavson-style simplex with a seeded permutation table.
 //!
-//! v0 shape: rolling hills over a bedrock floor, grass/sand tops.
-//! Trees, caves, biomes and structures land in later commits; every
-//! extension is logged in `implemented-features.md`.
+//! Rolling hills over a bedrock floor with caves, trees and basic ores.
+//! Every extension is logged in `implemented-features.md`.
 
 use ssc_world::{
-    Column, SubChunk, AIR, BEDROCK, DIRT, GRASS_BLOCK, OAK_LEAVES, OAK_LOG, SAND, SANDSTONE,
-    SNOW_BLOCK, STONE, WATER, MAX_Y, MIN_Y, SUBCHUNKS_PER_COLUMN,
+    Column, SubChunk, AIR, BEDROCK, COAL_ORE, DIRT, GRASS_BLOCK, IRON_ORE, MAX_Y, MIN_Y,
+    OAK_LEAVES, OAK_LOG, SAND, SANDSTONE, SNOW_BLOCK, STONE, SUBCHUNKS_PER_COLUMN, WATER,
 };
 
 /// Sea level (water surfaces sit at the top of this block).
@@ -68,6 +67,41 @@ impl WorldGen {
             .noise3
             .value(x as f32 / 56.0, y as f32 / 28.0, z as f32 / 56.0);
         v > 0.58
+    }
+
+    /// Seeded 8³ cells hold small ore clusters. Use world coordinates and
+    /// Euclidean division so generation is independent of column boundaries
+    /// and works equally on both sides of the origin. Only replaces stone.
+    fn ore_at(&self, x: i32, y: i32, z: i32) -> u16 {
+        let cell_x = x.div_euclid(8);
+        let cell_y = y.div_euclid(8);
+        let cell_z = z.div_euclid(8);
+        let local_x = x.rem_euclid(8);
+        let local_y = y.rem_euclid(8);
+        let local_z = z.rem_euclid(8);
+        for (ore, salt, min_y, max_y, chance) in [
+            (IRON_ORE, 0x1A0F_u64, MIN_Y, 64, 3),
+            (COAL_ORE, 0xC0A1_u64, 0, 192, 2),
+        ] {
+            if !(min_y..=max_y).contains(&y) {
+                continue;
+            }
+            let hash = hash3(
+                cell_x,
+                cell_z,
+                self.seed ^ salt ^ (cell_y as u64).wrapping_mul(0xD1B5_4A32_D192_ED5),
+            );
+            if hash % chance != 0 {
+                continue;
+            }
+            let dx = local_x - 2 - ((hash >> 8) % 4) as i32;
+            let dy = local_y - 2 - ((hash >> 16) % 4) as i32;
+            let dz = local_z - 2 - ((hash >> 24) % 4) as i32;
+            if dx * dx + dy * dy + dz * dz <= 4 {
+                return ore;
+            }
+        }
+        STONE
     }
 
     /// Top block at (x, z) for the given terrain height.
@@ -131,7 +165,7 @@ impl WorldGen {
                             DIRT
                         }
                     } else {
-                        STONE
+                        self.ore_at(wx, y, wz)
                     };
                     if id != AIR {
                         set_col_block(&mut column, lx, y, lz, id);
@@ -210,8 +244,7 @@ impl WorldGen {
                     // trimmed deterministically per position.
                     let is_corner = dx.abs() == r && dz.abs() == r;
                     if is_corner
-                        && (dy == 1
-                            || hash3(twx + dx, twz + dz, self.seed ^ (dy as u64)) % 2 == 0)
+                        && (dy == 1 || hash3(twx + dx, twz + dz, self.seed ^ (dy as u64)) % 2 == 0)
                     {
                         continue;
                     }
@@ -248,7 +281,8 @@ impl WorldGen {
                                     if y >= best_y {
                                         best_y = y;
                                         let id = column.get(lx * 4 + bx, y, lz * 4 + bz);
-                                        best_tile = ssc_world::block_info(id).tiles[ssc_world::FACE_TOP];
+                                        best_tile =
+                                            ssc_world::block_info(id).tiles[ssc_world::FACE_TOP];
                                     }
                                 }
                             }
@@ -346,7 +380,9 @@ impl Simplex2 {
         let mut full = [0u8; 512];
         full[..256].copy_from_slice(&perm);
         full[256..].copy_from_slice(&perm);
-        Self { perm: Box::new(full) }
+        Self {
+            perm: Box::new(full),
+        }
     }
     /// Noise value in about −1..1.
     pub fn value(&self, x: f32, y: f32) -> f32 {
@@ -431,7 +467,9 @@ impl Simplex3 {
         let mut full = [0u8; 512];
         full[..256].copy_from_slice(&perm);
         full[256..].copy_from_slice(&perm);
-        Self { perm: Box::new(full) }
+        Self {
+            perm: Box::new(full),
+        }
     }
 
     /// Noise value in about −1..1.
@@ -487,28 +525,70 @@ impl Simplex3 {
         };
 
         let gi0 = self.perm[ii + self.perm[jj + self.perm[kk] as usize] as usize] as usize;
-        let gi1 = self.perm
-            [(ii + i1 as usize)
-                + self.perm[(jj + j1 as usize) + self.perm[kk + k1 as usize] as usize] as usize]
+        let gi1 = self.perm[(ii + i1 as usize)
+            + self.perm[(jj + j1 as usize) + self.perm[kk + k1 as usize] as usize] as usize]
             as usize;
-        let gi2 = self.perm
-            [(ii + i2 as usize)
-                + self.perm[(jj + j2 as usize) + self.perm[kk + k2 as usize] as usize] as usize]
+        let gi2 = self.perm[(ii + i2 as usize)
+            + self.perm[(jj + j2 as usize) + self.perm[kk + k2 as usize] as usize] as usize]
             as usize;
-        let gi3 = self.perm
-            [(ii + 1) + self.perm[(jj + 1) + self.perm[kk + 1] as usize] as usize] as usize;
+        let gi3 = self.perm[(ii + 1) + self.perm[(jj + 1) + self.perm[kk + 1] as usize] as usize]
+            as usize;
 
-        32.0
-            * (corner(x0, y0, z0, gi0)
-                + corner(x1, y1, z1, gi1)
-                + corner(x2, y2, z2, gi2)
-                + corner(x3, y3, z3, gi3))
+        32.0 * (corner(x0, y0, z0, gi0)
+            + corner(x1, y1, z1, gi1)
+            + corner(x2, y2, z2, gi2)
+            + corner(x3, y3, z3, gi3))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coal_and_iron_generate_only_in_stone_at_their_depths() {
+        let gen = WorldGen::new(31415);
+        let mut coal = 0;
+        let mut iron = 0;
+        for cx in -2..2 {
+            for cz in -2..2 {
+                let col = gen.generate_column(cx, cz);
+                for lx in 0..16 {
+                    for lz in 0..16 {
+                        let x = cx * 16 + lx;
+                        let z = cz * 16 + lz;
+                        let h = gen.height(x, z);
+                        let bedrock_h = MIN_Y + (hash3(x, z, gen.seed) % 4) as i32;
+                        for y in MIN_Y..=h {
+                            let block = col.get(lx, y, lz);
+                            if block != COAL_ORE && block != IRON_ORE {
+                                continue;
+                            }
+                            assert!(y > bedrock_h && y <= h - 4);
+                            assert!(!gen.is_cave(x, y, z, h, bedrock_h));
+                            assert_eq!(block, gen.ore_at(x, y, z));
+                            if block == COAL_ORE {
+                                assert!(y >= 0);
+                                coal += 1;
+                            } else {
+                                assert!(y <= 64);
+                                iron += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            coal > 0 && iron > 0,
+            "expected both ores: coal={coal} iron={iron}"
+        );
+        let a = gen.generate_column(-1, -1);
+        let b = gen.generate_column(-1, -1);
+        for y in MIN_Y..=64 {
+            assert_eq!(a.get(15, y, 15), b.get(15, y, 15));
+        }
+    }
 
     #[test]
     fn caves_carve_air_below_the_surface() {
@@ -530,7 +610,10 @@ mod tests {
                 }
             }
         }
-        assert!(carved > 200, "expected substantial cave carving, got {carved} air cells");
+        assert!(
+            carved > 200,
+            "expected substantial cave carving, got {carved} air cells"
+        );
     }
 
     #[test]
@@ -568,7 +651,8 @@ mod tests {
             match (sa, sb) {
                 (None, None) => continue,
                 (Some(x), Some(y)) => assert_eq!(
-                    x.blocks[..], y.blocks[..],
+                    x.blocks[..],
+                    y.blocks[..],
                     "column (3,5) must generate identically"
                 ),
                 _ => panic!("sub-chunk presence must match"),

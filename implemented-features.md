@@ -55,15 +55,22 @@ Every implemented wiki feature gets a line here. Status legend:
   seeded 3D simplex (blobby tunnels, surface/bedrock crust preserved);
   deterministic oak trees (~1 per 16 columns, canopies cross column
   borders consistently via neighbor scan); water fills basins up to sea
-  level. No biomes, structures, ores or flowing water yet.
+  level. Seeded coal and iron ore clusters replace stone in depth-limited
+  bands (coal Y≥0, iron Y≤64) and drop coal/raw iron, respectively. Ore
+  frequency and shapes are approximate; there are no deepslate variants,
+  other ores, biomes, structures or flowing water yet.
 - `partial` — Water: static lakes rendered translucent (blend pass,
   back-to-front, no depth writes), same-type face merging; swimming
   physics (slow sink, jump-to-rise, drag). No flow simulation, waves or
   underwater fog yet; cave pockets under lakes stay dry.
-- `dev` — 15 placeholder blocks with procedurally generated textures in
+- `dev` — 17 placeholder blocks with procedurally generated textures in
   Minecraft's 16×16 tile atlas convention; real texture packs load via
   `--textures <256×256 atlas.png>` (PNG decode through the approved
   `png` crate) — we cannot ship Mojang assets (specs §1).
+- `partial` — Coal and iron ore blocks (hardness 3) appear in generated
+  stone and drop one coal/raw iron on breaking. Resource drops do not yet
+  enforce the wiki's pickaxe tier because tools are not implemented;
+  no fortune, silk touch, or iron smelting yet.
 
 ## Player
 

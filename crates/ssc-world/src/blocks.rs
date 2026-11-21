@@ -23,6 +23,8 @@ pub const OAK_LEAVES: BlockId = 11;
 pub const SNOW_BLOCK: BlockId = 12;
 pub const BRICKS: BlockId = 13;
 pub const WATER: BlockId = 14;
+pub const COAL_ORE: BlockId = 15;
+pub const IRON_ORE: BlockId = 16;
 
 // Atlas tile ids (16×16 tiles per row/column in the 256×256 atlas).
 pub const TILE_MISSING: u16 = 0;
@@ -42,6 +44,8 @@ pub const TILE_LEAVES: u16 = 13;
 pub const TILE_SNOW: u16 = 14;
 pub const TILE_BRICKS: u16 = 15;
 pub const TILE_WATER: u16 = 16; // second atlas row
+pub const TILE_COAL_ORE: u16 = 17;
+pub const TILE_IRON_ORE: u16 = 18;
 
 /// Face indices into [`BlockInfo::tiles`].
 pub const FACE_TOP: usize = 0;
@@ -110,27 +114,67 @@ pub const BLOCKS: &[BlockInfo] = &[
     // 2 — stone (hardness 1.5)
     b("stone", t(TILE_STONE, TILE_STONE, TILE_STONE), 1.5, true),
     // 3 — cobblestone (hardness 2)
-    b("cobblestone", t(TILE_COBBLESTONE, TILE_COBBLESTONE, TILE_COBBLESTONE), 2.0, true),
+    b(
+        "cobblestone",
+        t(TILE_COBBLESTONE, TILE_COBBLESTONE, TILE_COBBLESTONE),
+        2.0,
+        true,
+    ),
     // 4 — dirt (hardness 0.5)
     b("dirt", t(TILE_DIRT, TILE_DIRT, TILE_DIRT), 0.5, false),
     // 5 — grass block (hardness 0.6)
-    b("grass_block", t(TILE_GRASS_TOP, TILE_DIRT, TILE_GRASS_SIDE), 0.6, false),
+    b(
+        "grass_block",
+        t(TILE_GRASS_TOP, TILE_DIRT, TILE_GRASS_SIDE),
+        0.6,
+        false,
+    ),
     // 6 — sand (hardness 0.5)
     b("sand", t(TILE_SAND, TILE_SAND, TILE_SAND), 0.5, false),
     // 7 — sandstone (hardness 0.8)
-    b("sandstone", t(TILE_SANDSTONE_TOP, TILE_SANDSTONE_TOP, TILE_SANDSTONE_SIDE), 0.8, true),
+    b(
+        "sandstone",
+        t(TILE_SANDSTONE_TOP, TILE_SANDSTONE_TOP, TILE_SANDSTONE_SIDE),
+        0.8,
+        true,
+    ),
     // 8 — gravel (hardness 0.6)
-    b("gravel", t(TILE_GRAVEL, TILE_GRAVEL, TILE_GRAVEL), 0.6, false),
+    b(
+        "gravel",
+        t(TILE_GRAVEL, TILE_GRAVEL, TILE_GRAVEL),
+        0.6,
+        false,
+    ),
     // 9 — oak log (hardness 2)
-    b("oak_log", t(TILE_LOG_TOP, TILE_LOG_TOP, TILE_LOG_SIDE), 2.0, false),
+    b(
+        "oak_log",
+        t(TILE_LOG_TOP, TILE_LOG_TOP, TILE_LOG_SIDE),
+        2.0,
+        false,
+    ),
     // 10 — oak planks (hardness 2)
-    b("oak_planks", t(TILE_PLANKS, TILE_PLANKS, TILE_PLANKS), 2.0, false),
+    b(
+        "oak_planks",
+        t(TILE_PLANKS, TILE_PLANKS, TILE_PLANKS),
+        2.0,
+        false,
+    ),
     // 11 — oak leaves (hardness 0.2)
-    b("oak_leaves", t(TILE_LEAVES, TILE_LEAVES, TILE_LEAVES), 0.2, false),
+    b(
+        "oak_leaves",
+        t(TILE_LEAVES, TILE_LEAVES, TILE_LEAVES),
+        0.2,
+        false,
+    ),
     // 12 — snow block (hardness 0.2)
     b("snow_block", t(TILE_SNOW, TILE_SNOW, TILE_SNOW), 0.2, false),
     // 13 — bricks (hardness 2)
-    b("bricks", t(TILE_BRICKS, TILE_BRICKS, TILE_BRICKS), 2.0, true),
+    b(
+        "bricks",
+        t(TILE_BRICKS, TILE_BRICKS, TILE_BRICKS),
+        2.0,
+        true,
+    ),
     // 14 — water: no collision, light passes, drawn translucent.
     BlockInfo {
         name: "water",
@@ -140,6 +184,18 @@ pub const BLOCKS: &[BlockInfo] = &[
         hardness: f32::INFINITY,
         needs_tool: false,
     },
+    b(
+        "coal_ore",
+        t(TILE_COAL_ORE, TILE_COAL_ORE, TILE_COAL_ORE),
+        3.0,
+        true,
+    ),
+    b(
+        "iron_ore",
+        t(TILE_IRON_ORE, TILE_IRON_ORE, TILE_IRON_ORE),
+        3.0,
+        true,
+    ),
 ];
 
 /// Number of registered blocks (valid ids are `0..BLOCK_COUNT`).
