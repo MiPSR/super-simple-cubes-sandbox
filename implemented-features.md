@@ -113,7 +113,8 @@ Every implemented wiki feature gets a line here. Status legend:
   with rotten flesh applying Hunger I for 30 s at an 80% chance. No
   effect icon yet. Server-owned dropped stacks have basic gravity, same-item
   merging, 10-tick pickup delay, 5-minute despawn and partial inventory
-  pickup (including passing a partial stack to the next nearby player), plus
+  pickup (including passing a partial stack to the next nearby player), with
+  merged stacks retaining the longer pickup delay, plus
   gentle attraction toward nearby players. Client renders gentle
   bobbing and rotation; merge radius/timing refinements pending.
   36-slot inventories (9 hotbar + 27 storage, stack 64) are server-owned

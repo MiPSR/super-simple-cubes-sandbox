@@ -1205,9 +1205,14 @@ impl Server {
                                 continue;
                             }
                             let age = a.age.min(b.age);
+                            // A newly dropped stack must not become instantly
+                            // collectible just because it merged with an old
+                            // stack whose pickup delay already elapsed.
+                            let pickup_delay = a.pickup_delay.max(b.pickup_delay);
                             if let Some(a) = self.items.get_mut(&id) {
                                 a.count += transfer;
                                 a.age = age;
+                                a.pickup_delay = pickup_delay;
                             }
                             if let Some(b) = self.items.get_mut(&other_id) {
                                 b.count -= transfer;
@@ -2647,6 +2652,24 @@ mod tests {
 
         assert_eq!(rig.server.items[&first].count, 64);
         assert_eq!(rig.server.items[&second].count, 6);
+    }
+
+    #[test]
+    fn merging_items_preserves_the_longer_pickup_delay() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let pos = rig.server.sessions[&1].player.pos + Vec3::new(3.0, 0.0, 0.0);
+        rig.server.spawn_item_entity(ssc_world::APPLE, 1, pos);
+        let first = rig.server.next_item_id - 1;
+        rig.server.items.get_mut(&first).unwrap().pickup_delay = 0;
+        rig.server.spawn_item_entity(ssc_world::APPLE, 1, pos);
+        let second = rig.server.next_item_id - 1;
+        rig.server.items.get_mut(&second).unwrap().pickup_delay = 9;
+
+        rig.server.tick_items(0.05);
+
+        assert_eq!(rig.server.items[&first].count, 2);
+        assert_eq!(rig.server.items[&first].pickup_delay, 8);
+        assert!(!rig.server.items.contains_key(&second));
     }
 
     #[test]
