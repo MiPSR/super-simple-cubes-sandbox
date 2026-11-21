@@ -3088,6 +3088,37 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_entity_saves_are_not_overwritten() {
+        let world_path =
+            std::env::temp_dir().join(format!("ssc-corrupt-entities-{}.bin", std::process::id()));
+        let item_path = crate::persistence::item_save_path(&world_path);
+        let mob_path = crate::persistence::mob_save_path(&world_path);
+        let bad_items = b"invalid dropped items";
+        let bad_mobs = b"invalid mobs";
+        std::fs::write(&item_path, bad_items).unwrap();
+        std::fs::write(&mob_path, bad_mobs).unwrap();
+
+        let mut cfg = ServerConfig::default();
+        cfg.world_path = Some(world_path);
+        let mut server = Server::empty(cfg);
+        server.spawn_item_entity(ssc_world::APPLE, 1, Vec3::new(8.5, 65.0, 8.5));
+        server.mobs.insert(
+            FIRST_MOB_ID,
+            crate::mobs::Mob::new(
+                crate::mobs::MobKind::Pig,
+                Vec3::new(8.5, 65.0, 8.5),
+            ),
+        );
+        server.save_item_entities();
+        server.save_mobs();
+
+        assert_eq!(std::fs::read(&item_path).unwrap(), bad_items);
+        assert_eq!(std::fs::read(&mob_path).unwrap(), bad_mobs);
+        std::fs::remove_file(item_path).unwrap();
+        std::fs::remove_file(mob_path).unwrap();
+    }
+
+    #[test]
     fn dead_player_save_reconnects_as_respawned() {
         let world_path =
             std::env::temp_dir().join(format!("ssc-dead-player-world-{}.bin", std::process::id()));
