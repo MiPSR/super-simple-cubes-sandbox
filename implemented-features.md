@@ -289,6 +289,13 @@ Every implemented wiki feature gets a line here. Status legend:
   Spawn/despawn rules and AI are simplified; no pathfinding, fire visuals,
   breeding, or full Bedrock mob roster. Pigs drop 1–3 raw porkchops,
   zombies 0–2 rotten flesh; drops use the basic item-entity system.
+- `partial` — Natural mob spawns use a spherical 24–44-block shell for a
+  fixed simulation distance of four: every joined player's 24-block
+  exclusion is respected, and a spawn must be within 44 blocks of at least
+  one player. Group members are validated independently. Unprotected mobs
+  beyond 44 blocks of every online player despawn; spawning frequency,
+  caps, protected/named mobs and configurable simulation distance remain
+  simplified or missing.
 - `partial` — Hurt pigs flee away from the attacker for a three-second
   panic interval at twice their wander speed and can hop one-block obstacles;
   they remain passive. Flee direction/timer persist in version-2 mob saves

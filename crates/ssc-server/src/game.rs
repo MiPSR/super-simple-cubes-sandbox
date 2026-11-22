@@ -31,6 +31,9 @@ const FIRST_ITEM_ID: EntityId = 40_000;
 const MOB_CAP_PER_PLAYER: usize = 6;
 /// Ordinary melee attacks are shorter-ranged than block interactions.
 const MELEE_REACH: f32 = 3.0;
+const MIN_MOB_SPAWN_DISTANCE: f32 = 24.0;
+/// Fixed simulation-distance-four spawning/despawning for now.
+const MAX_MOB_DISTANCE: f32 = 44.0;
 const ITEM_LIFETIME_TICKS: u32 = 6_000;
 
 /// Server tick rate (matches Minecraft's 20 TPS).
@@ -969,7 +972,9 @@ impl Server {
                 .filter(|(_, m)| {
                     m.pos.y <= ssc_world::MIN_Y as f32 + 1.0
                         || (!player_refs.is_empty()
-                            && player_refs.iter().all(|p| (m.pos - *p).length() > 64.0))
+                            && player_refs
+                                .iter()
+                                .all(|p| (m.pos - *p).length() > MAX_MOB_DISTANCE))
                 })
                 .map(|(id, _)| *id)
                 .collect();
@@ -1523,12 +1528,13 @@ impl Server {
                 break;
             }
             for attempt in 0..4 {
-                // A random-ish column in a 3-radius ring (8..24 blocks).
+                // Sample a larger square, then enforce the spherical
+                // 24–44 block shell against actual player feet positions.
                 let ax =
-                    (pcx * 16 + 8 + (hash_tick(self.tick + attempt, pcx, pcz) % 32) as i32) - 16;
+                    (pcx * 16 + 8 + (hash_tick(self.tick + attempt, pcx, pcz) % 96) as i32) - 48;
                 let az =
-                    (pcz * 16 + 8 + (hash_tick(self.tick + attempt * 7, pcz, pcx) % 32) as i32)
-                        - 16;
+                    (pcz * 16 + 8 + (hash_tick(self.tick + attempt * 7, pcz, pcx) % 96) as i32)
+                        - 48;
                 let y = if want_pig {
                     crate::mobs::pig_spawn_column_ok(&self.world, ax, az)
                 } else {
@@ -1585,11 +1591,11 @@ impl Server {
                         continue;
                     }
                     let pos = Vec3::new(x as f32 + 0.5, standing_y as f32 + 0.02, z as f32 + 0.5);
-                    if self
-                        .sessions
-                        .values()
-                        .any(|s| s.player.joined && (s.player.pos - pos).length() < 12.0)
-                        || self.mobs.values().any(|m| (m.pos - pos).length() < 1.0)
+                    if self.sessions.values().any(|s| {
+                        s.player.joined && (s.player.pos - pos).length() < MIN_MOB_SPAWN_DISTANCE
+                    }) || !self.sessions.values().any(|s| {
+                        s.player.joined && (s.player.pos - pos).length() <= MAX_MOB_DISTANCE
+                    }) || self.mobs.values().any(|m| (m.pos - pos).length() < 1.0)
                     {
                         continue;
                     }
@@ -3240,7 +3246,8 @@ mod tests {
                         .block_or_air(x, mob.pos.y.floor() as i32 - 1, z),
                     ssc_world::GRASS_BLOCK
                 );
-                assert!((mob.pos - rig.server.sessions[&1].player.pos).length() >= 12.0);
+                let distance = (mob.pos - rig.server.sessions[&1].player.pos).length();
+                assert!((MIN_MOB_SPAWN_DISTANCE..=MAX_MOB_DISTANCE).contains(&distance));
             }
             if count >= 2 {
                 found_group = true;
@@ -3293,6 +3300,51 @@ mod tests {
             }
         }
         assert!(found_zombie, "sand remains valid ground for night zombies");
+    }
+
+    #[test]
+    fn natural_spawns_stay_outside_every_players_exclusion_sphere() {
+        let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&2).unwrap().player.pos.x = 32.5;
+        for x in -48..96 {
+            for z in -48..64 {
+                rig.server.world.set_block(x, 54, z, ssc_world::GRASS_BLOCK);
+            }
+        }
+        rig.server.time_of_day = 0.5;
+        let mut spawned = 0;
+        for tick in 1..=64 {
+            rig.server.mobs.clear();
+            rig.server.tick = tick;
+            rig.server.spawn_mobs();
+            spawned += rig.server.mobs.len();
+            for mob in rig.server.mobs.values() {
+                let distances: Vec<f32> = rig
+                    .server
+                    .sessions
+                    .values()
+                    .map(|session| (mob.pos - session.player.pos).length())
+                    .collect();
+                assert!(distances
+                    .iter()
+                    .all(|distance| *distance >= MIN_MOB_SPAWN_DISTANCE));
+                assert!(distances
+                    .iter()
+                    .any(|distance| *distance <= MAX_MOB_DISTANCE));
+            }
+        }
+        assert!(spawned > 0, "fixture must exercise valid spawn attempts");
+
+        // Feet 45 blocks above the floor are outside the shell even when
+        // horizontally close: the range is spherical, not a 2D ring.
+        rig.server.sessions.get_mut(&2).unwrap().player.joined = false;
+        rig.server.sessions.get_mut(&1).unwrap().player.pos.y = 100.1;
+        rig.server.mobs.clear();
+        for tick in 1..=32 {
+            rig.server.tick = tick;
+            rig.server.spawn_mobs();
+        }
+        assert!(rig.server.mobs.is_empty());
     }
 
     #[test]
