@@ -29,6 +29,8 @@ const FIRST_MOB_ID: EntityId = 10_000;
 const FIRST_ITEM_ID: EntityId = 40_000;
 /// Maximum mobs within a player's spawn range (per player).
 const MOB_CAP_PER_PLAYER: usize = 6;
+/// Ordinary melee attacks are shorter-ranged than block interactions.
+const MELEE_REACH: f32 = 3.0;
 const ITEM_LIFETIME_TICKS: u32 = 6_000;
 
 /// Server tick rate (matches Minecraft's 20 TPS).
@@ -1523,7 +1525,7 @@ impl Server {
         let mut best: Option<(EntityId, f32, bool)> = None;
         for (eid, aabb, is_mob) in candidates {
             if let Some(t) = ray_aabb(eye, dir, &aabb) {
-                if t <= REACH && best.map(|(_, bt, _)| t < bt).unwrap_or(true) {
+                if t <= MELEE_REACH && best.map(|(_, bt, _)| t < bt).unwrap_or(true) {
                     best = Some((eid, t, is_mob));
                 }
             }
@@ -2872,7 +2874,7 @@ mod tests {
             Self::new_mode(n, pitch, GameMode::Creative)
         }
 
-        /// `n` players at `(8.5 + id*4, 55, 8.5)` looking with `pitch`.
+        /// `n` players spaced three blocks apart, looking with `pitch`.
         fn new_mode(n: usize, pitch: f32, mode: GameMode) -> Self {
             let mut cfg = ServerConfig::default();
             cfg.game_mode = mode;
@@ -2884,7 +2886,7 @@ mod tests {
                 assert_eq!(id, (i + 1) as EntityId);
                 let session = server.sessions.get_mut(&id).unwrap();
                 session.player.joined = true;
-                session.player.pos = Vec3::new(8.5 + i as f32 * 4.0, 55.02, 8.5);
+                session.player.pos = Vec3::new(8.5 + i as f32 * 3.0, 55.02, 8.5);
                 session.player.vel = Vec3::ZERO;
                 session.player.yaw = 0.0;
                 session.player.pitch = pitch;
@@ -4487,6 +4489,36 @@ mod tests {
     }
 
     #[test]
+    fn melee_reach_is_three_blocks_to_the_nearest_hitbox_face() {
+        for (offset, hit) in [(3.29, true), (3.31, false), (4.0, false)] {
+            let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
+            let pos = rig.server.sessions[&1].player.pos;
+            rig.server.sessions.get_mut(&2).unwrap().player.pos = pos + Vec3::new(offset, 0.0, 0.0);
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((ssc_world::STONE_AXE, 1));
+            session.durability[0] = 132;
+            rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
+            assert_eq!(
+                rig.server.sessions[&2].survival.health,
+                if hit { 15.0 } else { 20.0 }
+            );
+            assert_eq!(
+                rig.server.sessions[&1].durability[0],
+                if hit { 130 } else { 132 }
+            );
+        }
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.world.set_block(12, 56, 8, ssc_world::STONE);
+        rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
+        let dig = rig.server.sessions[&1].survival.digging.as_ref().unwrap();
+        assert_eq!(
+            (dig.x, dig.y, dig.z),
+            (12, 56, 8),
+            "block reach remains 4.5"
+        );
+    }
+
+    #[test]
     fn stone_pickaxe_hits_for_bedrock_damage_and_wears_twice() {
         let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
         rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::STONE_PICKAXE, 1));
@@ -4598,7 +4630,7 @@ mod tests {
         let mut rig = Rig::new_mode(3, 0.0, GameMode::Survival);
         let attacker = rig.server.sessions[&1].player.pos;
         rig.server.sessions.get_mut(&2).unwrap().player.pos = attacker + Vec3::new(2.0, 0.0, 0.0);
-        rig.server.sessions.get_mut(&3).unwrap().player.pos = attacker + Vec3::new(4.0, 0.0, 0.0);
+        rig.server.sessions.get_mut(&3).unwrap().player.pos = attacker + Vec3::new(3.0, 0.0, 0.0);
         rig.server.sessions.get_mut(&2).unwrap().survival.die();
         let health = rig.server.sessions[&3].survival.health;
 

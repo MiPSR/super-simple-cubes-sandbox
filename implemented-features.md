@@ -157,7 +157,8 @@ Every implemented wiki feature gets a line here. Status legend:
 - `partial` — Block interaction: creative instant dig / survival timed dig
   (server-side progress with re-target on look change, progress broadcast
   for the HUD; mining is 5× slower with a submerged head and 5× slower
-  without ground support, stacking to 25× while swimming), reach 4.5,
+  without ground support, stacking to 25× while swimming), block reach 4.5,
+  ordinary melee reach 3 (to the nearest hitbox face),
   server-side DDA voxel raycast, entity attacks
   blocked by solid terrain, placement
   rejected inside any player; no survival dig particles/crack overlay
