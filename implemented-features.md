@@ -60,8 +60,17 @@ Every implemented wiki feature gets a line here. Status legend:
   bands (coal Y≥0, iron Y≤64) and drop coal/raw iron, respectively. Ore
   frequency and shapes are approximate; small gravel pockets also replace
   the underground stone/deepslate body, and seeded gravel disks cover
-  patches of submerged basin floors. Deepslate iron ore exists, but
-  other ores, biomes, structures and flowing water are pending.
+  patches of submerged basin floors. A seeded coarse climate field makes
+  basic sandy deserts (sand over sandstone, no oak trees) beside grassy
+  plains; biome rarity, borders, vegetation, mobs and climate rules are
+  approximate. Deepslate iron ore exists, but other ores, structures and
+  flowing water are pending.
+- `partial` — Desert/plains surface classification is server-generated from
+  world-coordinate noise and shared by terrain and LOD summaries. Deserts
+  suppress oak candidates and use sand/sandstone layers, but lack cactus,
+  dead bushes, biome-specific spawns/temperature and Bedrock multinoise;
+  existing seed-based worlds will regenerate their unedited terrain with
+  this new surface distribution.
 - `partial` — Water: static lakes rendered translucent (blend pass,
   back-to-front, no depth writes), same-type face merging; swimming
   physics (slow sink, jump-to-rise, drag). No flow simulation, waves or

@@ -20,6 +20,7 @@ pub struct WorldGen {
     seed: u64,
     noise: Simplex2,
     noise_d: Simplex2, // second field for material variation
+    biome_noise: Simplex2, // broad desert/plains regions
     noise3: Simplex3,  // cave carving
 }
 
@@ -29,6 +30,7 @@ impl WorldGen {
             seed,
             noise: Simplex2::new(seed),
             noise_d: Simplex2::new(seed ^ 0x9E37_79B9_7F4A_7C15),
+            biome_noise: Simplex2::new(seed ^ 0xB10B_1A5E_0123_45AB),
             noise3: Simplex3::new(seed ^ 0xD1B5_4A32_D192_ED5),
         }
     }
@@ -136,6 +138,12 @@ impl WorldGen {
                 && hash3(x, z, self.seed ^ (y as u64).wrapping_mul(0x81)) % 8 < (8 - y) as u64)
     }
 
+    /// Coarse climate classification, deterministic in world coordinates
+    /// (including negative positions and column boundaries).
+    fn is_desert(&self, x: i32, z: i32) -> bool {
+        self.biome_noise.value(x as f32 / 350.0, z as f32 / 350.0) > 0.42
+    }
+
     /// Top block at (x, z) for the given terrain height.
     fn top_block(&self, x: i32, z: i32, h: i32) -> u16 {
         if h <= SEA_LEVEL + 1 {
@@ -152,6 +160,8 @@ impl WorldGen {
             } else {
                 SAND
             }
+        } else if self.is_desert(x, z) {
+            SAND
         } else if h > SEA_LEVEL + 45 {
             SNOW_BLOCK
         } else {
@@ -167,12 +177,14 @@ impl WorldGen {
             return None; // ~1 column in 16 hosts a tree.
         }
         let base_h = self.height(cx * 16 + 8, cz * 16 + 8);
-        // Only on dry land (grass columns).
-        if base_h <= SEA_LEVEL + 1 {
-            return None;
-        }
         let lx = (4 + (h >> 8) % 8) as i32;
         let lz = (4 + (h >> 16) % 8) as i32;
+        // No oaks on the desert's sand or the snow caps.
+        if base_h <= SEA_LEVEL + 1
+            || self.top_block(cx * 16 + lx, cz * 16 + lz, base_h) != GRASS_BLOCK
+        {
+            return None;
+        }
         let trunk_h = 4 + ((h >> 24) % 3) as i32;
         Some((lx, lz, base_h + 1, trunk_h))
     }
@@ -199,7 +211,9 @@ impl WorldGen {
                         top
                     } else if y > h - 4 {
                         // Sub-surface band: dirt, or sand/sandstone near sea.
-                        if h <= SEA_LEVEL + 1 {
+                        if self.is_desert(wx, wz) && h > SEA_LEVEL + 1 {
+                            if y >= h - 2 { SAND } else { SANDSTONE }
+                        } else if h <= SEA_LEVEL + 1 {
                             if dirt_noise > 0.35 && y > h - 2 {
                                 SANDSTONE
                             } else {
@@ -588,6 +602,65 @@ impl Simplex3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desert_and_plains_surfaces_follow_seeded_climate_across_columns() {
+        let gen = WorldGen::new(7823);
+        let mut desert = None;
+        let mut plains = None;
+        for x in (-1536..1536).step_by(16) {
+            for z in (-1536..1536).step_by(16) {
+                let h = gen.height(x, z);
+                if h <= SEA_LEVEL + 1 || h >= SEA_LEVEL + 45 {
+                    continue;
+                }
+                if gen.is_desert(x, z) {
+                    desert.get_or_insert((x, h, z));
+                } else {
+                    plains.get_or_insert((x, h, z));
+                }
+                if desert.is_some() && plains.is_some() {
+                    break;
+                }
+            }
+            if desert.is_some() && plains.is_some() {
+                break;
+            }
+        }
+        for (position, top, under) in [
+            (desert.expect("desert in seed 7823"), SAND, SANDSTONE),
+            (plains.expect("plains in seed 7823"), GRASS_BLOCK, DIRT),
+        ] {
+            let (x, h, z) = position;
+            let col = gen.generate_column(x.div_euclid(16), z.div_euclid(16));
+            let (lx, lz) = (x.rem_euclid(16), z.rem_euclid(16));
+            assert_eq!(col.get(lx, h, lz), top);
+            // Sandstone is a lower band: the first desert layer can be sand.
+            assert_eq!(col.get(lx, h - 3, lz), under);
+            let summary = gen.lod_summary(x.div_euclid(16), z.div_euclid(16), &ssc_world::World::default(), &std::collections::HashSet::new());
+            assert!(summary.chunks_exact(2).any(|cell| cell[1] == ssc_world::block_info(top).tiles[ssc_world::FACE_TOP]));
+        }
+    }
+
+    #[test]
+    fn desert_columns_do_not_host_oak_trees() {
+        let gen = WorldGen::new(7823);
+        let mut candidates = 0;
+        for cx in -64..64 {
+            for cz in -64..64 {
+                let roll = hash3(cx, cz, gen.seed ^ 0x7EE5_0000_0000_0001);
+                if roll % 16 != 0 { continue; }
+                let lx = (4 + (roll >> 8) % 8) as i32;
+                let lz = (4 + (roll >> 16) % 8) as i32;
+                let (x, z) = (cx * 16 + lx, cz * 16 + lz);
+                if gen.is_desert(x, z) && gen.height(x, z) > SEA_LEVEL + 1 {
+                    assert!(gen.tree_at(cx, cz).is_none());
+                    candidates += 1;
+                }
+            }
+        }
+        assert!(candidates > 0, "test region must include dry desert tree candidates");
+    }
 
     #[test]
     fn coal_and_iron_generate_only_in_stone_at_their_depths() {
