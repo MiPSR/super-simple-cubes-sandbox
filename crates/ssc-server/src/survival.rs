@@ -22,6 +22,34 @@ pub const RESPAWN_DELAY: Duration = Duration::from_secs(2);
 /// One inventory slot: (item, count). `None` = empty.
 pub type Slot = Option<(ItemId, u8)>;
 
+/// Maximum uses for the two currently implemented pickaxe tiers.
+pub fn max_durability(item: ItemId) -> u16 {
+    match item {
+        ssc_world::WOODEN_PICKAXE => 60,
+        ssc_world::STONE_PICKAXE => 132,
+        _ => 0,
+    }
+}
+
+/// Old saves and server-created pickaxes without metadata start at full wear.
+pub fn effective_durability(item: ItemId, remaining: u16) -> u16 {
+    if remaining == 0 {
+        max_durability(item)
+    } else {
+        remaining
+    }
+}
+
+/// Bedrock melee damage (health points): bare hand 2, wooden/stone
+/// pickaxe 3/4. Other items currently act as a bare hand.
+pub fn attack_damage(held: Option<ItemId>) -> f32 {
+    match held {
+        Some(ssc_world::WOODEN_PICKAXE) => 3.0,
+        Some(ssc_world::STONE_PICKAXE) => 4.0,
+        _ => 2.0,
+    }
+}
+
 /// Survival-mode per-player state.
 pub struct SurvivalState {
     pub health: f32,
@@ -440,6 +468,15 @@ mod tests {
     }
 
     #[test]
+    fn pickaxe_stats_use_bedrock_values() {
+        assert_eq!(max_durability(ssc_world::WOODEN_PICKAXE), 60);
+        assert_eq!(max_durability(ssc_world::STONE_PICKAXE), 132);
+        assert_eq!(attack_damage(None), 2.0);
+        assert_eq!(attack_damage(Some(ssc_world::WOODEN_PICKAXE)), 3.0);
+        assert_eq!(attack_damage(Some(ssc_world::STONE_PICKAXE)), 4.0);
+    }
+
+    #[test]
     fn fall_damage_needs_three_blocks() {
         let mut s = SurvivalState::default();
         // Fall 2 blocks: no damage.
@@ -616,8 +653,14 @@ mod tests {
             Some(ssc_world::APPLE)
         );
         assert_eq!(drop_for(ssc_world::OAK_LEAVES, 0.5), None);
-        assert_eq!(drop_with_tool(ssc_world::GRAVEL, 0.099, None), Some(ssc_world::FLINT));
-        assert_eq!(drop_with_tool(ssc_world::GRAVEL, 0.1, None), Some(ssc_world::GRAVEL));
+        assert_eq!(
+            drop_with_tool(ssc_world::GRAVEL, 0.099, None),
+            Some(ssc_world::FLINT)
+        );
+        assert_eq!(
+            drop_with_tool(ssc_world::GRAVEL, 0.1, None),
+            Some(ssc_world::GRAVEL)
+        );
     }
 
     #[test]

@@ -280,6 +280,8 @@ pub enum ServerPacket {
         y: f32,
         z: f32,
     },
+    /// Remaining uses for 36 inventory slots; zero for non-tools.
+    ToolDurability { slots: Vec<u16> },
 }
 
 impl ServerPacket {
@@ -437,6 +439,13 @@ impl ServerPacket {
                 w.put_f32(*y);
                 w.put_f32(*z);
             }
+            ServerPacket::ToolDurability { slots } => {
+                w.put_u8(18);
+                w.put_u16(slots.len() as u16);
+                for wear in slots {
+                    w.put_u16(*wear);
+                }
+            }
         }
         w.into_bytes()
     }
@@ -553,6 +562,19 @@ impl ServerPacket {
                 y: r.get_f32()?,
                 z: r.get_f32()?,
             },
+            18 => {
+                let len = r.get_u16()? as usize;
+                if len != 36 {
+                    return Err(crate::codec::DecodeError(
+                        "invalid tool durability length".into(),
+                    ));
+                }
+                let mut slots = Vec::with_capacity(len);
+                for _ in 0..len {
+                    slots.push(r.get_u16()?);
+                }
+                ServerPacket::ToolDurability { slots }
+            }
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad server packet tag {tag}"
@@ -588,6 +610,18 @@ mod tests {
     fn drop_selected_survives_wire_round_trip() {
         let packet = ClientPacket::DropSelected;
         assert_eq!(ClientPacket::decode(&packet.encode()).unwrap(), packet);
+    }
+
+    #[test]
+    fn tool_durability_sync_requires_exact_inventory_size() {
+        let mut slots = vec![0; 36];
+        slots[3] = 17;
+        let packet = ServerPacket::ToolDurability { slots };
+        assert_eq!(ServerPacket::decode(&packet.encode()).unwrap(), packet);
+        assert!(
+            ServerPacket::decode(&ServerPacket::ToolDurability { slots: vec![5] }.encode())
+                .is_err()
+        );
     }
 
     #[test]

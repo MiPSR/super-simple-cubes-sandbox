@@ -21,7 +21,9 @@ const MAX_EDITS: u32 = 4_000_000;
 const PLAYER_MAGIC: &[u8; 8] = b"SSCPLY01";
 const PLAYER_MAGIC_V2: &[u8; 8] = b"SSCPLY02";
 const PLAYER_MAGIC_V3: &[u8; 8] = b"SSCPLY03";
+const PLAYER_MAGIC_V4: &[u8; 8] = b"SSCPLY04";
 const ITEMS_MAGIC: &[u8; 8] = b"SSCITM01";
+const ITEMS_MAGIC_V2: &[u8; 8] = b"SSCITM02";
 const MOBS_MAGIC: &[u8; 8] = b"SSCMOB01";
 const MAX_SAVED_ITEMS: u32 = 1_000_000;
 const MAX_SAVED_MOBS: u32 = 4_096;
@@ -30,6 +32,7 @@ const MAX_SAVED_MOBS: u32 = 4_096;
 pub struct SavedItem {
     pub item: ssc_world::ItemId,
     pub count: u8,
+    pub durability: u16,
     pub pos: [f32; 3],
     pub vel: [f32; 3],
     pub age: u32,
@@ -53,6 +56,8 @@ pub struct SavedMob {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerSave {
     pub inventory: Vec<crate::survival::Slot>,
+    /// Remaining uses per slot (zero for non-tools or old full-wear tools).
+    pub durability: Vec<u16>,
     pub position: Option<[f32; 3]>,
     pub health: f32,
     pub hunger: u8,
@@ -66,6 +71,7 @@ impl Default for PlayerSave {
     fn default() -> Self {
         Self {
             inventory: vec![None; crate::survival::INVENTORY_SIZE],
+            durability: vec![0; crate::survival::INVENTORY_SIZE],
             position: None,
             health: crate::survival::MAX_HEALTH,
             hunger: crate::survival::MAX_HUNGER,
@@ -86,7 +92,10 @@ pub fn load(path: &Path) -> io::Result<Option<(u64, f32, BlockEdits)>> {
     };
     let file_len = file.metadata()?.len();
     if file_len < HEADER_V1_SIZE {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "save header is truncated"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "save header is truncated",
+        ));
     }
 
     let mut prefix = [0u8; HEADER_V1_SIZE as usize];
@@ -111,10 +120,16 @@ pub fn load(path: &Path) -> io::Result<Option<(u64, f32, BlockEdits)>> {
         // Version 1 had no stored clock; retain its original start time.
         (seed, 0.3, count, HEADER_V1_SIZE)
     } else {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "bad world save magic"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bad world save magic",
+        ));
     };
     if count > MAX_EDITS || file_len != header_size + count as u64 * RECORD_SIZE {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid world save length"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid world save length",
+        ));
     }
     let mut edits = BlockEdits::new();
     for _ in 0..count {
@@ -152,7 +167,10 @@ pub fn save(path: &Path, seed: u64, time_of_day: f32, edits: &BlockEdits) -> io:
         }
     }
     if records.len() > MAX_EDITS as usize {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "too many world edits"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "too many world edits",
+        ));
     }
     records.sort_unstable_by_key(|r| (r.0, r.1, r.2));
 
@@ -190,10 +208,7 @@ pub fn player_path(world_path: &Path, player_id: &[u8; 16]) -> std::path::PathBu
 }
 
 /// Load a persisted 36-slot inventory. Missing player data is not an error.
-pub fn load_player(
-    path: &Path,
-    player_id: &[u8; 16],
-) -> io::Result<Option<PlayerSave>> {
+pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<PlayerSave>> {
     let mut file = match File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -203,7 +218,12 @@ pub fn load_player(
     let v1_len = 8 + 16 + crate::survival::INVENTORY_SIZE * 3;
     let v2_len = 8 + 16 + 20 + crate::survival::INVENTORY_SIZE * 3;
     let v3_len = v2_len + 6;
-    if file_len != v1_len as u64 && file_len != v2_len as u64 && file_len != v3_len as u64 {
+    let v4_len = v3_len + crate::survival::INVENTORY_SIZE * 2;
+    if file_len != v1_len as u64
+        && file_len != v2_len as u64
+        && file_len != v3_len as u64
+        && file_len != v4_len as u64
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid player save length",
@@ -220,7 +240,8 @@ pub fn load_player(
     }
     let v2 = &bytes[..8] == PLAYER_MAGIC_V2;
     let v3 = &bytes[..8] == PLAYER_MAGIC_V3;
-    if (!v2 && !v3 && &bytes[..8] != PLAYER_MAGIC) || &bytes[8..24] != player_id {
+    let v4 = &bytes[..8] == PLAYER_MAGIC_V4;
+    if (!v2 && !v3 && !v4 && &bytes[..8] != PLAYER_MAGIC) || &bytes[8..24] != player_id {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "player save identity or format mismatch",
@@ -228,7 +249,8 @@ pub fn load_player(
     }
     if (v2 && expected_len != v2_len)
         || (v3 && expected_len != v3_len)
-        || (!v2 && !v3 && expected_len != v1_len)
+        || (v4 && expected_len != v4_len)
+        || (!v2 && !v3 && !v4 && expected_len != v1_len)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -237,7 +259,7 @@ pub fn load_player(
     }
     let mut data = PlayerSave::default();
     data.inventory.clear();
-    let inventory_offset = if v2 || v3 {
+    let inventory_offset = if v2 || v3 || v4 {
         let position = [
             f32::from_le_bytes(bytes[24..28].try_into().expect("fixed save slice")),
             f32::from_le_bytes(bytes[28..32].try_into().expect("fixed save slice")),
@@ -268,7 +290,7 @@ pub fn load_player(
         data.hunger = hunger;
         data.air = air;
         data.selected_slot = selected_slot;
-        if v3 {
+        if v3 || v4 {
             data.hunger_effect_ticks =
                 u16::from_le_bytes(bytes[44..46].try_into().expect("fixed save slice"));
             data.exhaustion =
@@ -277,7 +299,10 @@ pub fn load_player(
                 || !data.exhaustion.is_finite()
                 || !(0.0..=10.0).contains(&data.exhaustion)
             {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid player effects"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid player effects",
+                ));
             }
             50
         } else {
@@ -286,7 +311,8 @@ pub fn load_player(
     } else {
         24
     };
-    for slot in bytes[inventory_offset..].chunks_exact(3) {
+    let inventory_end = inventory_offset + crate::survival::INVENTORY_SIZE * 3;
+    for slot in bytes[inventory_offset..inventory_end].chunks_exact(3) {
         let item = u16::from_le_bytes([slot[0], slot[1]]);
         let count = slot[2];
         if item == 0 && count == 0 {
@@ -307,19 +333,48 @@ pub fn load_player(
         }
         data.inventory.push(Some((item, count)));
     }
+    if v4 {
+        for (i, slot) in bytes[inventory_end..].chunks_exact(2).enumerate() {
+            let wear = u16::from_le_bytes([slot[0], slot[1]]);
+            let max =
+                data.inventory[i].map_or(0, |(item, _)| crate::survival::max_durability(item));
+            if (max == 0 && wear != 0) || (max > 0 && (wear == 0 || wear > max)) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid tool durability",
+                ));
+            }
+            data.durability[i] = wear;
+        }
+    } else {
+        for (slot, wear) in data.inventory.iter().zip(&mut data.durability) {
+            *wear = slot.map_or(0, |(item, _)| crate::survival::max_durability(item));
+        }
+    }
     Ok(Some(data))
 }
 
 /// Atomically write a player's inventory.
-pub fn save_player(
-    path: &Path,
-    player_id: &[u8; 16],
-    data: &PlayerSave,
-) -> io::Result<()> {
+pub fn save_player(path: &Path, player_id: &[u8; 16], data: &PlayerSave) -> io::Result<()> {
     if data.inventory.len() != crate::survival::INVENTORY_SIZE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "player inventory has wrong slot count",
+        ));
+    }
+    if data.durability.len() != crate::survival::INVENTORY_SIZE
+        || data
+            .inventory
+            .iter()
+            .zip(&data.durability)
+            .any(|(slot, wear)| {
+                let max = slot.map_or(0, |(item, _)| crate::survival::max_durability(item));
+                (max == 0 && *wear != 0) || (max > 0 && *wear > max)
+            })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid player tool durability",
         ));
     }
     if data.inventory.iter().flatten().any(|(item, count)| {
@@ -358,14 +413,17 @@ pub fn save_player(
         || !data.exhaustion.is_finite()
         || !(0.0..=10.0).contains(&data.exhaustion)
     {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid player vitals"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid player vitals",
+        ));
     }
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
     let temp_path = path.with_extension("tmp");
     let mut file = File::create(&temp_path)?;
-    file.write_all(PLAYER_MAGIC_V3)?;
+    file.write_all(PLAYER_MAGIC_V4)?;
     file.write_all(player_id)?;
     for coordinate in position {
         file.write_all(&coordinate.to_le_bytes())?;
@@ -384,6 +442,12 @@ pub fn save_player(
             file.write_all(&[0, 0, 0])?;
         }
     }
+    for (slot, &wear) in data.inventory.iter().zip(&data.durability) {
+        let value = slot.map_or(0, |(item, _)| {
+            crate::survival::effective_durability(item, wear)
+        });
+        file.write_all(&value.to_le_bytes())?;
+    }
     file.sync_all()?;
     fs::rename(temp_path, path)?;
     Ok(())
@@ -400,24 +464,34 @@ pub fn load_items(path: &Path) -> io::Result<Option<Vec<SavedItem>>> {
         Err(err) => return Err(err),
     };
     const HEADER: u64 = 12;
-    const RECORD: u64 = 33;
     let file_len = file.metadata()?.len();
     if file_len < HEADER {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated item save"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated item save",
+        ));
     }
     let mut header = [0u8; HEADER as usize];
     file.read_exact(&mut header)?;
-    if &header[..8] != ITEMS_MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid item save magic"));
+    let v2 = &header[..8] == ITEMS_MAGIC_V2;
+    if !v2 && &header[..8] != ITEMS_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid item save magic",
+        ));
     }
     let count = u32::from_le_bytes(header[8..12].try_into().expect("fixed item header"));
-    if count > MAX_SAVED_ITEMS || file_len != HEADER + count as u64 * RECORD {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid item save length"));
+    let record_len = if v2 { 35 } else { 33 };
+    if count > MAX_SAVED_ITEMS || file_len != HEADER + count as u64 * record_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid item save length",
+        ));
     }
     let mut items = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let mut record = [0u8; RECORD as usize];
-        file.read_exact(&mut record)?;
+        let mut record = [0u8; 35];
+        file.read_exact(&mut record[..record_len as usize])?;
         let item = u16::from_le_bytes([record[0], record[1]]);
         let amount = record[2];
         let mut floats = [0.0f32; 6];
@@ -426,6 +500,12 @@ pub fn load_items(path: &Path) -> io::Result<Option<Vec<SavedItem>>> {
         }
         let age = u32::from_le_bytes(record[27..31].try_into().expect("fixed item age"));
         let pickup_delay = record[31];
+        let max = crate::survival::max_durability(item);
+        let durability = if v2 {
+            u16::from_le_bytes([record[33], record[34]])
+        } else {
+            max
+        };
         // Byte 32 is reserved for forward-compatible item flags.
         if record[32] != 0
             || !ssc_world::valid_item_id(item)
@@ -435,9 +515,10 @@ pub fn load_items(path: &Path) -> io::Result<Option<Vec<SavedItem>>> {
             || floats.iter().any(|v| !v.is_finite())
             || floats[0].abs() > 30_000_000.0
             || floats[2].abs() > 30_000_000.0
-            || !(ssc_world::MIN_Y as f32 - 1.0..ssc_world::MAX_Y as f32 + 1.0)
-                .contains(&floats[1])
+            || !(ssc_world::MIN_Y as f32 - 1.0..ssc_world::MAX_Y as f32 + 1.0).contains(&floats[1])
             || age >= 6_000
+            || (max == 0 && durability != 0)
+            || (max > 0 && (durability == 0 || durability > max))
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -447,6 +528,7 @@ pub fn load_items(path: &Path) -> io::Result<Option<Vec<SavedItem>>> {
         items.push(SavedItem {
             item,
             count: amount,
+            durability,
             pos: [floats[0], floats[1], floats[2]],
             vel: [floats[3], floats[4], floats[5]],
             age,
@@ -458,19 +540,29 @@ pub fn load_items(path: &Path) -> io::Result<Option<Vec<SavedItem>>> {
 
 pub fn save_items(path: &Path, items: &[SavedItem]) -> io::Result<()> {
     if items.len() > MAX_SAVED_ITEMS as usize {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "too many dropped items"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "too many dropped items",
+        ));
     }
     if items.iter().any(|entry| {
         !ssc_world::valid_item_id(entry.item)
             || entry.item == 0
             || entry.count == 0
             || entry.count > ssc_world::item_info(entry.item).max_stack
-            || entry.pos.iter().chain(entry.vel.iter()).any(|v| !v.is_finite())
+            || entry
+                .pos
+                .iter()
+                .chain(entry.vel.iter())
+                .any(|v| !v.is_finite())
             || entry.pos[0].abs() > 30_000_000.0
             || entry.pos[2].abs() > 30_000_000.0
             || !(ssc_world::MIN_Y as f32 - 1.0..ssc_world::MAX_Y as f32 + 1.0)
                 .contains(&entry.pos[1])
             || entry.age >= 6_000
+            || (crate::survival::max_durability(entry.item) == 0 && entry.durability != 0)
+            || (crate::survival::max_durability(entry.item) > 0
+                && entry.durability > crate::survival::max_durability(entry.item))
     }) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -482,7 +574,7 @@ pub fn save_items(path: &Path, items: &[SavedItem]) -> io::Result<()> {
     }
     let temp_path = path.with_extension("tmp");
     let mut file = File::create(&temp_path)?;
-    file.write_all(ITEMS_MAGIC)?;
+    file.write_all(ITEMS_MAGIC_V2)?;
     file.write_all(&(items.len() as u32).to_le_bytes())?;
     for entry in items {
         file.write_all(&entry.item.to_le_bytes())?;
@@ -492,6 +584,9 @@ pub fn save_items(path: &Path, items: &[SavedItem]) -> io::Result<()> {
         }
         file.write_all(&entry.age.to_le_bytes())?;
         file.write_all(&[entry.pickup_delay, 0])?;
+        file.write_all(
+            &crate::survival::effective_durability(entry.item, entry.durability).to_le_bytes(),
+        )?;
     }
     file.sync_all()?;
     fs::rename(temp_path, path)?;
@@ -512,16 +607,25 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
     const RECORD: u64 = 51;
     let file_len = file.metadata()?.len();
     if file_len < HEADER {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated mob save"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated mob save",
+        ));
     }
     let mut header = [0u8; HEADER as usize];
     file.read_exact(&mut header)?;
     if &header[..8] != MOBS_MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid mob save magic"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid mob save magic",
+        ));
     }
     let count = u32::from_le_bytes(header[8..12].try_into().expect("fixed mob header"));
     if count > MAX_SAVED_MOBS || file_len != HEADER + count as u64 * RECORD {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid mob save length"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid mob save length",
+        ));
     }
     let mut mobs = Vec::with_capacity(count as usize);
     for _ in 0..count {
@@ -533,8 +637,7 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
         for (i, bytes) in record[2..34].chunks_exact(4).enumerate() {
             floats[i] = f32::from_le_bytes(bytes.try_into().expect("fixed mob float"));
         }
-        let wander_timer =
-            u32::from_le_bytes(record[34..38].try_into().expect("fixed mob timer"));
+        let wander_timer = u32::from_le_bytes(record[34..38].try_into().expect("fixed mob timer"));
         let attack_cooldown =
             u32::from_le_bytes(record[46..50].try_into().expect("fixed mob cooldown"));
         let burn_timer = record[50];
@@ -542,7 +645,10 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
             1 => 10.0,
             2 => 20.0,
             _ => {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "unknown mob kind"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unknown mob kind",
+                ));
             }
         };
         let pos = [floats[0], floats[1], floats[2]];
@@ -572,7 +678,10 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
             || burn_timer >= 20
             || wander_dir.is_some_and(|d| d.iter().any(|v| !v.is_finite()))
         {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid mob state"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid mob state",
+            ));
         }
         mobs.push(SavedMob {
             kind,
@@ -611,9 +720,14 @@ pub fn save_mobs(path: &Path, mobs: &[SavedMob]) -> io::Result<()> {
             || mob.wander_timer > 120
             || mob.attack_cooldown > 20
             || mob.burn_timer >= 20
-            || mob.wander_dir.is_some_and(|d| d.iter().any(|v| !v.is_finite()))
+            || mob
+                .wander_dir
+                .is_some_and(|d| d.iter().any(|v| !v.is_finite()))
     }) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid mob state"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid mob state",
+        ));
     }
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
@@ -673,10 +787,8 @@ mod tests {
 
     #[test]
     fn truncated_or_unknown_saves_are_rejected() {
-        let path = std::env::temp_dir().join(format!(
-            "ssc-world-save-invalid-{}.bin",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("ssc-world-save-invalid-{}.bin", std::process::id()));
         for bytes in [&b"short"[..], &b"NOTWORLD"[..]] {
             fs::write(&path, bytes).unwrap();
             assert_eq!(load(&path).unwrap_err().kind(), io::ErrorKind::InvalidData);
@@ -686,10 +798,8 @@ mod tests {
 
     #[test]
     fn version_one_save_loads_with_default_time() {
-        let path = std::env::temp_dir().join(format!(
-            "ssc-world-save-v1-{}.bin",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("ssc-world-save-v1-{}.bin", std::process::id()));
         let mut bytes = Vec::new();
         bytes.extend_from_slice(MAGIC_V1);
         bytes.extend_from_slice(&123u64.to_le_bytes());
@@ -714,6 +824,7 @@ mod tests {
         inventory[35] = Some((ssc_world::BRICKS, 64));
         let data = PlayerSave {
             inventory,
+            durability: vec![0; crate::survival::INVENTORY_SIZE],
             position: Some([12.5, 70.0, -9.25]),
             health: 13.0,
             hunger: 7,
@@ -734,19 +845,55 @@ mod tests {
 
     #[test]
     fn crafted_pickaxes_round_trip_without_becoming_stacks() {
-        let path = std::env::temp_dir().join(format!(
-            "ssc-crafted-player-{}.dat", std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("ssc-crafted-player-{}.dat", std::process::id()));
         let id = [0x98; 16];
         let mut data = PlayerSave::default();
         data.position = Some([8.5, 70.0, 8.5]);
         data.inventory[1] = Some((ssc_world::WOODEN_PICKAXE, 1));
         data.inventory[2] = Some((ssc_world::STONE_PICKAXE, 1));
         data.inventory[3] = Some((ssc_world::STICK, 12));
+        data.durability[1] = 4;
+        data.durability[2] = 99;
         save_player(&path, &id, &data).unwrap();
-        assert_eq!(load_player(&path, &id).unwrap().unwrap().inventory, data.inventory);
+        let loaded = load_player(&path, &id).unwrap().unwrap();
+        assert_eq!(loaded.inventory, data.inventory);
+        assert_eq!(loaded.durability, data.durability);
         data.inventory[1] = Some((ssc_world::WOODEN_PICKAXE, 2));
-        assert_eq!(save_player(&path, &id, &data).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            save_player(&path, &id, &data).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        data.inventory[1] = Some((ssc_world::WOODEN_PICKAXE, 1));
+        let mut invalid = fs::read(&path).unwrap();
+        let wear_offset = 50 + crate::survival::INVENTORY_SIZE * 3 + 2;
+        invalid[wear_offset..wear_offset + 2].copy_from_slice(&61u16.to_le_bytes());
+        fs::write(&path, invalid).unwrap();
+        assert_eq!(
+            load_player(&path, &id).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn v3_pickaxe_loads_with_full_durability() {
+        let path = std::env::temp_dir().join(format!(
+            "ssc-player-wear-migration-{}.dat",
+            std::process::id()
+        ));
+        let id = [0xa9; 16];
+        let mut data = PlayerSave::default();
+        data.position = Some([8.5, 70.0, 8.5]);
+        data.inventory[5] = Some((ssc_world::STONE_PICKAXE, 1));
+        data.durability[5] = 1;
+        save_player(&path, &id, &data).unwrap();
+        let mut v3 = fs::read(&path).unwrap();
+        v3.truncate(50 + crate::survival::INVENTORY_SIZE * 3);
+        v3[..8].copy_from_slice(PLAYER_MAGIC_V3);
+        fs::write(&path, v3).unwrap();
+        let loaded = load_player(&path, &id).unwrap().unwrap();
+        assert_eq!(loaded.durability[5], 132);
         fs::remove_file(path).unwrap();
     }
 
@@ -763,6 +910,7 @@ mod tests {
         save_player(&path, &player_id, &data).unwrap();
 
         let mut v2 = fs::read(&path).unwrap();
+        v2.truncate(50 + crate::survival::INVENTORY_SIZE * 3);
         v2[..8].copy_from_slice(PLAYER_MAGIC_V2);
         v2.drain(44..50);
         fs::write(&path, &v2).unwrap();
@@ -795,23 +943,27 @@ mod tests {
         let mut invalid = valid.clone();
         invalid[44..46].copy_from_slice(&601u16.to_le_bytes());
         fs::write(&path, &invalid).unwrap();
-        assert_eq!(load_player(&path, &player_id).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            load_player(&path, &player_id).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
         invalid = valid;
         invalid[46..50].copy_from_slice(&f32::NAN.to_le_bytes());
         fs::write(&path, &invalid).unwrap();
-        assert_eq!(load_player(&path, &player_id).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            load_player(&path, &player_id).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
         fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn dropped_item_state_round_trips() {
-        let path = std::env::temp_dir().join(format!(
-            "ssc-item-save-{}.dat",
-            std::process::id()
-        ));
+        let path = std::env::temp_dir().join(format!("ssc-item-save-{}.dat", std::process::id()));
         let items = vec![SavedItem {
             item: ssc_world::APPLE,
             count: 3,
+            durability: 0,
             pos: [-12.5, 64.25, 3.0],
             vel: [0.25, 1.5, -0.5],
             age: 321,
@@ -823,11 +975,30 @@ mod tests {
     }
 
     #[test]
+    fn dropped_pickaxe_wear_round_trips_and_v1_loads_full() {
+        let path = std::env::temp_dir().join(format!("ssc-item-wear-{}.dat", std::process::id()));
+        let item = SavedItem {
+            item: ssc_world::WOODEN_PICKAXE,
+            count: 1,
+            durability: 3,
+            pos: [8.5, 70.0, 8.5],
+            vel: [0.0; 3],
+            age: 20,
+            pickup_delay: 0,
+        };
+        save_items(&path, &[item]).unwrap();
+        assert_eq!(load_items(&path).unwrap().unwrap(), vec![item]);
+        let mut v1 = fs::read(&path).unwrap();
+        v1[..8].copy_from_slice(ITEMS_MAGIC);
+        v1.truncate(v1.len() - 2);
+        fs::write(&path, v1).unwrap();
+        assert_eq!(load_items(&path).unwrap().unwrap()[0].durability, 60);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn mob_state_round_trips() {
-        let path = std::env::temp_dir().join(format!(
-            "ssc-mob-save-{}.dat",
-            std::process::id()
-        ));
+        let path = std::env::temp_dir().join(format!("ssc-mob-save-{}.dat", std::process::id()));
         let mobs = vec![SavedMob {
             kind: 2,
             pos: [-32.5, 64.0, 16.25],
@@ -847,10 +1018,8 @@ mod tests {
 
     #[test]
     fn dead_mob_save_is_rejected_without_overwriting_existing_data() {
-        let path = std::env::temp_dir().join(format!(
-            "ssc-dead-mob-save-{}.dat",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("ssc-dead-mob-save-{}.dat", std::process::id()));
         let existing = b"existing mob save";
         fs::write(&path, existing).unwrap();
         let mob = SavedMob {

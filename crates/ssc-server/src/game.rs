@@ -141,6 +141,8 @@ struct Session {
     player_data_writable: bool,
     /// The player's inventory (36 slots; 0..9 = hotbar).
     inventory: Vec<crate::survival::Slot>,
+    /// Remaining tool uses per inventory slot; zero for other items.
+    durability: Vec<u16>,
     /// Survival-mode state (ignored in creative).
     survival: crate::survival::SurvivalState,
     /// Whether this death already emitted inventory drops.
@@ -163,6 +165,7 @@ struct Session {
 struct ItemEntity {
     item: ssc_world::ItemId,
     count: u8,
+    durability: u16,
     pos: Vec3,
     vel: Vec3,
     age: u32,
@@ -201,6 +204,7 @@ impl Session {
                 joined: false,
             },
             inventory,
+            durability: vec![0; crate::survival::INVENTORY_SIZE],
             survival: crate::survival::SurvivalState::default(),
             inventory_dropped_on_death: false,
             spawn: Vec3::new(8.5, 128.0, 8.5),
@@ -334,6 +338,7 @@ impl Server {
                 ItemEntity {
                     item: saved.item,
                     count: saved.count,
+                    durability: saved.durability,
                     pos: Vec3::new(saved.pos[0], saved.pos[1], saved.pos[2]),
                     vel: Vec3::new(saved.vel[0], saved.vel[1], saved.vel[2]),
                     age: saved.age,
@@ -420,6 +425,7 @@ impl Server {
             .map(|item| crate::persistence::SavedItem {
                 item: item.item,
                 count: item.count,
+                durability: item.durability,
                 pos: [item.pos.x, item.pos.y, item.pos.z],
                 vel: [item.vel.x, item.vel.y, item.vel.z],
                 age: item.age,
@@ -514,6 +520,7 @@ impl Server {
         };
         let data = crate::persistence::PlayerSave {
             inventory: session.inventory.clone(),
+            durability: session.durability.clone(),
             position,
             health,
             hunger,
@@ -924,7 +931,7 @@ impl Server {
         }
 
         if self.cfg.game_mode == GameMode::Survival {
-            let dead_players: Vec<(EntityId, Vec3, Vec<(ssc_world::ItemId, u8)>)> = self
+            let dead_players: Vec<(EntityId, Vec3, Vec<(ssc_world::ItemId, u8, u16)>)> = self
                 .sessions
                 .iter_mut()
                 .filter(|(_, session)| {
@@ -938,14 +945,20 @@ impl Server {
                     let drops = session
                         .inventory
                         .iter_mut()
-                        .filter_map(Option::take)
+                        .zip(&mut session.durability)
+                        .filter_map(|(slot, wear)| {
+                            let (item, count) = slot.take()?;
+                            let remaining = crate::survival::effective_durability(item, *wear);
+                            *wear = 0;
+                            Some((item, count, remaining))
+                        })
                         .collect();
                     (*id, session.player.pos, drops)
                 })
                 .collect();
             for (_id, pos, drops) in dead_players {
-                for (item, count) in drops {
-                    self.spawn_item_entity(item, count, pos);
+                for (item, count, wear) in drops {
+                    self.spawn_item_entity_with_durability(item, count, pos, wear);
                 }
             }
         }
@@ -960,7 +973,7 @@ impl Server {
             .map(|(id, _)| *id)
             .collect();
         for id in dirty {
-            let (inv_pkt, status_pkt) = {
+            let (inv_pkt, wear_pkt, status_pkt) = {
                 let session = self.sessions.get_mut(&id).unwrap();
                 let inv_pkt = if session.inv_dirty {
                     session.inv_dirty = false;
@@ -974,6 +987,18 @@ impl Server {
                 } else {
                     None
                 };
+                let wear_pkt = inv_pkt.as_ref().map(|_| ServerPacket::ToolDurability {
+                    slots: session
+                        .inventory
+                        .iter()
+                        .zip(&session.durability)
+                        .map(|(slot, &wear)| {
+                            slot.map_or(0, |(item, _)| {
+                                crate::survival::effective_durability(item, wear)
+                            })
+                        })
+                        .collect(),
+                });
                 let status_pkt = if session.status_dirty {
                     session.status_dirty = false;
                     Some(ServerPacket::Status {
@@ -985,9 +1010,12 @@ impl Server {
                 } else {
                     None
                 };
-                (inv_pkt, status_pkt)
+                (inv_pkt, wear_pkt, status_pkt)
             };
             if let Some(pkt) = inv_pkt {
+                let _ = self.direct(id, &pkt);
+            }
+            if let Some(pkt) = wear_pkt {
                 let _ = self.direct(id, &pkt);
             }
             if let Some(pkt) = status_pkt {
@@ -1031,6 +1059,21 @@ impl Server {
     }
 
     fn spawn_item_entity(&mut self, item: ssc_world::ItemId, count: u8, pos: Vec3) {
+        self.spawn_item_entity_with_durability(
+            item,
+            count,
+            pos,
+            crate::survival::max_durability(item),
+        );
+    }
+
+    fn spawn_item_entity_with_durability(
+        &mut self,
+        item: ssc_world::ItemId,
+        count: u8,
+        pos: Vec3,
+        durability: u16,
+    ) {
         if count == 0 {
             return;
         }
@@ -1043,6 +1086,7 @@ impl Server {
             ItemEntity {
                 item,
                 count,
+                durability,
                 pos,
                 vel: Vec3::new(0.0, 1.5, 0.0),
                 age: 0,
@@ -1164,7 +1208,8 @@ impl Server {
             let Some(item) = self.items.get(&item_id) else {
                 continue;
             };
-            let (item_value, mut count, pos) = (item.item, item.count, item.pos);
+            let (item_value, mut count, pos, durability) =
+                (item.item, item.count, item.pos, item.durability);
             if item.pickup_delay > 0 {
                 continue;
             }
@@ -1180,7 +1225,18 @@ impl Server {
                 let Some(session) = self.sessions.get_mut(&player_id) else {
                     continue;
                 };
-                let leftover = crate::survival::add_item(&mut session.inventory, item_value, count);
+                let leftover = if crate::survival::max_durability(item_value) > 0 {
+                    if let Some(slot) = session.inventory.iter().position(Option::is_none) {
+                        session.inventory[slot] = Some((item_value, 1));
+                        session.durability[slot] =
+                            crate::survival::effective_durability(item_value, durability);
+                        count - 1
+                    } else {
+                        count
+                    }
+                } else {
+                    crate::survival::add_item(&mut session.inventory, item_value, count)
+                };
                 if leftover < count {
                     session.inv_dirty = true;
                     count = leftover;
@@ -1398,12 +1454,14 @@ impl Server {
         if raycast(&self.world, eye, dir, (t - 0.0001).max(0.0)).is_some() {
             return false;
         }
+        let held = self.selected_item(id).map(|(item, _)| item);
+        let damage = crate::survival::attack_damage(held);
 
         if is_mob {
-            // Punch a mob: 2 damage by hand, knockback.
+            // Bedrock tool damage; knockback remains server-owned.
             let from = self.sessions[&id].player.pos;
             if let Some(mob) = self.mobs.get_mut(&target) {
-                mob.hurt(2.0, from);
+                mob.hurt(damage, from);
             }
             let pos = self.mobs.get(&target).map(|m| m.pos);
             if let Some(p) = pos {
@@ -1417,9 +1475,14 @@ impl Server {
             // Death and entity removal are handled together during the
             // authoritative mob tick so clients don't receive remove/state/
             // remove in consecutive packets.
+            if self.cfg.game_mode == GameMode::Survival {
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    damage_held_tool(session, 2);
+                }
+            }
             true
         } else {
-            // PvP: 2 damage (hand) + knockback via velocity.
+            // PvP damage and knockback via velocity.
             let from = self.sessions[&id].player.pos;
             let session = self.sessions.get_mut(&target).unwrap();
             if self.cfg.game_mode == GameMode::Survival {
@@ -1428,7 +1491,7 @@ impl Server {
                 session.player.vel.z += delta.z * 6.0;
                 session.player.vel.y = (session.player.vel.y + 4.0).min(6.0);
                 let mut fx = crate::survival::TickEffects::default();
-                session.survival.apply_damage(2.0, &mut fx);
+                session.survival.apply_damage(damage, &mut fx);
                 session.status_dirty = true;
             }
             let p = self.sessions[&target].player.pos;
@@ -1438,9 +1501,33 @@ impl Server {
                 p.y.floor() as i32,
                 p.z.floor() as i32,
             );
+            if self.cfg.game_mode == GameMode::Survival {
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    damage_held_tool(session, 2);
+                }
+            }
             true
         }
     }
+}
+
+/// Wear follows the selected tool, not the slot. Last-use hits still land.
+fn damage_held_tool(session: &mut Session, uses: u16) {
+    let slot = session.player.selected_slot as usize % 9;
+    let Some((item, _)) = session.inventory[slot] else {
+        return;
+    };
+    if crate::survival::max_durability(item) == 0 {
+        return;
+    }
+    let remaining = crate::survival::effective_durability(item, session.durability[slot]);
+    if remaining <= uses {
+        session.inventory[slot] = None;
+        session.durability[slot] = 0;
+    } else {
+        session.durability[slot] = remaining - uses;
+    }
+    session.inv_dirty = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1912,6 +1999,7 @@ impl Server {
                 }
                 let idx = (slot as usize) % 9;
                 session.inventory[idx] = Some((block, 64));
+                session.durability[idx] = 0;
                 session.inv_dirty = true;
             }
             ClientPacket::SwapSlots { a, b } => {
@@ -1955,6 +2043,7 @@ impl Server {
                         }
                         _ => {
                             session.inventory.swap(a, b);
+                            session.durability.swap(a, b);
                             session.inv_dirty = true;
                         }
                     }
@@ -1964,11 +2053,19 @@ impl Server {
                 let Some(session) = self.sessions.get_mut(&id) else {
                     return Ok(());
                 };
+                let before = session.inventory.clone();
                 if session.player.joined
                     && self.cfg.game_mode == GameMode::Survival
                     && !session.survival.dead
                     && crate::survival::craft(&mut session.inventory, recipe)
                 {
+                    for (i, slot) in session.inventory.iter().enumerate() {
+                        if let Some((item, _)) = slot {
+                            if crate::survival::max_durability(*item) > 0 && before[i] != *slot {
+                                session.durability[i] = crate::survival::max_durability(*item);
+                            }
+                        }
+                    }
                     session.inv_dirty = true;
                     session.survival.digging = None;
                 }
@@ -1996,9 +2093,12 @@ impl Server {
                     return Ok(());
                 };
                 let direction = look_dir(session.player.yaw, session.player.pitch);
-                let pos = session.player.pos + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0)
-                    + direction * 0.5;
+                let pos =
+                    session.player.pos + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0) + direction * 0.5;
+                let durability =
+                    crate::survival::effective_durability(item, session.durability[slot]);
                 session.inventory[slot] = if count == 1 {
+                    session.durability[slot] = 0;
                     None
                 } else {
                     Some((item, count - 1))
@@ -2010,6 +2110,7 @@ impl Server {
                     ItemEntity {
                         item,
                         count: 1,
+                        durability,
                         pos,
                         vel: direction * 4.0 + Vec3::new(0.0, 2.0, 0.0),
                         age: 0,
@@ -2106,6 +2207,7 @@ impl Server {
             .and_then(|data| data.position);
         if let Some(data) = saved_player {
             session.inventory = data.inventory;
+            session.durability = data.durability;
             if saved_death {
                 session.survival = crate::survival::SurvivalState::default();
             } else {
@@ -2300,6 +2402,11 @@ impl Server {
             }
         }
         self.settle_gravity_stack(x, y + 1, z);
+        if self.cfg.game_mode == GameMode::Survival {
+            if let Some(session) = self.sessions.get_mut(&id) {
+                damage_held_tool(session, 1);
+            }
+        }
     }
 
     /// Settle the contiguous sand/gravel stack above a changed support.
@@ -2313,9 +2420,7 @@ impl Server {
                 break;
             }
             let mut dest = y;
-            while dest > ssc_world::MIN_Y
-                && self.world.block_or_air(x, dest - 1, z) == AIR
-            {
+            while dest > ssc_world::MIN_Y && self.world.block_or_air(x, dest - 1, z) == AIR {
                 dest -= 1;
             }
             if dest != y {
@@ -2325,7 +2430,12 @@ impl Server {
                 self.world.set_block(x, y, z, AIR);
                 self.record_block_edit(x, y, z, AIR);
                 self.record_block_edit(x, dest, z, block);
-                let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block: AIR });
+                let _ = self.broadcast(&ServerPacket::BlockUpdate {
+                    x,
+                    y,
+                    z,
+                    block: AIR,
+                });
                 let _ = self.broadcast(&ServerPacket::BlockUpdate {
                     x,
                     y: dest,
@@ -2650,7 +2760,13 @@ mod tests {
         assert_eq!(edits[&(x, 55, z)], AIR);
         assert_eq!(edits[&(x, 56, z)], AIR);
         let packets = rig.drain(0);
-        assert_eq!(packets.iter().filter(|packet| matches!(packet, ServerPacket::BlockUpdate { .. })).count(), 4);
+        assert_eq!(
+            packets
+                .iter()
+                .filter(|packet| matches!(packet, ServerPacket::BlockUpdate { .. }))
+                .count(),
+            4
+        );
     }
 
     #[test]
@@ -2770,7 +2886,9 @@ mod tests {
                 session.survival.dead = true;
             }
             let before = session.inventory.clone();
-            rig.server.handle_packet(1, ClientPacket::Craft { recipe: 0 }).unwrap();
+            rig.server
+                .handle_packet(1, ClientPacket::Craft { recipe: 0 })
+                .unwrap();
             assert_eq!(rig.server.sessions[&1].inventory, before);
         }
     }
@@ -2779,34 +2897,61 @@ mod tests {
     fn dropping_selected_item_is_server_authoritative_and_delayed() {
         let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
         rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::FLINT, 2));
-        rig.server.handle_packet(1, ClientPacket::DropSelected).unwrap();
-        assert_eq!(rig.server.sessions[&1].inventory[0], Some((ssc_world::FLINT, 1)));
+        rig.server
+            .handle_packet(1, ClientPacket::DropSelected)
+            .unwrap();
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::FLINT, 1))
+        );
         let entity = rig.server.items.values().next().unwrap();
         assert_eq!((entity.item, entity.count), (ssc_world::FLINT, 1));
         assert_eq!(entity.pickup_delay, 40);
-        rig.server.handle_packet(1, ClientPacket::DropSelected).unwrap();
-        rig.server.handle_packet(1, ClientPacket::DropSelected).unwrap();
+        rig.server
+            .handle_packet(1, ClientPacket::DropSelected)
+            .unwrap();
+        rig.server
+            .handle_packet(1, ClientPacket::DropSelected)
+            .unwrap();
         assert_eq!(rig.server.sessions[&1].inventory[0], None);
-        assert_eq!(rig.server.items.values().map(|item| item.count as u16).sum::<u16>(), 2);
+        assert_eq!(
+            rig.server
+                .items
+                .values()
+                .map(|item| item.count as u16)
+                .sum::<u16>(),
+            2
+        );
         rig.server.tick();
         assert!(rig.drain(0).iter().any(|packet| matches!(
             packet,
             ServerPacket::Inventory { slots } if slots[0] == (0, 0)
         )));
-        assert_eq!(rig.server.items.values().map(|item| item.count as u16).sum::<u16>(), 2);
+        assert_eq!(
+            rig.server
+                .items
+                .values()
+                .map(|item| item.count as u16)
+                .sum::<u16>(),
+            2
+        );
     }
 
     #[test]
     fn dead_and_creative_players_cannot_drop_selected_item() {
         for mode in [GameMode::Survival, GameMode::Creative] {
             let mut rig = Rig::new_mode(1, 0.0, mode);
-            rig.server.sessions.get_mut(&1).unwrap().inventory[0] =
-                Some((ssc_world::OAK_LOG, 2));
+            rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::OAK_LOG, 2));
             if mode == GameMode::Survival {
                 rig.server.sessions.get_mut(&1).unwrap().survival.dead = true;
             }
-            rig.server.handle_packet(1, ClientPacket::DropSelected).unwrap();
-            assert_eq!(rig.server.sessions[&1].inventory[0], Some((ssc_world::OAK_LOG, 2)));
+            rig.server
+                .handle_packet(1, ClientPacket::DropSelected)
+                .unwrap();
+            assert_eq!(
+                rig.server.sessions[&1].inventory[0],
+                Some((ssc_world::OAK_LOG, 2))
+            );
             assert!(rig.server.items.is_empty());
         }
     }
@@ -2821,16 +2966,98 @@ mod tests {
         for _ in 0..50 {
             rig.server.tick();
         }
-        assert!(rig.server.sessions[&1].inventory.iter().flatten().all(|(item, _)| *item != ssc_world::RAW_IRON));
+        assert!(rig.server.sessions[&1]
+            .inventory
+            .iter()
+            .flatten()
+            .all(|(item, _)| *item != ssc_world::RAW_IRON));
 
         rig.server.world.set_block(8, 54, 8, ssc_world::IRON_ORE);
-        rig.server.sessions.get_mut(&1).unwrap().inventory[0] =
-            Some((ssc_world::STONE_PICKAXE, 1));
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::STONE_PICKAXE, 1));
         rig.server.handle_dig_start(1);
         for _ in 0..28 {
             rig.server.tick();
         }
-        assert!(rig.server.sessions[&1].inventory.iter().flatten().any(|(item, _)| *item == ssc_world::RAW_IRON));
+        assert!(rig.server.sessions[&1]
+            .inventory
+            .iter()
+            .flatten()
+            .any(|(item, _)| *item == ssc_world::RAW_IRON));
+    }
+
+    #[test]
+    fn pickaxe_wear_follows_slot_swaps_and_breaks_after_last_use() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.inventory[0] = Some((ssc_world::WOODEN_PICKAXE, 1));
+        session.durability[0] = 2;
+        rig.server
+            .handle_packet(1, ClientPacket::SwapSlots { a: 0, b: 3 })
+            .unwrap();
+        assert_eq!(rig.server.sessions[&1].durability[3], 2);
+        rig.server
+            .handle_packet(1, ClientPacket::SelectSlot { slot: 3 })
+            .unwrap();
+        rig.server.handle_dig_start(1);
+        for _ in 0..25 {
+            rig.server.tick();
+        }
+        assert_eq!(rig.server.sessions[&1].durability[3], 1);
+        assert!(rig.drain(0).iter().any(|packet| matches!(
+            packet, ServerPacket::ToolDurability { slots } if slots[3] == 1
+        )));
+        rig.server.world.set_block(8, 54, 8, ssc_world::STONE);
+        rig.server.handle_dig_start(1);
+        for _ in 0..25 {
+            rig.server.tick();
+        }
+        assert_eq!(rig.server.sessions[&1].inventory[3], None);
+        assert_eq!(rig.server.sessions[&1].durability[3], 0);
+        assert!(rig.server.sessions[&1]
+            .inventory
+            .iter()
+            .flatten()
+            .any(|(item, _)| *item == ssc_world::COBBLESTONE));
+    }
+
+    #[test]
+    fn dropped_pickaxe_keeps_wear_on_pickup() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.inventory[0] = Some((ssc_world::STONE_PICKAXE, 1));
+        session.durability[0] = 17;
+        rig.server
+            .handle_packet(1, ClientPacket::DropSelected)
+            .unwrap();
+        let item_id = *rig.server.items.keys().next().unwrap();
+        assert_eq!(rig.server.items[&item_id].durability, 17);
+        let pos = rig.server.sessions[&1].player.pos;
+        let item = rig.server.items.get_mut(&item_id).unwrap();
+        item.pos = pos;
+        item.pickup_delay = 0;
+        rig.server.tick_items(0.05);
+        let slot = rig.server.sessions[&1]
+            .inventory
+            .iter()
+            .position(|slot| *slot == Some((ssc_world::STONE_PICKAXE, 1)))
+            .unwrap();
+        assert_eq!(rig.server.sessions[&1].durability[slot], 17);
+    }
+
+    #[test]
+    fn death_drop_keeps_pickaxe_wear() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.inventory[1] = Some((ssc_world::WOODEN_PICKAXE, 1));
+        session.durability[1] = 5;
+        session.survival.die();
+        rig.server.tick();
+        assert_eq!(rig.server.sessions[&1].durability[1], 0);
+        assert!(rig
+            .server
+            .items
+            .values()
+            .any(|item| item.item == ssc_world::WOODEN_PICKAXE && item.durability == 5));
     }
 
     #[test]
@@ -3396,6 +3623,18 @@ mod tests {
     }
 
     #[test]
+    fn stone_pickaxe_hits_for_bedrock_damage_and_wears_twice() {
+        let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::STONE_PICKAXE, 1));
+        rig.server.sessions.get_mut(&1).unwrap().durability[0] = 2;
+        let before = rig.server.sessions[&2].survival.health;
+        rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
+        assert_eq!(rig.server.sessions[&2].survival.health, before - 4.0);
+        assert_eq!(rig.server.sessions[&1].inventory[0], None);
+        assert_eq!(rig.server.sessions[&1].durability[0], 0);
+    }
+
+    #[test]
     fn solid_wall_blocks_mob_attacks() {
         let mut rig = Rig::new_mode(1, -0.25, GameMode::Survival);
         let mob_id = FIRST_MOB_ID;
@@ -3560,8 +3799,12 @@ mod tests {
         let player_path = crate::persistence::player_path(&world_path, &player_id);
         let mut inventory = vec![None; crate::survival::INVENTORY_SIZE];
         inventory[2] = Some((ssc_world::APPLE, 7));
+        inventory[3] = Some((ssc_world::STONE_PICKAXE, 1));
+        let mut durability = vec![0; crate::survival::INVENTORY_SIZE];
+        durability[3] = 18;
         let data = crate::persistence::PlayerSave {
             inventory: inventory.clone(),
+            durability,
             position: Some([12.5, 70.0, -9.25]),
             health: 13.0,
             hunger: 7,
@@ -3590,6 +3833,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(server.sessions[&id].inventory, inventory);
+        assert_eq!(server.sessions[&id].durability[3], 18);
         assert_eq!(server.sessions[&id].player_id, Some(player_id));
         assert_eq!(
             server.sessions[&id].player.pos,
@@ -3616,6 +3860,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(saved.inventory[2], Some((ssc_world::APPLE, 9)));
+        assert_eq!(saved.durability[3], 18);
         assert_eq!(saved.hunger_effect_ticks, 410);
         assert_eq!(saved.exhaustion, 2.5);
         let respawn_point = server.sessions[&id].spawn;
@@ -3743,6 +3988,7 @@ mod tests {
             &player_id,
             &crate::persistence::PlayerSave {
                 inventory: vec![None; crate::survival::INVENTORY_SIZE],
+                durability: vec![0; crate::survival::INVENTORY_SIZE],
                 position: Some([4.5, 70.0, -2.5]),
                 health: 0.0,
                 hunger: 0,

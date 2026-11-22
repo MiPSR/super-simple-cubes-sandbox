@@ -60,6 +60,7 @@ runnable through Nix.
   2 sticks), or 4 for a stone pickaxe (3 cobblestone + 2 sticks). Drag the
   pickaxe into a hotbar slot to mine stone and ores for drops. This is an
   interim inventory-wide recipe UI, not the full Minecraft crafting grid.
+  Pickaxes wear out and remaining uses appear in the inventory.
 - Q drops one item from the selected survival hotbar stack into the world.
 
 See `implemented-features.md` for the full parity tracker.

@@ -128,7 +128,13 @@ Every implemented wiki feature gets a line here. Status legend:
   3 cobblestone+2 sticks→stone pickaxe. Survival inventory keys 1–4
   request these recipes, validated atomically by the server. Unlike wiki
   crafting, this does not require shaped grid placement or a crafting table;
-  pickaxe durability and higher tool tiers are not implemented.
+  higher tool tiers and enchantments are not implemented. Bedrock
+  wooden/stone pickaxe durability is 60/132 uses; block breaks consume one
+  use, successful entity hits consume two and deal 3/4 damage (versus 2
+  by hand). Wear follows the tool through slot swaps, drops, death, pickups
+  and reconnects; the inventory HUD displays remaining uses. Version-4
+  player saves and version-2 world-item saves retain wear while older
+  saves migrate with full durability.
 - `dev` — Sound triggers (dig/place/step) are chosen and sent by the server
   and flow end-to-end; playback via owner-approved **kira** with distance
   attenuation + stereo panning; `--sounds DIR` loads real OGG/WAV packs

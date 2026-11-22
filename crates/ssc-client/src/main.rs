@@ -155,6 +155,8 @@ struct App {
     hotbar: [u16; 9],
     /// Full inventory from the server (36 slots: (item, count)).
     inventory: Vec<(u16, u8)>,
+    /// Remaining pickaxe uses from the server (zero for other items).
+    tool_durability: Vec<u16>,
     /// Game mode (0 survival / 1 creative).
     mode: u8,
     /// Survival vitals.
@@ -286,6 +288,7 @@ impl App {
             selected_slot: 0,
             hotbar: [0; 9],
             inventory: Vec::new(),
+            tool_durability: Vec::new(),
             mode: 0,
             health: 20.0,
             hunger: 20,
@@ -898,7 +901,10 @@ impl App {
                 let label = match self.inventory.get(i) {
                     Some((item, count)) if *item != 0 => {
                         let name = ssc_world::item_info(*item).name;
-                        if *count > 1 {
+                        let wear = self.tool_durability.get(i).copied().unwrap_or(0);
+                        if wear > 0 {
+                            format!("{} [{}]", name, wear)
+                        } else if *count > 1 {
                             format!("{} x{}", name, count)
                         } else {
                             name.to_string()
@@ -1314,6 +1320,9 @@ impl App {
                 for (i, slot) in self.inventory.iter().take(9).enumerate() {
                     self.hotbar[i] = slot.0;
                 }
+            }
+            ServerPacket::ToolDurability { slots } => {
+                self.tool_durability = slots;
             }
             ServerPacket::Status {
                 health,
