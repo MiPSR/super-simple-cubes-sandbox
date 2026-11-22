@@ -925,6 +925,7 @@ impl Server {
                     continue;
                 }
                 let damage = self.mobs[&mob_id].kind.attack_damage();
+                let from = self.mobs[&mob_id].pos;
                 let mut fx = crate::survival::TickEffects::default();
                 let session = self.sessions.get_mut(player_id).unwrap();
                 session.survival.apply_combat_damage(damage, &mut fx);
@@ -934,6 +935,7 @@ impl Server {
                 if !fx.hurt {
                     continue;
                 }
+                knock_player_back(&mut session.player, from);
                 session.status_dirty = true;
                 let pos = session.player.pos;
                 self.send_sound(
@@ -1589,10 +1591,7 @@ impl Server {
                 if !fx.hurt {
                     return true;
                 }
-                let delta = (session.player.pos - from).normalize_or_zero();
-                session.player.vel.x += delta.x * 6.0;
-                session.player.vel.z += delta.z * 6.0;
-                session.player.vel.y = (session.player.vel.y + 4.0).min(6.0);
+                knock_player_back(&mut session.player, from);
                 if fx.hurt {
                     session.survival.exhaustion += 0.1;
                 }
@@ -1638,6 +1637,17 @@ fn damage_held_tool(session: &mut Session, uses: u16) {
 // ---------------------------------------------------------------------------
 // Player simulation
 // ---------------------------------------------------------------------------
+
+fn knock_player_back(player: &mut Player, from: Vec3) {
+    let offset = player.pos - from;
+    let direction = Vec3::new(offset.x, 0.0, offset.z).normalize_or_zero();
+    player.vel.x += direction.x * 6.0;
+    player.vel.z += direction.z * 6.0;
+    player.vel.y = (player.vel.y + 4.0).min(6.0);
+    // The impulse lifts the player: use air steering next tick instead of
+    // replacing horizontal knockback with grounded walking input.
+    player.on_ground = false;
+}
 
 /// Simulate one player for one tick (server-authoritative).
 fn step_player(
@@ -4329,6 +4339,11 @@ mod tests {
         }
         assert!(rig.server.sessions[&1].survival.health < crate::survival::MAX_HEALTH);
         assert!((rig.server.sessions[&1].survival.exhaustion - 0.1).abs() < 0.0001);
+        assert!(
+            rig.server.sessions[&1].player.vel.x < 0.0,
+            "zombie pushes the player away"
+        );
+        assert!(!rig.server.sessions[&1].player.on_ground);
     }
 
     #[test]
@@ -4585,6 +4600,26 @@ mod tests {
         assert!((rig.server.sessions[&1].survival.exhaustion - 0.1).abs() < 0.0001);
         assert!((rig.server.sessions[&2].survival.exhaustion - 0.1).abs() < 0.0001);
         assert!(rig.server.sessions[&1].survival.digging.is_none());
+    }
+
+    #[test]
+    fn grounded_pvp_knockback_survives_the_next_movement_step() {
+        let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&2).unwrap().player.on_ground = true;
+        let before = rig.server.sessions[&2].player.pos;
+        rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
+        let victim = &mut rig.server.sessions.get_mut(&2).unwrap().player;
+        assert!(!victim.on_ground);
+        assert!(victim.vel.x > 0.0);
+        step_player(&rig.server.world, victim, 0.05, false, false, false);
+        assert!(victim.pos.x > before.x + 0.2);
+        assert!(victim.pos.y > before.y);
+        let velocity = victim.vel;
+        rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
+        assert_eq!(
+            rig.server.sessions[&2].player.vel, velocity,
+            "immune hits add no extra impulse"
+        );
     }
 
     #[test]

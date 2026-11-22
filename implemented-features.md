@@ -196,6 +196,10 @@ Every implemented wiki feature gets a line here. Status legend:
   still block digging through the target. Timers reset on respawn/reload;
   environmental hazards still use independent damage timers and the client
   does not yet show the red hurt flash.
+- `partial` — Zombie and PvP hits apply horizontal/vertical knockback to
+  players and switch them to airborne steering so the next grounded
+  movement update does not erase the impulse. Damage-immune hits add no
+  impulse. Exact Bedrock drag, sprint knockback and resistance are pending.
 - `partial` — Modern Bedrock bare-hand melee damage is 1 health point.
   Falling, airborne, non-swimming/non-flying players deal 1.5× melee
   damage on critical hits, including while sprinting as in Bedrock.
