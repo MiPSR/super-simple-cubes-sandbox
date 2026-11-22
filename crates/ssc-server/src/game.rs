@@ -1343,8 +1343,8 @@ impl Server {
         }
     }
 
-    /// Mob spawning: a few pigs near each player during the day, zombies
-    /// at night. Simple, deterministic-ish, capped.
+    /// Mob spawning: pigs in small groups by day, zombies at night.
+    /// Simple, deterministic-ish, capped.
     fn spawn_mobs(&mut self) {
         let night = self.time_of_day > 0.75 && self.time_of_day < 0.98;
         let player_cols: Vec<(i32, i32)> = self
@@ -1366,7 +1366,7 @@ impl Server {
             return;
         }
 
-        // Pigs by day (and rarely at night), zombies at night.
+        // Pigs by day, zombies at night.
         let want_zombie = night;
         let want_pig = !night;
         for (pcx, pcz) in player_cols {
@@ -1397,28 +1397,62 @@ impl Server {
                 {
                     continue;
                 }
-                let (kind, want) = if want_zombie {
-                    (crate::mobs::MobKind::Zombie, want_zombie)
+                let kind = if want_zombie {
+                    crate::mobs::MobKind::Zombie
                 } else {
-                    (crate::mobs::MobKind::Pig, want_pig)
+                    crate::mobs::MobKind::Pig
                 };
-                if !want {
-                    continue;
-                }
-                // No spawning right on top of players.
-                let pos = Vec3::new(ax as f32 + 0.5, y as f32 + 0.02, az as f32 + 0.5);
-                let too_close = self
-                    .sessions
-                    .values()
-                    .any(|s| s.player.joined && (s.player.pos - pos).length() < 12.0);
-                if too_close {
-                    continue;
-                }
-                let Some(id) = self.allocate_mob_id() else {
-                    return;
+                // Bedrock pigs spawn in groups of 1–3. Each member must
+                // independently have grass, clearance and player distance;
+                // never exceed the server's shared mob cap.
+                let group_size = if want_pig {
+                    1 + (hash_tick(self.tick, ax, az) % 3) as usize
+                } else {
+                    1
                 };
-                self.mobs.insert(id, crate::mobs::Mob::new(kind, pos));
-                break; // at most one mob per player per second
+                let mut spawned = 0;
+                for member in 0..group_size {
+                    if self.mobs.len() >= mob_cap {
+                        break;
+                    }
+                    let (x, z) = if member == 0 {
+                        (ax, az)
+                    } else {
+                        let roll = hash_tick(self.tick + member as u64, ax, az);
+                        (
+                            ax + ((roll % 5) as i32 - 2),
+                            az + (((roll >> 8) % 5) as i32 - 2),
+                        )
+                    };
+                    let standing_y = if member == 0 {
+                        Some(y)
+                    } else {
+                        crate::mobs::pig_spawn_column_ok(&self.world, x, z)
+                    };
+                    let Some(standing_y) = standing_y else {
+                        continue;
+                    };
+                    if (standing_y - y).abs() > 1 {
+                        continue;
+                    }
+                    let pos = Vec3::new(x as f32 + 0.5, standing_y as f32 + 0.02, z as f32 + 0.5);
+                    if self
+                        .sessions
+                        .values()
+                        .any(|s| s.player.joined && (s.player.pos - pos).length() < 12.0)
+                        || self.mobs.values().any(|m| (m.pos - pos).length() < 1.0)
+                    {
+                        continue;
+                    }
+                    let Some(id) = self.allocate_mob_id() else {
+                        return;
+                    };
+                    self.mobs.insert(id, crate::mobs::Mob::new(kind, pos));
+                    spawned += 1;
+                }
+                if spawned > 0 {
+                    break; // at most one group per player per second
+                }
             }
         }
     }
@@ -2687,6 +2721,91 @@ mod tests {
             }
             out
         }
+    }
+
+    #[test]
+    fn pig_groups_require_grass_and_respect_mob_cap() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                for x in cx * 16..cx * 16 + 16 {
+                    for z in cz * 16..cz * 16 + 16 {
+                        rig.server.world.set_block(x, 54, z, ssc_world::GRASS_BLOCK);
+                    }
+                }
+            }
+        }
+        rig.server.time_of_day = 0.5;
+        let mut found_group = false;
+        for tick in 1..=128 {
+            rig.server.mobs.clear();
+            rig.server.tick = tick;
+            rig.server.spawn_mobs();
+            let count = rig.server.mobs.len();
+            assert!(count <= 3 && count <= MOB_CAP_PER_PLAYER);
+            for mob in rig.server.mobs.values() {
+                assert_eq!(mob.kind, crate::mobs::MobKind::Pig);
+                let x = mob.pos.x.floor() as i32;
+                let z = mob.pos.z.floor() as i32;
+                assert_eq!(
+                    rig.server
+                        .world
+                        .block_or_air(x, mob.pos.y.floor() as i32 - 1, z),
+                    ssc_world::GRASS_BLOCK
+                );
+                assert!((mob.pos - rig.server.sessions[&1].player.pos).length() >= 12.0);
+            }
+            if count >= 2 {
+                found_group = true;
+                break;
+            }
+        }
+        assert!(found_group, "some ticks should generate multi-pig groups");
+
+        // An existing cap of five leaves room for only one group member.
+        let sample_pos = rig.server.mobs.values().next().unwrap().pos;
+        rig.server.mobs.clear();
+        for id in FIRST_MOB_ID..FIRST_MOB_ID + 5 {
+            rig.server.mobs.insert(
+                id,
+                crate::mobs::Mob::new(crate::mobs::MobKind::Pig, sample_pos),
+            );
+        }
+        rig.server.tick += 1;
+        rig.server.spawn_mobs();
+        assert!(rig.server.mobs.len() <= MOB_CAP_PER_PLAYER);
+
+        for cx in -2..=2 {
+            for cz in -2..=2 {
+                for x in cx * 16..cx * 16 + 16 {
+                    for z in cz * 16..cz * 16 + 16 {
+                        rig.server.world.set_block(x, 54, z, ssc_world::SAND);
+                    }
+                }
+            }
+        }
+        rig.server.mobs.clear();
+        for tick in 1..=32 {
+            rig.server.tick = tick;
+            rig.server.spawn_mobs();
+            assert!(rig.server.mobs.is_empty(), "desert sand cannot host pigs");
+        }
+        rig.server.time_of_day = 0.8;
+        let mut found_zombie = false;
+        for tick in 1..=64 {
+            rig.server.tick = tick;
+            rig.server.spawn_mobs();
+            assert!(
+                rig.server.mobs.len() <= 1,
+                "zombies remain singleton spawns"
+            );
+            if let Some(mob) = rig.server.mobs.values().next() {
+                assert_eq!(mob.kind, crate::mobs::MobKind::Zombie);
+                found_zombie = true;
+                break;
+            }
+        }
+        assert!(found_zombie, "sand remains valid ground for night zombies");
     }
 
     #[test]
