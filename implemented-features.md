@@ -205,7 +205,7 @@ Every implemented wiki feature gets a line here. Status legend:
   keys) pending.
 - `partial` — Mobs: server-authoritative pigs (passive wandering) and zombies
   (night spawning, chase, melee damage, knockback, daylight burning when
-  exposed to sky); pigs spawn in grass-only groups of 1–3 with independent
+  exposed to sky but not while touching water); pigs spawn in grass-only groups of 1–3 with independent
   clearance, separation and mob-cap checks, while zombies can spawn singly
   on sand at night. Solid walls prevent zombie melee hits. Entity-kind
   packets and placeholder client meshes.

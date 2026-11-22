@@ -135,6 +135,7 @@ impl Mob {
         if self.kind == MobKind::Zombie
             && daylight
             && has_open_sky(world, self.pos, self.kind.dims().1)
+            && !touches_water(world, self.pos, self.kind.dims().1)
         {
             self.burn_timer += 1;
             if self.burn_timer >= 20 {
@@ -232,9 +233,11 @@ impl Mob {
             self.pos.y + 0.5,
             self.pos.z + self.vel.z * 0.2 + self.vel.z.signum() * hw,
         );
-        ssc_world::is_solid(
-            world.block_or_air(ahead.x.floor() as i32, ahead.y.floor() as i32, ahead.z.floor() as i32),
-        )
+        ssc_world::is_solid(world.block_or_air(
+            ahead.x.floor() as i32,
+            ahead.y.floor() as i32,
+            ahead.z.floor() as i32,
+        ))
     }
 
     /// External damage (player punch). Knockback along `from`.
@@ -254,14 +257,22 @@ impl Mob {
     }
 }
 
+/// Water anywhere along the mob's vertical body extinguishes daylight
+/// burning, even when its head is above the water surface.
+fn touches_water(world: &World, pos: Vec3, height: f32) -> bool {
+    let x = pos.x.floor() as i32;
+    let z = pos.z.floor() as i32;
+    (pos.y.floor() as i32..=(pos.y + height - 0.001).floor() as i32)
+        .any(|y| world.block_or_air(x, y, z) == ssc_world::WATER)
+}
+
 /// Whether an opaque block covers the mob. Starts above its head so its
 /// supporting terrain does not incorrectly count as a roof.
 fn has_open_sky(world: &World, pos: Vec3, height: f32) -> bool {
     let x = pos.x.floor() as i32;
     let z = pos.z.floor() as i32;
     let start_y = (pos.y + height).ceil() as i32;
-    (start_y..ssc_world::MAX_Y)
-        .all(|y| !ssc_world::is_opaque(world.block_or_air(x, y, z)))
+    (start_y..ssc_world::MAX_Y).all(|y| !ssc_world::is_opaque(world.block_or_air(x, y, z)))
 }
 
 /// Spawn eligibility for a mob at a world column: solid ground with
@@ -423,5 +434,29 @@ mod tests {
             sheltered.tick(&exposed_world, &[], 0.05, true);
         }
         assert_eq!(sheltered.health, 20.0);
+    }
+
+    #[test]
+    fn water_extinguishes_daylight_burning_and_resets_timer() {
+        let mut world = flat_world();
+        let mut zombie = Mob::new(MobKind::Zombie, Vec3::new(8.5, 49.02, 8.5));
+        for _ in 0..10 {
+            zombie.tick(&world, &[], 0.05, true);
+        }
+        assert_eq!(zombie.burn_timer, 10);
+        world.set_block(8, 49, 8, ssc_world::WATER);
+        for _ in 0..40 {
+            zombie.tick(&world, &[], 0.05, true);
+        }
+        assert_eq!(zombie.health, 20.0);
+        assert_eq!(zombie.burn_timer, 0);
+        world.set_block(8, 49, 8, ssc_world::AIR);
+        for _ in 0..20 {
+            zombie.tick(&world, &[], 0.05, true);
+        }
+        assert_eq!(
+            zombie.health, 19.0,
+            "sunlight burns again after leaving water"
+        );
     }
 }
