@@ -32,6 +32,11 @@ pub const DEEPSLATE_COAL_ORE: BlockId = 20;
 pub const COPPER_ORE: BlockId = 21;
 pub const DEEPSLATE_COPPER_ORE: BlockId = 22;
 pub const STRIPPED_OAK_LOG: BlockId = 23;
+pub const OAK_SAPLING: BlockId = 24;
+/// Internal growth state; drops/places as a normal oak sapling item.
+pub const OAK_SAPLING_READY: BlockId = 25;
+/// Natural leaves produced by saved tree growth, not persistent placements.
+pub const GROWN_OAK_LEAVES: BlockId = 26;
 
 // Atlas tile ids (16×16 tiles per row/column in the 256×256 atlas).
 pub const TILE_MISSING: u16 = 0;
@@ -60,6 +65,7 @@ pub const TILE_DEEPSLATE_COAL_ORE: u16 = 22;
 pub const TILE_COPPER_ORE: u16 = 23;
 pub const TILE_DEEPSLATE_COPPER_ORE: u16 = 24;
 pub const TILE_STRIPPED_LOG_SIDE: u16 = 25;
+pub const TILE_OAK_SAPLING: u16 = 26;
 
 /// Face indices into [`BlockInfo::tiles`].
 pub const FACE_TOP: usize = 0;
@@ -267,7 +273,32 @@ pub const BLOCKS: &[BlockInfo] = &[
         2.0,
         false,
     ),
+    BlockInfo {
+        name: "oak_sapling",
+        solid: false,
+        opaque: false,
+        tiles: [TILE_OAK_SAPLING; 6],
+        hardness: 0.0,
+        needs_tool: false,
+    },
+    BlockInfo {
+        name: "oak_sapling_ready",
+        solid: false,
+        opaque: false,
+        tiles: [TILE_OAK_SAPLING; 6],
+        hardness: 0.0,
+        needs_tool: false,
+    },
+    b("grown_oak_leaves", [TILE_LEAVES; 6], 0.2, false),
 ];
+
+pub fn is_oak_leaves(block: BlockId) -> bool {
+    matches!(block, OAK_LEAVES | GROWN_OAK_LEAVES)
+}
+
+pub fn is_oak_sapling(block: BlockId) -> bool {
+    matches!(block, OAK_SAPLING | OAK_SAPLING_READY)
+}
 
 /// Number of registered blocks (valid ids are `0..BLOCK_COUNT`).
 pub const BLOCK_COUNT: u16 = BLOCKS.len() as u16;

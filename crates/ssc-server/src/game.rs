@@ -1440,7 +1440,19 @@ impl Server {
         let daylight = self.time_of_day > 0.25 && self.time_of_day < 0.75;
         let mut dirty_columns = HashSet::new();
         for ((x, y, z), roll) in samples {
-            let changes = if self.world.block_or_air(x, y, z) == ssc_world::OAK_LEAVES {
+            let sampled = self.world.block_or_air(x, y, z);
+            let changes = if ssc_world::is_oak_sapling(sampled) {
+                let changes =
+                    crate::block_ticks::sapling_changes(&self.world, x, y, z, roll, daylight);
+                if changes.contains(&((x, y, z), AIR)) {
+                    self.spawn_item_entity(
+                        ssc_world::OAK_SAPLING,
+                        1,
+                        Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5),
+                    );
+                }
+                changes
+            } else if ssc_world::is_oak_leaves(sampled) {
                 let column = (x.div_euclid(16), z.div_euclid(16));
                 let local = (x.rem_euclid(16), y, z.rem_euclid(16));
                 // Leaf overrides are player placements. Natural leaves are
@@ -1451,11 +1463,10 @@ impl Server {
                     .and_then(|edits| edits.get(&local))
                     == Some(&ssc_world::OAK_LEAVES);
                 if !persistent && crate::block_ticks::leaf_can_decay(&self.world, x, y, z) {
-                    let rng = (roll & 0xffff) as f32 / 65535.0;
-                    if let Some(item) = crate::survival::drop_for(ssc_world::OAK_LEAVES, rng) {
+                    for (item, count) in crate::survival::block_drops(sampled, roll, None) {
                         self.spawn_item_entity(
                             item,
-                            1,
+                            count,
                             Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5),
                         );
                     }
@@ -1628,7 +1639,7 @@ impl Server {
         };
         // The nearest entity only takes priority when no solid voxel is
         // between its hitbox and the attacker's eyes.
-        if raycast(&self.world, eye, dir, (t - 0.0001).max(0.0)).is_some() {
+        if crate::raycast::raycast_solids(&self.world, eye, dir, (t - 0.0001).max(0.0)).is_some() {
             return false;
         }
         let held = self.selected_item(id).map(|(item, _)| item);
@@ -2523,7 +2534,14 @@ impl Server {
         );
         // The creative palette: every registered block, server-driven
         // like all gameplay data (specs.md §2).
-        let palette: Vec<BlockId> = (1..ssc_world::BLOCK_COUNT).collect();
+        let palette: Vec<BlockId> = (1..ssc_world::BLOCK_COUNT)
+            .filter(|block| {
+                !matches!(
+                    *block,
+                    ssc_world::OAK_SAPLING_READY | ssc_world::GROWN_OAK_LEAVES
+                )
+            })
+            .collect();
         let _ = self.direct(id, &ServerPacket::CreativeBlocks { ids: palette });
         // Movement is simulated before the bounded streaming queue is drained.
         // Generate collision terrain at the joined (possibly saved) position
@@ -2623,13 +2641,12 @@ impl Server {
                 // nothing (wrong tool, leaves or an unharvestable block).
                 session.survival.exhaustion += 0.005;
             }
-            let rng = (hash_tick(self.tick, x, z) & 0xFFFF) as f32 / 65535.0;
-            if let Some(item) = crate::survival::drop_with_tool(
+            let roll = hash_tick(self.tick, x, z);
+            for (item, count) in crate::survival::block_drops(
                 block,
-                rng,
+                roll,
                 self.selected_item(id).map(|(item, _)| item),
             ) {
-                let count = crate::survival::drop_count(block, rng);
                 let leftover = {
                     let Some(session) = self.sessions.get_mut(&id) else {
                         return;
@@ -2652,7 +2669,25 @@ impl Server {
             }
         }
         self.settle_gravity_stack(x, y + 1, z);
-        if self.cfg.game_mode == GameMode::Survival {
+        if ssc_world::is_oak_sapling(self.world.block_or_air(x, y + 1, z))
+            && !crate::block_ticks::can_plant_sapling(&self.world, x, y + 1, z)
+        {
+            self.world.set_block(x, y + 1, z, AIR);
+            self.record_block_edit(x, y + 1, z, AIR);
+            let _ = self.broadcast(&ServerPacket::BlockUpdate {
+                x,
+                y: y + 1,
+                z,
+                block: AIR,
+            });
+            self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
+            self.spawn_item_entity(
+                ssc_world::OAK_SAPLING,
+                1,
+                Vec3::new(x as f32 + 0.5, y as f32 + 1.5, z as f32 + 0.5),
+            );
+        }
+        if self.cfg.game_mode == GameMode::Survival && ssc_world::block_info(block).hardness > 0.0 {
             if let Some(session) = self.sessions.get_mut(&id) {
                 damage_held_tool(session, 1);
             }
@@ -2771,9 +2806,15 @@ impl Server {
         if is_solid(self.world.block_or_air(x, y, z)) {
             return;
         }
+        if ssc_world::is_oak_sapling(block)
+            && !crate::block_ticks::can_plant_sapling(&self.world, x, y, z)
+        {
+            return;
+        }
         // Never place inside any player.
         for session in self.sessions.values() {
-            if session.player.joined
+            if is_solid(block)
+                && session.player.joined
                 && !session.survival.dead
                 && player_aabb(session.player.pos).intersects(&ssc_math::Aabb::block(x, y, z))
             {
@@ -3091,6 +3132,82 @@ mod tests {
             ssc_world::OAK_LEAVES
         );
         assert_eq!(rig.server.items.len(), item_count);
+    }
+
+    #[test]
+    fn sapling_growth_states_and_natural_canopies_are_persisted_as_world_edits() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let (tick, (x, y, z)) = (1..10000)
+            .find_map(|tick| {
+                let ((x, y, z), roll) =
+                    crate::block_ticks::sample(tick, rig.server.gen.seed(), 0, 0, 8);
+                ((4..=11).contains(&x) && (4..=11).contains(&z) && roll % 7 == 0)
+                    .then_some((tick, (x, y, z)))
+            })
+            .unwrap();
+        rig.server.tick = tick;
+        rig.server.time_of_day = 0.5;
+        rig.server.world.set_block(x, y - 1, z, ssc_world::DIRT);
+        rig.server.world.set_block(x, y, z, ssc_world::OAK_SAPLING);
+        rig.server
+            .record_block_edit(x, y, z, ssc_world::OAK_SAPLING);
+        rig.server.tick_blocks();
+        assert_eq!(
+            rig.server.world.block_or_air(x, y, z),
+            ssc_world::OAK_SAPLING_READY
+        );
+        assert_eq!(
+            rig.server.block_edits[&(0, 0)][&(x, y, z)],
+            ssc_world::OAK_SAPLING_READY
+        );
+        let path = std::env::temp_dir().join(format!(
+            "ssc-sapling-growth-save-{}.bin",
+            std::process::id()
+        ));
+        rig.server.cfg.world_path = Some(path.clone());
+        rig.server.save_world();
+        let (_, _, saved) = crate::persistence::load(&path).unwrap().unwrap();
+        assert_eq!(saved[&(0, 0)][&(x, y, z)], ssc_world::OAK_SAPLING_READY);
+        rig.server.tick_blocks();
+        assert_eq!(rig.server.world.block_or_air(x, y, z), ssc_world::OAK_LOG);
+        assert!(rig.server.block_edits[&(0, 0)]
+            .values()
+            .any(|block| *block == ssc_world::GROWN_OAK_LEAVES));
+        rig.server.save_world();
+        let (_, _, saved) = crate::persistence::load(&path).unwrap().unwrap();
+        assert!(saved[&(0, 0)]
+            .values()
+            .any(|block| *block == ssc_world::GROWN_OAK_LEAVES));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn saplings_can_be_planted_on_dirt_but_not_stone_and_drop_when_uprooted() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::OAK_SAPLING, 2));
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(8, 55, 8), AIR);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::OAK_SAPLING, 2))
+        );
+        rig.server.world.set_block(8, 54, 8, ssc_world::DIRT);
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.world.block_or_air(8, 55, 8),
+            ssc_world::OAK_SAPLING
+        );
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::OAK_SAPLING, 1))
+        );
+        rig.server.break_block(1, 8, 54, 8);
+        assert_eq!(rig.server.world.block_or_air(8, 55, 8), AIR);
+        assert!(rig
+            .server
+            .items
+            .values()
+            .any(|item| item.item == ssc_world::OAK_SAPLING && item.count == 1));
     }
 
     #[test]

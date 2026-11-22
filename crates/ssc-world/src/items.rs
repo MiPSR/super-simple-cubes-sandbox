@@ -93,6 +93,8 @@ pub fn item_info(id: ItemId) -> ItemInfo {
         21 => block_item(COPPER_ORE, "copper_ore"),
         22 => block_item(DEEPSLATE_COPPER_ORE, "deepslate_copper_ore"),
         23 => block_item(STRIPPED_OAK_LOG, "stripped_oak_log"),
+        24 | 25 => block_item(super::OAK_SAPLING, "oak_sapling"),
+        26 => block_item(OAK_LEAVES, "oak_leaves"),
         APPLE => ItemInfo {
             name: "apple",
             max_stack: 64,
@@ -251,7 +253,8 @@ pub fn block_drop(b: BlockId) -> Option<ItemId> {
         IRON_ORE | DEEPSLATE_IRON_ORE => Some(RAW_IRON),
         COPPER_ORE | DEEPSLATE_COPPER_ORE => Some(RAW_COPPER),
         GRASS_BLOCK => Some(for_block(DIRT)),
-        OAK_LEAVES => None,
+        OAK_LEAVES | super::GROWN_OAK_LEAVES => None,
+        super::OAK_SAPLING | super::OAK_SAPLING_READY => Some(super::OAK_SAPLING),
         SNOW_BLOCK => Some(SNOWBALL),
         other => Some(for_block(other)),
     }

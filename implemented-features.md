@@ -96,10 +96,21 @@ Every implemented wiki feature gets a line here. Status legend:
   Bedrock's four-block distance; unloaded neighboring columns defer the
   check. Player-placed leaves are identified by persisted leaf block
   overrides and never decay. Decay persists as an air edit and can drop a
-  server-owned apple stack using the existing boosted 5% apple chance;
-  sapling/stick drops, exact Bedrock update propagation and leaf particles
-  are pending.
-- `dev` — 20 placeholder blocks with procedurally generated textures in
+  server-owned loot stacks. Breaking/decaying leaves independently roll
+  saplings at 5%, 1–2 sticks at 2%, and apples at the existing boosted 5%
+  chance (still intentionally above Bedrock's 0.5%). Exact Bedrock update
+  propagation and leaf particles are pending.
+- `partial` — Oak saplings plant only on grass/dirt and have two saved
+  random-tick growth stages (1/7 advancement chance when daylight is
+  sufficient). A ready sapling generates a basic 4–6-block oak with leaves,
+  validates all canopy space before modifying blocks, and waits for loaded
+  neighbors instead of overwriting buildings. Grown canopy leaves remain
+  natural/decayable across saves through an internal block-state ID.
+  Removing supporting soil uproots the sapling into an item. Plants are
+  non-solid but selectable, and do not block combat rays. The plant mesh
+  is a translucent placeholder cube; fancy oaks, bone meal, exact growth
+  clearance and propagated light are pending.
+- `dev` — Placeholder blocks with procedurally generated textures in
   Minecraft's 16×16 tile atlas convention; real texture packs load via
   `--textures <256×256 atlas.png>` (PNG decode through the approved
   `png` crate) — we cannot ship Mojang assets (specs §1).
@@ -204,7 +215,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 14
+  throwing snowballs and Silk Touch are missing. Protocol 15
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit

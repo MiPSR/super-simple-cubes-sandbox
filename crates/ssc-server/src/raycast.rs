@@ -16,8 +16,25 @@ pub struct RayHit {
 }
 
 /// March from `origin` along normalized `dir`, up to `max_dist` blocks.
-/// Skips the starting cell; returns the first solid block hit.
+/// Skips the starting cell; includes non-solid, selectable saplings.
 pub fn raycast(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<RayHit> {
+    raycast_matching(world, origin, dir, max_dist, |block| {
+        is_solid(block) || ssc_world::is_oak_sapling(block)
+    })
+}
+
+/// Combat occlusion ignores plants that have no collision.
+pub fn raycast_solids(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<RayHit> {
+    raycast_matching(world, origin, dir, max_dist, is_solid)
+}
+
+fn raycast_matching(
+    world: &World,
+    origin: Vec3,
+    dir: Vec3,
+    max_dist: f32,
+    accepts: impl Fn(ssc_world::BlockId) -> bool,
+) -> Option<RayHit> {
     let mut x = origin.x.floor() as i32;
     let mut y = origin.y.floor() as i32;
     let mut z = origin.z.floor() as i32;
@@ -26,9 +43,21 @@ pub fn raycast(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<
     let step_y = if dir.y > 0.0 { 1 } else { -1 };
     let step_z = if dir.z > 0.0 { 1 } else { -1 };
 
-    let t_delta_x = if dir.x != 0.0 { (1.0 / dir.x).abs() } else { f32::INFINITY };
-    let t_delta_y = if dir.y != 0.0 { (1.0 / dir.y).abs() } else { f32::INFINITY };
-    let t_delta_z = if dir.z != 0.0 { (1.0 / dir.z).abs() } else { f32::INFINITY };
+    let t_delta_x = if dir.x != 0.0 {
+        (1.0 / dir.x).abs()
+    } else {
+        f32::INFINITY
+    };
+    let t_delta_y = if dir.y != 0.0 {
+        (1.0 / dir.y).abs()
+    } else {
+        f32::INFINITY
+    };
+    let t_delta_z = if dir.z != 0.0 {
+        (1.0 / dir.z).abs()
+    } else {
+        f32::INFINITY
+    };
 
     // Distance until the ray crosses the next cell boundary per axis.
     let boundary_x = (if dir.x > 0.0 { x + 1 } else { x }) as f32;
@@ -76,8 +105,33 @@ pub fn raycast(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<
             return None;
         }
 
-        if is_solid(world.block_or_air(x, y, z)) {
-            return Some(RayHit { block: [x, y, z], normal });
+        if accepts(world.block_or_air(x, y, z)) {
+            return Some(RayHit {
+                block: [x, y, z],
+                normal,
+            });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saplings_are_selectable_but_do_not_block_combat_rays() {
+        let mut world = World::default();
+        world.set_block(1, 64, 0, ssc_world::OAK_SAPLING);
+        world.set_block(2, 64, 0, ssc_world::STONE);
+        let origin = Vec3::new(0.5, 64.5, 0.5);
+        assert_eq!(
+            raycast(&world, origin, Vec3::X, 4.5).unwrap().block,
+            [1, 64, 0]
+        );
+        assert_eq!(
+            raycast_solids(&world, origin, Vec3::X, 4.5).unwrap().block,
+            [2, 64, 0]
+        );
+        assert!(!ssc_world::is_solid(ssc_world::OAK_SAPLING));
     }
 }

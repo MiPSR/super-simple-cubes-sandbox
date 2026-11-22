@@ -70,6 +70,8 @@ runnable through Nix.
   into planks.
 - Hold right-click for 1.6 seconds to eat; releasing use or switching items
   cancels eating. Eating progress is shown under the crosshair.
+- Breaking or decaying oak leaves can drop saplings. Plant them on dirt or
+  grass in daylight with room above; they grow into new oaks over time.
 - Q drops one item from the selected survival hotbar stack into the world.
 
 See `implemented-features.md` for the full parity tracker.

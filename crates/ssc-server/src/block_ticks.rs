@@ -1,9 +1,9 @@
 //! Random-ticked grass rules. Lighting is a direct-skylight approximation
 //! until the server has propagated block/sky light.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
-use ssc_world::{BlockId, World, DIRT, GRASS_BLOCK, MAX_Y, MIN_Y, OAK_LEAVES, WATER};
+use ssc_world::{BlockId, World, DIRT, GRASS_BLOCK, MAX_Y, MIN_Y, WATER};
 
 pub type BlockChange = ((i32, i32, i32), BlockId);
 
@@ -32,7 +32,7 @@ pub fn sample(tick: u64, seed: u64, cx: i32, cz: i32, section: usize) -> ((i32, 
 }
 
 fn blocks_light(block: BlockId) -> bool {
-    ssc_world::is_opaque(block) && block != OAK_LEAVES
+    ssc_world::is_opaque(block) && !ssc_world::is_oak_leaves(block)
 }
 
 fn skylight(world: &World, x: i32, y: i32, z: i32, daylight: bool) -> u8 {
@@ -42,7 +42,7 @@ fn skylight(world: &World, x: i32, y: i32, z: i32, daylight: bool) -> u8 {
         if blocks_light(block) {
             return 0;
         }
-        if matches!(block, WATER | OAK_LEAVES) {
+        if block == WATER || ssc_world::is_oak_leaves(block) {
             light = light.saturating_sub(1);
         }
     }
@@ -97,7 +97,7 @@ pub fn grass_changes(
 /// missing neighbor columns as unknown support so loading edges cannot
 /// destroy a canopy whose trunk has not arrived yet.
 pub fn leaf_can_decay(world: &World, x: i32, y: i32, z: i32) -> bool {
-    if world.block_or_air(x, y, z) != OAK_LEAVES {
+    if !ssc_world::is_oak_leaves(world.block_or_air(x, y, z)) {
         return false;
     }
     for cx in (x - 4).div_euclid(16)..=(x + 4).div_euclid(16) {
@@ -127,7 +127,7 @@ pub fn leaf_can_decay(world: &World, x: i32, y: i32, z: i32) -> bool {
             if matches!(block, ssc_world::OAK_LOG | ssc_world::STRIPPED_OAK_LOG) {
                 return false;
             }
-            if block == OAK_LEAVES && visited.insert(neighbor) {
+            if ssc_world::is_oak_leaves(block) && visited.insert(neighbor) {
                 queue.push_back((neighbor, distance + 1));
             }
         }
@@ -135,10 +135,81 @@ pub fn leaf_can_decay(world: &World, x: i32, y: i32, z: i32) -> bool {
     true
 }
 
+pub fn can_plant_sapling(world: &World, x: i32, y: i32, z: i32) -> bool {
+    (MIN_Y + 1..MAX_Y).contains(&y) && matches!(world.block_or_air(x, y - 1, z), DIRT | GRASS_BLOCK)
+}
+
+/// Two saved growth stages, with a 1/7 advancement chance per eligible
+/// random tick. Tree geometry and clearance are deliberately basic.
+pub fn sapling_changes(
+    world: &World,
+    x: i32,
+    y: i32,
+    z: i32,
+    roll: u64,
+    daylight: bool,
+) -> Vec<BlockChange> {
+    let sapling = world.block_or_air(x, y, z);
+    if !ssc_world::is_oak_sapling(sapling) {
+        return Vec::new();
+    }
+    if !can_plant_sapling(world, x, y, z) {
+        return vec![((x, y, z), ssc_world::AIR)];
+    }
+    if roll % 7 != 0 || skylight(world, x, y, z, daylight) < 9 {
+        return Vec::new();
+    }
+    if sapling == ssc_world::OAK_SAPLING {
+        return vec![((x, y, z), ssc_world::OAK_SAPLING_READY)];
+    }
+    let height = 4 + ((roll >> 8) % 3) as i32;
+    if y + height >= MAX_Y {
+        return Vec::new();
+    }
+    let mut tree = BTreeMap::new();
+    for dy in height - 3..=height {
+        let radius: i32 = if dy < height - 1 { 2 } else { 1 };
+        for dx in -radius..=radius {
+            for dz in -radius..=radius {
+                if radius == 2 && dx.abs() == 2 && dz.abs() == 2 {
+                    continue;
+                }
+                tree.insert((x + dx, y + dy, z + dz), ssc_world::GROWN_OAK_LEAVES);
+            }
+        }
+    }
+    for dy in 0..height {
+        tree.insert((x, y + dy, z), ssc_world::OAK_LOG);
+    }
+    // Validate the entire plan before changing anything. In particular,
+    // never overwrite a building or generate into unloaded columns.
+    for (&(tx, ty, tz), _) in &tree {
+        let Some(existing) = world.get_block(tx, ty, tz) else {
+            return Vec::new();
+        };
+        if existing != ssc_world::AIR
+            && !ssc_world::is_oak_leaves(existing)
+            && (tx, ty, tz) != (x, y, z)
+        {
+            return Vec::new();
+        }
+    }
+    tree.insert((x, y - 1, z), DIRT);
+    tree.into_iter()
+        .filter(|(pos, block)| {
+            let old = world.block_or_air(pos.0, pos.1, pos.2);
+            // Canopies do not turn existing persistent leaf placements into
+            // natural leaves. Trunks may replace leaves normally.
+            old != *block
+                && !(*block == ssc_world::GROWN_OAK_LEAVES && ssc_world::is_oak_leaves(old))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ssc_world::AIR;
+    use ssc_world::{AIR, OAK_LEAVES};
 
     #[test]
     fn samples_are_deterministic_and_stay_in_their_section() {
@@ -234,5 +305,54 @@ mod tests {
         assert!(leaf_can_decay(&world, 15, 64, 8));
         world.set_block(16, 64, 8, ssc_world::OAK_LOG);
         assert!(!leaf_can_decay(&world, 15, 64, 8));
+    }
+
+    #[test]
+    fn saplings_use_two_growth_stages_and_need_light_and_soil() {
+        let mut world = World::default();
+        world.set_block(8, 63, 8, GRASS_BLOCK);
+        world.set_block(8, 64, 8, ssc_world::OAK_SAPLING);
+        assert!(sapling_changes(&world, 8, 64, 8, 0, false).is_empty());
+        assert!(sapling_changes(&world, 8, 64, 8, 1, true).is_empty());
+        assert_eq!(
+            sapling_changes(&world, 8, 64, 8, 0, true),
+            vec![((8, 64, 8), ssc_world::OAK_SAPLING_READY)]
+        );
+        world.set_block(8, 64, 8, ssc_world::OAK_SAPLING_READY);
+        world.set_block(10, 65, 8, ssc_world::STONE);
+        assert!(
+            sapling_changes(&world, 8, 64, 8, 0, true).is_empty(),
+            "canopy cannot overwrite buildings"
+        );
+        world.set_block(10, 65, 8, AIR);
+        let changes = sapling_changes(&world, 8, 64, 8, 0, true);
+        assert!(changes.contains(&((8, 64, 8), ssc_world::OAK_LOG)));
+        assert!(changes.contains(&((8, 63, 8), DIRT)));
+        assert!(changes
+            .iter()
+            .any(|(_, block)| *block == ssc_world::GROWN_OAK_LEAVES));
+        for ((x, y, z), block) in changes {
+            world.set_block(x, y, z, block);
+        }
+        assert!(!leaf_can_decay(&world, 10, 65, 8));
+        world.set_block(8, 64, 8, ssc_world::OAK_SAPLING);
+        world.set_block(8, 63, 8, ssc_world::SAND);
+        assert_eq!(
+            sapling_changes(&world, 8, 64, 8, 1, true),
+            vec![((8, 64, 8), AIR)]
+        );
+    }
+
+    #[test]
+    fn tree_growth_waits_for_loaded_canopy_space_and_preserves_placed_leaves() {
+        let mut world = World::default();
+        world.set_block(15, 63, 8, DIRT);
+        world.set_block(15, 64, 8, ssc_world::OAK_SAPLING_READY);
+        assert!(sapling_changes(&world, 15, 64, 8, 0, true).is_empty());
+        world.column_mut(1, 0);
+        world.set_block(16, 65, 8, OAK_LEAVES);
+        let changes = sapling_changes(&world, 15, 64, 8, 0, true);
+        assert!(!changes.is_empty());
+        assert!(!changes.iter().any(|(pos, _)| *pos == (16, 65, 8)));
     }
 }

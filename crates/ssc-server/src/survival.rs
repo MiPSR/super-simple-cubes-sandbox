@@ -555,7 +555,7 @@ pub fn craft(inv: &mut [Slot], recipe: u8) -> bool {
 
 /// The item a broken block drops (with the leaf→apple chance).
 pub fn drop_for(block: BlockId, rng: f32) -> Option<ItemId> {
-    if block == ssc_world::OAK_LEAVES {
+    if ssc_world::is_oak_leaves(block) {
         // Higher than vanilla so food is reachable without saplings.
         return (rng < ssc_world::LEAF_APPLE_CHANCE).then_some(ssc_world::APPLE);
     }
@@ -599,6 +599,31 @@ pub fn drop_with_tool(block: BlockId, rng: f32, held: Option<ItemId>) -> Option<
         return None;
     }
     drop_for(block, rng)
+}
+
+/// Full loot list. Leaf apple, sapling and stick rolls are independent,
+/// so a single leaf can yield several item types.
+pub fn block_drops(block: BlockId, roll: u64, held: Option<ItemId>) -> Vec<(ItemId, u8)> {
+    if !can_harvest(block, held) {
+        return Vec::new();
+    }
+    let unit = |shift: u32| ((roll >> shift) & 0xffffu64) as f32 / 65536.0;
+    if ssc_world::is_oak_leaves(block) {
+        let mut drops = Vec::new();
+        if unit(0) < ssc_world::LEAF_APPLE_CHANCE {
+            drops.push((ssc_world::APPLE, 1));
+        }
+        if unit(16) < 0.05 {
+            drops.push((ssc_world::OAK_SAPLING, 1));
+        }
+        if unit(32) < 0.02 {
+            drops.push((ssc_world::STICK, 1 + ((roll >> 48) & 1) as u8));
+        }
+        return drops;
+    }
+    drop_with_tool(block, unit(0), held)
+        .map(|item| vec![(item, drop_count(block, unit(0)))])
+        .unwrap_or_default()
 }
 
 /// Unenchanted copper ore yields 2–5 raw copper; other block drops are
@@ -871,6 +896,34 @@ mod tests {
             "remaining material stays stripped"
         );
         assert_eq!(inv[0], Some((ssc_world::OAK_PLANKS, 4)));
+    }
+
+    #[test]
+    fn leaf_sapling_stick_and_apple_rolls_are_independent() {
+        for leaf in [ssc_world::OAK_LEAVES, ssc_world::GROWN_OAK_LEAVES] {
+            assert_eq!(
+                block_drops(leaf, 0, None),
+                vec![
+                    (ssc_world::APPLE, 1),
+                    (ssc_world::OAK_SAPLING, 1),
+                    (ssc_world::STICK, 1),
+                ]
+            );
+            assert!(block_drops(leaf, u64::MAX, None).is_empty());
+            assert_eq!(
+                block_drops(leaf, 1 << 48, None).last(),
+                Some(&(ssc_world::STICK, 2))
+            );
+            let sapling_only = 0xffff | (0xffff << 32);
+            assert_eq!(
+                block_drops(leaf, sapling_only, None),
+                vec![(ssc_world::OAK_SAPLING, 1)]
+            );
+        }
+        assert_eq!(
+            block_drops(ssc_world::OAK_SAPLING_READY, 0, None),
+            vec![(ssc_world::OAK_SAPLING, 1)]
+        );
     }
 
     #[test]

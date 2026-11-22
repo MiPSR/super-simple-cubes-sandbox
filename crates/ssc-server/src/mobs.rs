@@ -11,7 +11,6 @@ use ssc_math::{Vec2, Vec3};
 use ssc_world::World;
 
 use crate::physics::move_entity;
-use crate::raycast::raycast;
 
 /// Mob kinds and their stats (wiki-approximated).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,7 +183,13 @@ impl Mob {
                     let to_target = target_eye - eye;
                     let distance = to_target.length();
                     if distance > 0.001
-                        && raycast(world, eye, to_target / distance, distance).is_none()
+                        && crate::raycast::raycast_solids(
+                            world,
+                            eye,
+                            to_target / distance,
+                            distance,
+                        )
+                        .is_none()
                     {
                         self.attack_cooldown = 20; // 1 hit/second
                         hit_player = Some(idx);
