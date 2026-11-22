@@ -164,6 +164,7 @@ struct App {
     hunger: u8,
     air: u16,
     hunger_effect_ticks: u16,
+    eating_remaining: u8,
     /// Dig progress broadcast ((x,y,z), percent) + expiry.
     dig_progress: Option<((i32, i32, i32), u8, Instant)>,
     /// Slot currently highlighted during an inventory drag.
@@ -294,6 +295,7 @@ impl App {
             hunger: 20,
             air: 300,
             hunger_effect_ticks: 0,
+            eating_remaining: 0,
             dig_progress: None,
             inv_pick: None,
             inv_drag: None,
@@ -481,6 +483,9 @@ impl App {
                     state: KeyState::Pressed,
                 } => {
                     let locked = frame.mouse_locked();
+                    if locked {
+                        self.send(&ClientPacket::UseStop);
+                    }
                     frame.set_mouse_locked(!locked);
                 }
                 EngineEvent::Key {
@@ -524,6 +529,9 @@ impl App {
                     // E: inventory screen in survival, block picker in
                     // creative (both server-driven).
                     self.picker_open = !self.picker_open;
+                    if self.picker_open {
+                        self.send(&ClientPacket::UseStop);
+                    }
                     self.inv_pick = None;
                     self.inv_drag = None;
                     let locked = frame.mouse_locked();
@@ -584,9 +592,16 @@ impl App {
                     }
                 }
                 EngineEvent::Focused(false) => {
+                    self.send(&ClientPacket::UseStop);
                     frame.set_mouse_locked(false);
                     self.inv_drag = None;
                     self.inv_pick = None;
+                }
+                EngineEvent::MouseButton {
+                    button: MouseButton::Right,
+                    state: KeyState::Released,
+                } => {
+                    self.send(&ClientPacket::UseStop);
                 }
                 _ => {}
             }
@@ -803,6 +818,15 @@ impl App {
                 );
             }
             // Dig progress (server-driven) under the crosshair.
+            if self.eating_remaining > 0 {
+                frame.hud_text(
+                    format!("eating {}%", (32 - self.eating_remaining as u16) * 100 / 32),
+                    wf / 2.0 - 60.0,
+                    hf / 2.0 + 38.0,
+                    14.0,
+                    [1.0, 0.85, 0.3, 0.9],
+                );
+            }
             if let Some(((_, _, _), progress, at)) = self.dig_progress {
                 if Instant::now() - at < Duration::from_millis(400) {
                     frame.hud_text(
@@ -1330,6 +1354,9 @@ impl App {
             }
             ServerPacket::ToolDurability { slots } => {
                 self.tool_durability = slots;
+            }
+            ServerPacket::EatingProgress { remaining } => {
+                self.eating_remaining = remaining;
             }
             ServerPacket::Status {
                 health,

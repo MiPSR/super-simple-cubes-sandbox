@@ -102,6 +102,8 @@ pub enum ClientPacket {
     Craft { recipe: u8 },
     /// Drop one item from the selected survival hotbar stack (Q).
     DropSelected,
+    /// Release use; cancels an in-progress food consumption.
+    UseStop,
 }
 
 impl ClientPacket {
@@ -146,6 +148,7 @@ impl ClientPacket {
                 w.put_u8(*recipe);
             }
             ClientPacket::DropSelected => w.put_u8(10),
+            ClientPacket::UseStop => w.put_u8(11),
         }
         w.into_bytes()
     }
@@ -180,6 +183,7 @@ impl ClientPacket {
                 recipe: r.get_u8()?,
             },
             10 => ClientPacket::DropSelected,
+            11 => ClientPacket::UseStop,
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad client packet tag {tag}"
@@ -282,6 +286,8 @@ pub enum ServerPacket {
     },
     /// Remaining uses for 36 inventory slots; zero for non-tools.
     ToolDurability { slots: Vec<u16> },
+    /// Server-owned food use timer (0 = finished or canceled).
+    EatingProgress { remaining: u8 },
 }
 
 impl ServerPacket {
@@ -446,6 +452,10 @@ impl ServerPacket {
                     w.put_u16(*wear);
                 }
             }
+            ServerPacket::EatingProgress { remaining } => {
+                w.put_u8(19);
+                w.put_u8(*remaining);
+            }
         }
         w.into_bytes()
     }
@@ -575,6 +585,13 @@ impl ServerPacket {
                 }
                 ServerPacket::ToolDurability { slots }
             }
+            19 => {
+                let remaining = r.get_u8()?;
+                if remaining > 32 {
+                    return Err(crate::codec::DecodeError("invalid eating progress".into()));
+                }
+                ServerPacket::EatingProgress { remaining }
+            }
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad server packet tag {tag}"
@@ -663,4 +680,18 @@ mod tests {
         };
         assert_eq!(ServerPacket::decode(&packet.encode()).unwrap(), packet);
     }
+}
+#[test]
+fn eating_release_and_progress_round_trip() {
+    assert_eq!(
+        ClientPacket::decode(&ClientPacket::UseStop.encode()).unwrap(),
+        ClientPacket::UseStop
+    );
+    for remaining in [0, 1, 16, 32] {
+        let packet = ServerPacket::EatingProgress { remaining };
+        assert_eq!(ServerPacket::decode(&packet.encode()).unwrap(), packet);
+    }
+    assert!(
+        ServerPacket::decode(&ServerPacket::EatingProgress { remaining: 33 }.encode()).is_err()
+    );
 }

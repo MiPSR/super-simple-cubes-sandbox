@@ -135,9 +135,13 @@ Every implemented wiki feature gets a line here. Status legend:
   inventory, position, vitals and selected slot. No armor, XP,
   general crafting or mode switching mid-session yet. Apple, raw porkchop
   and rotten flesh restore 2.4/1.8/0.8 saturation respectively, capped
-  at current hunger; Bedrock apples can be eaten at full hunger. Eating is
-  immediate instead of taking 32 ticks, and the full Bedrock food roster is
-  missing.
+  at current hunger; Bedrock apples can be eaten at full hunger. Eating
+  requires 32 uninterrupted server ticks (1.6 s), slows movement to 20%
+  and prevents sprinting. Releasing use, changing/dropping/swapping the held
+  item, digging or death cancels the timer. Repeated use packets cannot
+  accelerate it; hunger, saturation and rotten-flesh effects apply only on
+  completion. The client shows server-synced eating progress. No eating
+  animation or full Bedrock food roster yet.
 - `partial` — Game modes: creative (default hotbar blocks, instant dig,
   no consumption, E = block picker, double-jump flight with server
   authority) and survival (empty start, E =
@@ -182,7 +186,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 13
+  throwing snowballs and Silk Touch are missing. Protocol 14
   requires matching clients for the expanded block/item registries.
 - `partial` — Using a wooden/stone axe on an oak log strips it in place,
   within server-validated reach and line of sight; each successful strip

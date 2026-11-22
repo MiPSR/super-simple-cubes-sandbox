@@ -66,6 +66,8 @@ runnable through Nix.
   Tools wear out and remaining uses appear in the inventory.
 - Right-click oak logs with an axe to strip them; stripped logs still craft
   into planks.
+- Hold right-click for 1.6 seconds to eat; releasing use or switching items
+  cancels eating. Eating progress is shown under the crosshair.
 - Q drops one item from the selected survival hotbar stack into the world.
 
 See `implemented-features.md` for the full parity tracker.

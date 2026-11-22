@@ -145,6 +145,9 @@ struct Session {
     durability: Vec<u16>,
     /// Survival-mode state (ignored in creative).
     survival: crate::survival::SurvivalState,
+    /// In-progress use is transient, never restored from a player save.
+    eating: Option<EatingState>,
+    last_eating_sync: u8,
     /// Whether this death already emitted inventory drops.
     inventory_dropped_on_death: bool,
     /// Respawn point (set at join).
@@ -159,6 +162,12 @@ struct Session {
     lod_queue: VecDeque<ColumnKey>,
     lod_streamed: HashSet<ColumnKey>,
     last_player_col: ColumnKey,
+}
+
+struct EatingState {
+    slot: u8,
+    item: ssc_world::ItemId,
+    remaining: u8,
 }
 
 /// One dropped stack. Gameplay and pickup are entirely server-owned.
@@ -206,6 +215,8 @@ impl Session {
             inventory,
             durability: vec![0; crate::survival::INVENTORY_SIZE],
             survival: crate::survival::SurvivalState::default(),
+            eating: None,
+            last_eating_sync: 0,
             inventory_dropped_on_death: false,
             spawn: Vec3::new(8.5, 128.0, 8.5),
             inv_dirty: true,
@@ -645,6 +656,7 @@ impl Server {
     fn tick(&mut self) {
         self.tick += 1;
         let dt = 1.0 / TICK_RATE;
+        self.tick_eating();
 
         // --- Movement + survival simulation + dig progress, per session.
         // Effects are collected first, then applied (broadcasts need &mut
@@ -689,12 +701,20 @@ impl Server {
             let jumped = p.keys & keys::JUMP != 0 && p.on_ground;
             let flying = p.flying;
             let can_sprint = self.cfg.game_mode == GameMode::Creative
-                || session.survival.hunger >= crate::survival::MIN_SPRINT_HUNGER;
+                || (session.survival.hunger >= crate::survival::MIN_SPRINT_HUNGER
+                    && session.eating.is_none());
             let sprinting = can_sprint
                 && p.keys & keys::SPRINT != 0
                 && p.keys & keys::FORWARD != 0
                 && p.keys & keys::SNEAK == 0;
-            step_player(&self.world, p, dt, flying, sprinting);
+            step_player(
+                &self.world,
+                p,
+                dt,
+                flying,
+                sprinting,
+                session.eating.is_some(),
+            );
             let dx = p.pos.x - old_pos.x;
             let dz = p.pos.z - old_pos.z;
 
@@ -1599,7 +1619,14 @@ fn damage_held_tool(session: &mut Session, uses: u16) {
 // ---------------------------------------------------------------------------
 
 /// Simulate one player for one tick (server-authoritative).
-fn step_player(world: &World, player: &mut Player, dt: f32, flying: bool, sprint: bool) {
+fn step_player(
+    world: &World,
+    player: &mut Player,
+    dt: f32,
+    flying: bool,
+    sprint: bool,
+    using_item: bool,
+) {
     let k = player.keys;
     let yaw = player.yaw;
 
@@ -1652,6 +1679,7 @@ fn step_player(world: &World, player: &mut Player, dt: f32, flying: bool, sprint
     } else {
         WALK_SPEED
     };
+    let speed = speed * if using_item && !flying { 0.2 } else { 1.0 };
     let wish_len = (wish[0] * wish[0] + wish[1] * wish[1]).sqrt();
     let target = if wish_len > 0.0 {
         (wish[0] / wish_len * speed, wish[1] / wish_len * speed)
@@ -2049,6 +2077,7 @@ impl Server {
                 let selected = slot % 9;
                 if session.player.selected_slot != selected {
                     session.survival.digging = None;
+                    session.eating = None;
                 }
                 session.player.selected_slot = selected;
             }
@@ -2089,6 +2118,7 @@ impl Server {
                         || b == session.player.selected_slot as usize
                     {
                         session.survival.digging = None;
+                        session.eating = None;
                     }
                     match (session.inventory[a], session.inventory[b]) {
                         (Some((item, source_count)), Some((target_item, target_count)))
@@ -2135,6 +2165,7 @@ impl Server {
                     }
                     session.inv_dirty = true;
                     session.survival.digging = None;
+                    session.eating = None;
                 }
             }
             ClientPacket::DropSelected => {
@@ -2172,6 +2203,7 @@ impl Server {
                 };
                 session.inv_dirty = true;
                 session.survival.digging = None;
+                session.eating = None;
                 self.items.insert(
                     entity_id,
                     ItemEntity {
@@ -2205,6 +2237,11 @@ impl Server {
                         z: dig.z,
                         progress: 101,
                     });
+                }
+            }
+            ClientPacket::UseStop => {
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    session.eating = None;
                 }
             }
             ClientPacket::Place => {
@@ -2390,6 +2427,9 @@ impl Server {
     /// Start digging or punching: entity hit → attack; otherwise creative
     /// breaks instantly, survival begins timed progress.
     fn handle_dig_start(&mut self, id: EntityId) {
+        if let Some(session) = self.sessions.get_mut(&id) {
+            session.eating = None;
+        }
         if self.try_attack(id) {
             return;
         }
@@ -2531,42 +2571,20 @@ impl Server {
         let item_info = ssc_world::item_info(item);
 
         // Eating (survival only — hunger doesn't exist in creative).
-        if let Some(food) = item_info.food {
+        if item_info.food.is_some() {
             if self.cfg.game_mode == GameMode::Survival {
-                let slot = self.sessions[&id].player.selected_slot as usize % 9;
-                let rotten_flesh_causes_hunger = item == ssc_world::ROTTEN_FLESH
-                    && hash_tick(self.tick, id as i32, slot as i32) % 5 != 0;
-                let ate = {
-                    let Some(session) = self.sessions.get_mut(&id) else {
-                        return;
-                    };
-                    let s = &mut session.survival;
-                    let ate = s.eat(
-                        food,
-                        ssc_world::items::food_saturation(item),
-                        item == ssc_world::APPLE,
-                    );
-                    if ate && rotten_flesh_causes_hunger {
-                        s.apply_rotten_flesh_effect();
-                    }
-                    ate
-                };
-                if ate {
-                    // Consume one.
-                    if let Some(session) = self.sessions.get_mut(&id) {
-                        if let Some((i, c)) = session.inventory[slot] {
-                            session.inventory[slot] = if c <= 1 { None } else { Some((i, c - 1)) };
-                        }
-                        session.inv_dirty = true;
-                        session.status_dirty = true;
-                    }
-                    let pos = self.sessions[&id].player.pos;
-                    self.send_sound(
-                        SoundId::Eat,
-                        pos.x.floor() as i32,
-                        pos.y.floor() as i32,
-                        pos.z.floor() as i32,
-                    );
+                let session = self.sessions.get_mut(&id).unwrap();
+                if session.eating.is_none()
+                    && !session.survival.dead
+                    && (session.survival.hunger < crate::survival::MAX_HUNGER
+                        || item == ssc_world::APPLE)
+                {
+                    session.eating = Some(EatingState {
+                        slot: session.player.selected_slot,
+                        item,
+                        remaining: crate::survival::EAT_TICKS,
+                    });
+                    session.survival.digging = None;
                 }
             }
             return;
@@ -2645,6 +2663,85 @@ impl Server {
                     session.inv_dirty = true;
                 }
             }
+        }
+    }
+
+    /// Server time, not repeated use requests, determines when food is
+    /// consumed. Repeated Place packets never reset or accelerate the timer.
+    fn tick_eating(&mut self) {
+        let mut completed = Vec::new();
+        for (id, session) in &mut self.sessions {
+            let Some(eating) = &mut session.eating else {
+                continue;
+            };
+            let valid = self.cfg.game_mode == GameMode::Survival
+                && session.player.joined
+                && !session.survival.dead
+                && session.player.selected_slot == eating.slot
+                && session
+                    .inventory
+                    .get(eating.slot as usize)
+                    .is_some_and(|slot| {
+                        slot.is_some_and(|(item, count)| item == eating.item && count > 0)
+                    })
+                && (session.survival.hunger < crate::survival::MAX_HUNGER
+                    || eating.item == ssc_world::APPLE);
+            if !valid {
+                session.eating = None;
+                continue;
+            }
+            eating.remaining -= 1;
+            if eating.remaining == 0 {
+                completed.push((*id, eating.item, eating.slot));
+                session.eating = None;
+            }
+        }
+        for (id, item, slot) in completed {
+            let session = self.sessions.get_mut(&id).unwrap();
+            let food = ssc_world::item_info(item)
+                .food
+                .expect("eating state stores food");
+            if !session.survival.eat(
+                food,
+                ssc_world::items::food_saturation(item),
+                item == ssc_world::APPLE,
+            ) {
+                continue;
+            }
+            if item == ssc_world::ROTTEN_FLESH
+                && hash_tick(self.tick, id as i32, slot as i32) % 5 != 0
+            {
+                session.survival.apply_rotten_flesh_effect();
+            }
+            if let Some((item, count)) = session.inventory[slot as usize] {
+                session.inventory[slot as usize] = if count == 1 {
+                    None
+                } else {
+                    Some((item, count - 1))
+                };
+            }
+            session.inv_dirty = true;
+            session.status_dirty = true;
+            let pos = session.player.pos;
+            self.send_sound(
+                SoundId::Eat,
+                pos.x.floor() as i32,
+                pos.y.floor() as i32,
+                pos.z.floor() as i32,
+            );
+        }
+        let mut sync = Vec::new();
+        for (id, session) in &mut self.sessions {
+            let remaining = session.eating.as_ref().map_or(0, |eating| eating.remaining);
+            if remaining != session.last_eating_sync
+                && (remaining % 4 == 0 || session.last_eating_sync == 0)
+            {
+                session.last_eating_sync = remaining;
+                sync.push((*id, ServerPacket::EatingProgress { remaining }));
+            }
+        }
+        for (id, packet) in sync {
+            let _ = self.direct(id, &packet);
         }
     }
 
@@ -2941,7 +3038,14 @@ mod tests {
         session.player.keys = keys::FORWARD | keys::SNEAK;
         for _ in 0..20 {
             let session = rig.server.sessions.get_mut(&1).unwrap();
-            step_player(&rig.server.world, &mut session.player, 0.05, false, false);
+            step_player(
+                &rig.server.world,
+                &mut session.player,
+                0.05,
+                false,
+                false,
+                false,
+            );
         }
         assert!(rig.server.sessions[&1].player.pos.x < 16.3);
         assert!(rig.server.sessions[&1].player.on_ground);
@@ -2949,12 +3053,26 @@ mod tests {
         // Jumping still lets the player leave the ledge.
         let session = rig.server.sessions.get_mut(&1).unwrap();
         session.player.keys |= keys::JUMP;
-        step_player(&rig.server.world, &mut session.player, 0.05, false, false);
+        step_player(
+            &rig.server.world,
+            &mut session.player,
+            0.05,
+            false,
+            false,
+            false,
+        );
         assert!(session.player.pos.y > 55.1);
         assert!(!session.player.on_ground);
         session.player.keys = keys::FORWARD;
         for _ in 0..25 {
-            step_player(&rig.server.world, &mut session.player, 0.05, false, false);
+            step_player(
+                &rig.server.world,
+                &mut session.player,
+                0.05,
+                false,
+                false,
+                false,
+            );
         }
         assert!(session.player.pos.x > 16.3);
         assert!(session.player.pos.y < 55.0);
@@ -2968,7 +3086,14 @@ mod tests {
         session.player.on_ground = true;
         session.player.keys = keys::FORWARD;
         for _ in 0..10 {
-            step_player(&rig.server.world, &mut session.player, 0.05, false, false);
+            step_player(
+                &rig.server.world,
+                &mut session.player,
+                0.05,
+                false,
+                false,
+                false,
+            );
         }
         assert!(session.player.pos.x > 16.3);
         assert!(session.player.pos.y < 55.0);
@@ -3608,6 +3733,9 @@ mod tests {
             session.survival.hunger = 10;
         }
         rig.server.handle_use(1);
+        for _ in 0..crate::survival::EAT_TICKS {
+            rig.server.tick_eating();
+        }
         let session = &rig.server.sessions[&1];
         assert_eq!(session.survival.hunger, 14, "apple restores 4 hunger");
         assert!((session.survival.saturation - 7.4).abs() < 0.0001);
@@ -3618,11 +3746,121 @@ mod tests {
             session.survival.hunger = 20;
         }
         rig.server.handle_use(1);
+        for _ in 0..crate::survival::EAT_TICKS {
+            rig.server.tick_eating();
+        }
         assert_eq!(
             rig.server.sessions[&1].inventory[0],
             Some((ssc_world::APPLE, 1))
         );
         assert!((rig.server.sessions[&1].survival.saturation - 9.8).abs() < 0.0001);
+    }
+
+    #[test]
+    fn food_requires_32_server_ticks_and_packet_spam_does_not_speed_it_up() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::APPLE, 3));
+        rig.server.sessions.get_mut(&1).unwrap().survival.hunger = 10;
+        for _ in 0..100 {
+            rig.server.handle_packet(1, ClientPacket::Place).unwrap();
+        }
+        assert_eq!(rig.server.sessions[&1].survival.hunger, 10);
+        for _ in 0..31 {
+            rig.server.handle_packet(1, ClientPacket::Place).unwrap();
+            rig.server.tick();
+        }
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::APPLE, 3))
+        );
+        rig.server.tick();
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::APPLE, 2))
+        );
+        assert_eq!(rig.server.sessions[&1].survival.hunger, 14);
+        assert!(rig.server.sessions[&1].eating.is_none());
+        assert!(rig.drain(0).iter().any(|packet| matches!(
+            packet, ServerPacket::Sound { sound, .. } if *sound == SoundId::Eat.to_u16()
+        )));
+    }
+
+    #[test]
+    fn releasing_use_or_changing_held_food_cancels_eating() {
+        for cancel in [
+            ClientPacket::UseStop,
+            ClientPacket::SelectSlot { slot: 1 },
+            ClientPacket::SwapSlots { a: 0, b: 1 },
+            ClientPacket::DropSelected,
+            ClientPacket::DigStart,
+        ] {
+            let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+            rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::APPLE, 3));
+            rig.server.sessions.get_mut(&1).unwrap().survival.hunger = 10;
+            rig.server.handle_packet(1, ClientPacket::Place).unwrap();
+            for _ in 0..31 {
+                rig.server.tick_eating();
+            }
+            rig.server.handle_packet(1, cancel.clone()).unwrap();
+            rig.server.tick_eating();
+            assert!(rig.server.sessions[&1].eating.is_none(), "{cancel:?}");
+            assert_eq!(rig.server.sessions[&1].survival.hunger, 10, "{cancel:?}");
+        }
+    }
+
+    #[test]
+    fn canceled_eating_restarts_from_zero_and_dead_players_do_not_finish() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::APPLE, 3));
+        rig.server.handle_packet(1, ClientPacket::Place).unwrap();
+        for _ in 0..31 {
+            rig.server.tick_eating();
+        }
+        rig.server.handle_packet(1, ClientPacket::UseStop).unwrap();
+        rig.server.handle_packet(1, ClientPacket::Place).unwrap();
+        rig.server.tick_eating();
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::APPLE, 3))
+        );
+        assert_eq!(
+            rig.server.sessions[&1].eating.as_ref().unwrap().remaining,
+            31
+        );
+        rig.server.sessions.get_mut(&1).unwrap().survival.die();
+        for _ in 0..32 {
+            rig.server.tick_eating();
+        }
+        assert!(rig.server.sessions[&1].eating.is_none());
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::APPLE, 3))
+        );
+    }
+
+    #[test]
+    fn eating_slows_movement_and_prevents_sprinting() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.inventory[0] = Some((ssc_world::APPLE, 3));
+        session.player.keys = keys::FORWARD | keys::SPRINT;
+        session.player.on_ground = true;
+        let before = session.player.pos.x;
+        rig.server.handle_packet(1, ClientPacket::Place).unwrap();
+        rig.server.tick();
+        let session = &rig.server.sessions[&1];
+        assert!((session.player.pos.x - before - WALK_SPEED * 0.2 / TICK_RATE).abs() < 0.001);
+        assert_eq!(session.survival.exhaustion, 0.0);
+        assert!(rig
+            .drain(0)
+            .iter()
+            .any(|packet| matches!(packet, ServerPacket::EatingProgress { remaining: 31 })));
+        rig.server.handle_packet(1, ClientPacket::UseStop).unwrap();
+        rig.server.tick();
+        assert!(rig
+            .drain(0)
+            .iter()
+            .any(|packet| matches!(packet, ServerPacket::EatingProgress { remaining: 0 })));
     }
 
     #[test]
@@ -3634,6 +3872,9 @@ mod tests {
             session.survival.hunger = 10;
         }
         rig.server.handle_use(1);
+        for _ in 0..crate::survival::EAT_TICKS {
+            rig.server.tick_eating();
+        }
         let session = &rig.server.sessions[&1];
         assert_eq!(session.survival.hunger, 13);
         assert!((session.survival.saturation - 6.8).abs() < 0.0001);
@@ -3641,6 +3882,9 @@ mod tests {
         rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::PORKCHOP, 1));
         rig.server.sessions.get_mut(&1).unwrap().survival.hunger = 20;
         rig.server.handle_use(1);
+        for _ in 0..crate::survival::EAT_TICKS {
+            rig.server.tick_eating();
+        }
         assert_eq!(
             rig.server.sessions[&1].inventory[0],
             Some((ssc_world::PORKCHOP, 1))
@@ -3867,6 +4111,9 @@ mod tests {
         }
         let should_apply = hash_tick(rig.server.tick, 1, 0) % 5 != 0;
         rig.server.handle_use(1);
+        for _ in 0..crate::survival::EAT_TICKS {
+            rig.server.tick_eating();
+        }
         let session = &rig.server.sessions[&1];
         assert_eq!(session.survival.hunger, 14);
         assert_eq!(session.inventory[0], Some((ssc_world::ROTTEN_FLESH, 1)));

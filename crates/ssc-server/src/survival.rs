@@ -18,6 +18,8 @@ pub const MAX_HUNGER: u8 = 20;
 pub const INITIAL_SATURATION: f32 = 5.0;
 /// Sprinting requires more than three full drumsticks.
 pub const MIN_SPRINT_HUNGER: u8 = 7;
+/// Current foods take 1.6 seconds of uninterrupted use to consume.
+pub const EAT_TICKS: u8 = 32;
 /// Max air, in ticks (Minecraft: 300 = 15 s of breath).
 pub const MAX_AIR: u16 = 300;
 /// Seconds before auto-respawn (a death screen would be nicer).
