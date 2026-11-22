@@ -904,6 +904,9 @@ impl Server {
                 let mut fx = crate::survival::TickEffects::default();
                 let session = self.sessions.get_mut(player_id).unwrap();
                 session.survival.apply_damage(damage, &mut fx);
+                if fx.hurt {
+                    session.survival.exhaustion += 0.1;
+                }
                 session.status_dirty = true;
                 let pos = session.player.pos;
                 self.send_sound(
@@ -1549,6 +1552,9 @@ impl Server {
                 session.player.vel.y = (session.player.vel.y + 4.0).min(6.0);
                 let mut fx = crate::survival::TickEffects::default();
                 session.survival.apply_damage(damage, &mut fx);
+                if fx.hurt {
+                    session.survival.exhaustion += 0.1;
+                }
                 session.status_dirty = true;
             }
             let p = self.sessions[&target].player.pos;
@@ -3779,6 +3785,24 @@ mod tests {
     }
 
     #[test]
+    fn zombie_hit_costs_defender_exhaustion() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let pos = rig.server.sessions[&1].player.pos;
+        rig.server.mobs.insert(
+            FIRST_MOB_ID,
+            crate::mobs::Mob::new(crate::mobs::MobKind::Zombie, pos + Vec3::new(1.0, 0.0, 0.0)),
+        );
+        for _ in 0..20 {
+            rig.server.tick();
+            if rig.server.sessions[&1].survival.health < crate::survival::MAX_HEALTH {
+                break;
+            }
+        }
+        assert!(rig.server.sessions[&1].survival.health < crate::survival::MAX_HEALTH);
+        assert!((rig.server.sessions[&1].survival.exhaustion - 0.1).abs() < 0.0001);
+    }
+
+    #[test]
     fn creative_set_hotbar_slot_rejected_in_survival() {
         let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
         rig.server
@@ -3928,11 +3952,13 @@ mod tests {
         rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
         assert_eq!(rig.server.sessions[&2].survival.health, before);
         assert_eq!(rig.server.sessions[&1].survival.exhaustion, 0.0);
+        assert_eq!(rig.server.sessions[&2].survival.exhaustion, 0.0);
 
         rig.server.world.set_block(10, 56, 8, AIR);
         rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
         assert_eq!(rig.server.sessions[&2].survival.health, before - 2.0);
         assert!((rig.server.sessions[&1].survival.exhaustion - 0.1).abs() < 0.0001);
+        assert!((rig.server.sessions[&2].survival.exhaustion - 0.1).abs() < 0.0001);
     }
 
     #[test]

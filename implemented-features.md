@@ -120,7 +120,8 @@ Every implemented wiki feature gets a line here. Status legend:
   (distance − 3), drowning (1 heart/s after 15 s), exhaustion-driven hunger
   (0.1 per meter actually sprinted, 0.01 per meter swum, 0.05 per jump or
   0.2 per sprint-jump; walking and bumping into walls cost no movement
-  exhaustion, successful attacks cost 0.1), sprinting only above 6 hunger
+  exhaustion, successful attacks and zombie/PvP hits each cost 0.1;
+  fall, drowning and void damage do not), sprinting only above 6 hunger
   points (creative is unrestricted); initial saturation is 5 and exhaustion
   spends saturation before visible hunger, regen 1 HP/4 s at hunger ≥ 18, starvation stops at
   half a heart (normal difficulty), timed digging (hardness × 1.5, × 5
