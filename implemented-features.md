@@ -106,7 +106,8 @@ Every implemented wiki feature gets a line here. Status legend:
 - `partial` — Survival mode (`--mode survival|creative`, default survival):
   health 20 / hunger 20 / air 300 with wiki-accurate rules — fall damage
   (distance − 3), drowning (1 heart/s after 15 s), exhaustion-driven hunger
-  (sprint 4× faster), regen 1 HP/4 s at hunger ≥ 18, starvation stops at
+  (sprint 5× walking exhaustion), sprinting only above 6 hunger points
+  (creative is unrestricted), regen 1 HP/4 s at hunger ≥ 18, starvation stops at
   half a heart (normal difficulty), timed digging (hardness × 1.5, × 5
   for tool-required blocks without a pickaxe), block drops into a 36-slot
   inventory (stone→cobble, grass→dirt, leaves→apple at 5%), placing
@@ -117,7 +118,7 @@ Every implemented wiki feature gets a line here. Status legend:
   further descent. Void-floor landings do not add fall damage; logging out
   there restores a safe spawn position. Anonymous UUID saves preserve
   inventory, position, vitals and selected slot. No armor, XP,
-  general crafting or mode switching mid-session yet.
+  saturation, general crafting or mode switching mid-session yet.
 - `partial` — Game modes: creative (default hotbar blocks, instant dig,
   no consumption, E = block picker, double-jump flight with server
   authority) and survival (empty start, E =

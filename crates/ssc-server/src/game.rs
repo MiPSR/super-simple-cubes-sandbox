@@ -682,9 +682,14 @@ impl Server {
             let old_y = p.pos.y;
             let jumped = p.keys & keys::JUMP != 0 && p.on_ground;
             let flying = p.flying;
-            step_player(&self.world, p, dt, flying);
+            let can_sprint = self.cfg.game_mode == GameMode::Creative
+                || session.survival.hunger >= crate::survival::MIN_SPRINT_HUNGER;
+            let sprinting = can_sprint
+                && p.keys & keys::SPRINT != 0
+                && p.keys & keys::FORWARD != 0
+                && p.keys & keys::SNEAK == 0;
+            step_player(&self.world, p, dt, flying, sprinting);
             let moving = p.keys & (keys::FORWARD | keys::BACKWARD | keys::LEFT | keys::RIGHT) != 0;
-            let sprinting = p.keys & keys::SPRINT != 0 && moving;
 
             // Survival vitals (one tick).
             let eye = p.pos + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0);
@@ -1574,7 +1579,7 @@ fn damage_held_tool(session: &mut Session, uses: u16) {
 // ---------------------------------------------------------------------------
 
 /// Simulate one player for one tick (server-authoritative).
-fn step_player(world: &World, player: &mut Player, dt: f32, flying: bool) {
+fn step_player(world: &World, player: &mut Player, dt: f32, flying: bool, sprint: bool) {
     let k = player.keys;
     let yaw = player.yaw;
 
@@ -1611,7 +1616,6 @@ fn step_player(world: &World, player: &mut Player, dt: f32, flying: bool) {
         wish[0] += right.x;
         wish[1] += right.y;
     }
-    let sprint = k & keys::SPRINT != 0 && k & keys::FORWARD != 0 && k & keys::SNEAK == 0;
     let sneak = k & keys::SNEAK != 0;
     let speed = if flying {
         if sprint {
@@ -2806,6 +2810,43 @@ mod tests {
             }
         }
         assert!(found_zombie, "sand remains valid ground for night zombies");
+    }
+
+    #[test]
+    fn low_hunger_prevents_sprinting_and_sprint_exhaustion() {
+        let mut walk = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let mut sprint = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let mut creative = Rig::new_mode(1, 0.0, GameMode::Creative);
+        for (rig, hunger) in [(&mut walk, 6), (&mut sprint, 7), (&mut creative, 0)] {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.player.keys = keys::FORWARD | keys::SPRINT;
+            session.player.on_ground = true;
+            session.survival.hunger = hunger;
+            rig.server.tick();
+        }
+        let start = Vec3::new(8.5, 55.02, 8.5);
+        let distance = |rig: &Rig| {
+            let delta = rig.server.sessions[&1].player.pos - start;
+            (delta.x * delta.x + delta.z * delta.z).sqrt()
+        };
+        assert!((distance(&walk) - WALK_SPEED / TICK_RATE).abs() < 0.001);
+        assert!((distance(&sprint) - SPRINT_SPEED / TICK_RATE).abs() < 0.001);
+        assert!((distance(&creative) - SPRINT_SPEED / TICK_RATE).abs() < 0.001);
+        assert!((walk.server.sessions[&1].survival.exhaustion - 0.005).abs() < 0.0001);
+        assert!((sprint.server.sessions[&1].survival.exhaustion - 0.025).abs() < 0.0001);
+
+        // Holding sprint while strafing or sneaking is ordinary movement.
+        for keys in [
+            keys::RIGHT | keys::SPRINT,
+            keys::FORWARD | keys::SNEAK | keys::SPRINT,
+        ] {
+            let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.player.keys = keys;
+            session.player.on_ground = true;
+            rig.server.tick();
+            assert!((rig.server.sessions[&1].survival.exhaustion - 0.005).abs() < 0.0001);
+        }
     }
 
     #[test]

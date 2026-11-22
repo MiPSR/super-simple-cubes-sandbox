@@ -14,6 +14,8 @@ pub const INVENTORY_SIZE: usize = 36;
 pub const MAX_HEALTH: f32 = 20.0;
 /// Max hunger (Minecraft: 20 = 10 drumsticks).
 pub const MAX_HUNGER: u8 = 20;
+/// Sprinting requires more than three full drumsticks.
+pub const MIN_SPRINT_HUNGER: u8 = 7;
 /// Max air, in ticks (Minecraft: 300 = 15 s of breath).
 pub const MAX_AIR: u16 = 300;
 /// Seconds before auto-respawn (a death screen would be nicer).
