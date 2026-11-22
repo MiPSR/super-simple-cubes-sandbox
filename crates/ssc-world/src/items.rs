@@ -5,9 +5,9 @@
 //! start at 100. No behavior here — the server owns all logic.
 
 use super::blocks::{
-    BlockId, AIR, BEDROCK, BRICKS, COAL_ORE, COBBLED_DEEPSLATE, COBBLESTONE, DEEPSLATE,
-    DEEPSLATE_COAL_ORE, DEEPSLATE_IRON_ORE, DIRT, GRASS_BLOCK, GRAVEL, IRON_ORE, OAK_LEAVES,
-    OAK_LOG, OAK_PLANKS, SAND, SANDSTONE, SNOW_BLOCK, STONE, WATER,
+    BlockId, AIR, BEDROCK, BRICKS, COAL_ORE, COBBLED_DEEPSLATE, COBBLESTONE, COPPER_ORE, DEEPSLATE,
+    DEEPSLATE_COAL_ORE, DEEPSLATE_COPPER_ORE, DEEPSLATE_IRON_ORE, DIRT, GRASS_BLOCK, GRAVEL,
+    IRON_ORE, OAK_LEAVES, OAK_LOG, OAK_PLANKS, SAND, SANDSTONE, SNOW_BLOCK, STONE, WATER,
 };
 
 pub type ItemId = u16;
@@ -32,6 +32,7 @@ pub const STICK: ItemId = 105;
 pub const WOODEN_PICKAXE: ItemId = 106;
 pub const STONE_PICKAXE: ItemId = 107;
 pub const FLINT: ItemId = 108;
+pub const RAW_COPPER: ItemId = 109;
 
 /// Static item description. No behavior — behavior lives in the server.
 pub struct ItemInfo {
@@ -83,6 +84,8 @@ pub fn item_info(id: ItemId) -> ItemInfo {
         18 => block_item(COBBLED_DEEPSLATE, "cobbled_deepslate"),
         19 => block_item(DEEPSLATE_IRON_ORE, "deepslate_iron_ore"),
         20 => block_item(DEEPSLATE_COAL_ORE, "deepslate_coal_ore"),
+        21 => block_item(COPPER_ORE, "copper_ore"),
+        22 => block_item(DEEPSLATE_COPPER_ORE, "deepslate_copper_ore"),
         APPLE => ItemInfo {
             name: "apple",
             max_stack: 64,
@@ -137,6 +140,12 @@ pub fn item_info(id: ItemId) -> ItemInfo {
             places: None,
             food: None,
         },
+        RAW_COPPER => ItemInfo {
+            name: "raw_copper",
+            max_stack: 64,
+            places: None,
+            food: None,
+        },
         _ => ItemInfo {
             name: "unknown",
             max_stack: 64,
@@ -161,6 +170,7 @@ pub fn valid_item_id(id: ItemId) -> bool {
             | WOODEN_PICKAXE
             | STONE_PICKAXE
             | FLINT
+            | RAW_COPPER
     );
     id == EMPTY_ITEM || block_items || free_items
 }
@@ -197,6 +207,7 @@ pub fn block_drop(b: BlockId) -> Option<ItemId> {
         DEEPSLATE => Some(for_block(COBBLED_DEEPSLATE)),
         COAL_ORE | DEEPSLATE_COAL_ORE => Some(COAL),
         IRON_ORE | DEEPSLATE_IRON_ORE => Some(RAW_IRON),
+        COPPER_ORE | DEEPSLATE_COPPER_ORE => Some(RAW_COPPER),
         GRASS_BLOCK => Some(for_block(DIRT)),
         OAK_LEAVES => None,
         other => Some(for_block(other)),
@@ -233,6 +244,8 @@ mod tests {
             (DEEPSLATE_COAL_ORE, COAL),
             (IRON_ORE, RAW_IRON),
             (DEEPSLATE_IRON_ORE, RAW_IRON),
+            (COPPER_ORE, RAW_COPPER),
+            (DEEPSLATE_COPPER_ORE, RAW_COPPER),
         ] {
             assert!(valid_item_id(ore));
             assert!(valid_item_id(resource));

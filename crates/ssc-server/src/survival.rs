@@ -441,7 +441,13 @@ pub fn drop_for(block: BlockId, rng: f32) -> Option<ItemId> {
 /// or better; stone, deepslate and coal accept any pickaxe.
 pub fn drop_with_tool(block: BlockId, rng: f32, held: Option<ItemId>) -> Option<ItemId> {
     if block_info(block).needs_tool {
-        let required_stone = matches!(block, ssc_world::IRON_ORE | ssc_world::DEEPSLATE_IRON_ORE);
+        let required_stone = matches!(
+            block,
+            ssc_world::IRON_ORE
+                | ssc_world::DEEPSLATE_IRON_ORE
+                | ssc_world::COPPER_ORE
+                | ssc_world::DEEPSLATE_COPPER_ORE
+        );
         let valid = if required_stone {
             held == Some(ssc_world::STONE_PICKAXE)
         } else {
@@ -455,6 +461,19 @@ pub fn drop_with_tool(block: BlockId, rng: f32, held: Option<ItemId>) -> Option<
         }
     }
     drop_for(block, rng)
+}
+
+/// Unenchanted copper ore yields 2–5 raw copper; other block drops are
+/// single items. Called only once the mining tier has been validated.
+pub fn drop_count(block: BlockId, rng: f32) -> u8 {
+    if matches!(
+        block,
+        ssc_world::COPPER_ORE | ssc_world::DEEPSLATE_COPPER_ORE
+    ) {
+        2 + ((rng * 4.0) as u8).min(3)
+    } else {
+        1
+    }
 }
 
 #[cfg(test)]
@@ -747,6 +766,20 @@ mod tests {
 
     #[test]
     fn mining_drops_require_the_right_pickaxe_tier() {
+        for block in [ssc_world::COPPER_ORE, ssc_world::DEEPSLATE_COPPER_ORE] {
+            assert_eq!(drop_with_tool(block, 0.5, None), None);
+            assert_eq!(
+                drop_with_tool(block, 0.5, Some(ssc_world::WOODEN_PICKAXE)),
+                None
+            );
+            assert_eq!(
+                drop_with_tool(block, 0.5, Some(ssc_world::STONE_PICKAXE)),
+                Some(ssc_world::RAW_COPPER)
+            );
+            for (roll, count) in [(0.0, 2), (0.25, 3), (0.5, 4), (0.99, 5), (1.0, 5)] {
+                assert_eq!(drop_count(block, roll), count);
+            }
+        }
         assert_eq!(drop_with_tool(ssc_world::STONE, 0.0, None), None);
         assert_eq!(
             drop_with_tool(ssc_world::COAL_ORE, 0.0, Some(ssc_world::WOODEN_PICKAXE)),

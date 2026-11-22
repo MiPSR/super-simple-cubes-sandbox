@@ -155,16 +155,23 @@ fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgba {
         ssc_world::TILE_COAL_ORE
         | ssc_world::TILE_IRON_ORE
         | ssc_world::TILE_DEEPSLATE_COAL_ORE
-        | ssc_world::TILE_DEEPSLATE_IRON_ORE => {
+        | ssc_world::TILE_DEEPSLATE_IRON_ORE
+        | ssc_world::TILE_COPPER_ORE
+        | ssc_world::TILE_DEEPSLATE_COPPER_ORE => {
             let n = noise2(x / 3, y / 3, 23);
             if n > 0.64 {
                 if tile == ssc_world::TILE_COAL_ORE || tile == ssc_world::TILE_DEEPSLATE_COAL_ORE {
                     mix([37, 35, 35], 0.8 + n * 0.2, 255)
+                } else if tile == ssc_world::TILE_COPPER_ORE
+                    || tile == ssc_world::TILE_DEEPSLATE_COPPER_ORE
+                {
+                    mix([191, 110, 73], 0.8 + n * 0.2, 255)
                 } else {
                     mix([202, 164, 133], 0.8 + n * 0.2, 255)
                 }
             } else if tile == ssc_world::TILE_DEEPSLATE_IRON_ORE
                 || tile == ssc_world::TILE_DEEPSLATE_COAL_ORE
+                || tile == ssc_world::TILE_DEEPSLATE_COPPER_ORE
             {
                 mix([72, 75, 78], 0.82 + smooth_noise2(x, y, 29) * 0.36, 255)
             } else {

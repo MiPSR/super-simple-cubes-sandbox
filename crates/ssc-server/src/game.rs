@@ -2424,28 +2424,34 @@ impl Server {
         // LOD must reflect the edit (server-driven LOD, specs.md §3).
         self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
 
-        // Survival: drop the item into the inventory (no item entities
-        // yet — direct pickup, noted in implemented-features.md).
+        // Survival: deposit into inventory, then spawn any overflow as a
+        // server-owned item entity.
         if self.cfg.game_mode == GameMode::Survival {
+            if let Some(session) = self.sessions.get_mut(&id) {
+                // Breaking a block costs exhaustion even when it drops
+                // nothing (wrong tool, leaves or an unharvestable block).
+                session.survival.exhaustion += 0.005;
+            }
             let rng = (hash_tick(self.tick, x, z) & 0xFFFF) as f32 / 65535.0;
             if let Some(item) = crate::survival::drop_with_tool(
                 block,
                 rng,
                 self.selected_item(id).map(|(item, _)| item),
             ) {
+                let count = crate::survival::drop_count(block, rng);
                 let leftover = {
                     let Some(session) = self.sessions.get_mut(&id) else {
                         return;
                     };
-                    session.survival.exhaustion += 0.005; // mining costs hunger
                     let inv = &mut session.inventory;
-                    crate::survival::add_item(inv, item, 1)
+                    crate::survival::add_item(inv, item, count)
                 };
-                if leftover == 0 {
+                if leftover < count {
                     if let Some(session) = self.sessions.get_mut(&id) {
                         session.inv_dirty = true;
                     }
-                } else {
+                }
+                if leftover > 0 {
                     self.spawn_item_entity(
                         item,
                         leftover,
@@ -3047,6 +3053,7 @@ mod tests {
             .inventory
             .iter()
             .all(Option::is_none));
+        assert!((rig.server.sessions[&1].survival.exhaustion - 0.005).abs() < 0.0001);
     }
 
     #[test]
@@ -3461,6 +3468,33 @@ mod tests {
             .items
             .values()
             .any(|item| { item.item == ssc_world::DIRT && item.count == 1 }));
+    }
+
+    #[test]
+    fn copper_ore_partial_drop_syncs_inventory_and_preserves_overflow() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.inventory.fill(Some((ssc_world::STONE, 64)));
+        session.inventory[0] = Some((ssc_world::STONE_PICKAXE, 1));
+        session.inventory[1] = Some((ssc_world::RAW_COPPER, 63));
+        session.inv_dirty = false;
+        rig.server
+            .world
+            .set_block(8, 54, 8, ssc_world::DEEPSLATE_COPPER_ORE);
+        let rng = (hash_tick(rig.server.tick, 8, 8) & 0xFFFF) as f32 / 65535.0;
+        let count = crate::survival::drop_count(ssc_world::DEEPSLATE_COPPER_ORE, rng);
+
+        rig.server.break_block(1, 8, 54, 8);
+
+        let session = &rig.server.sessions[&1];
+        assert_eq!(session.inventory[1], Some((ssc_world::RAW_COPPER, 64)));
+        assert!(session.inv_dirty);
+        assert!((session.survival.exhaustion - 0.005).abs() < 0.0001);
+        assert!(rig
+            .server
+            .items
+            .values()
+            .any(|item| { item.item == ssc_world::RAW_COPPER && item.count == count - 1 }));
     }
 
     #[test]

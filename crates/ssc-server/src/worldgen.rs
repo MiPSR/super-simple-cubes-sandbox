@@ -7,9 +7,9 @@
 //! Every extension is logged in `implemented-features.md`.
 
 use ssc_world::{
-    Column, SubChunk, AIR, BEDROCK, COAL_ORE, DEEPSLATE, DEEPSLATE_COAL_ORE, DEEPSLATE_IRON_ORE,
-    DIRT, GRASS_BLOCK, GRAVEL, IRON_ORE, MAX_Y, MIN_Y, OAK_LEAVES, OAK_LOG, SAND, SANDSTONE,
-    SNOW_BLOCK, STONE, SUBCHUNKS_PER_COLUMN, WATER,
+    Column, SubChunk, AIR, BEDROCK, COAL_ORE, COPPER_ORE, DEEPSLATE, DEEPSLATE_COAL_ORE,
+    DEEPSLATE_COPPER_ORE, DEEPSLATE_IRON_ORE, DIRT, GRASS_BLOCK, GRAVEL, IRON_ORE, MAX_Y, MIN_Y,
+    OAK_LEAVES, OAK_LOG, SAND, SANDSTONE, SNOW_BLOCK, STONE, SUBCHUNKS_PER_COLUMN, WATER,
 };
 
 /// Sea level (water surfaces sit at the top of this block).
@@ -74,7 +74,8 @@ impl WorldGen {
 
     /// Seeded 8³ cells hold small ore clusters. Use world coordinates and
     /// Euclidean division so generation is independent of column boundaries
-    /// and works equally on both sides of the origin. Only replaces stone.
+    /// and works equally on both sides of the origin. Replaces the generated
+    /// stone/deepslate body, not cave air or the surface.
     fn ore_at(&self, x: i32, y: i32, z: i32) -> u16 {
         let cell_x = x.div_euclid(8);
         let cell_y = y.div_euclid(8);
@@ -84,6 +85,7 @@ impl WorldGen {
         let local_z = z.rem_euclid(8);
         for (ore, salt, min_y, max_y, chance) in [
             (IRON_ORE, 0x1A0F_u64, MIN_Y, 64, 3),
+            (COPPER_ORE, 0xC0AA_u64, -16, 112, 2),
             (COAL_ORE, 0xC0A1_u64, 0, 192, 2),
         ] {
             if !(min_y..=max_y).contains(&y) {
@@ -103,6 +105,7 @@ impl WorldGen {
             if dx * dx + dy * dy + dz * dz <= 4 {
                 return match (ore, self.deepslate_at(x, y, z)) {
                     (IRON_ORE, true) => DEEPSLATE_IRON_ORE,
+                    (COPPER_ORE, true) => DEEPSLATE_COPPER_ORE,
                     (COAL_ORE, true) => DEEPSLATE_COAL_ORE,
                     _ => ore,
                 };
@@ -683,6 +686,8 @@ mod tests {
         let gen = WorldGen::new(31415);
         let mut coal = 0;
         let mut deep_coal = 0;
+        let mut copper = 0;
+        let mut deep_copper = 0;
         let mut iron = 0;
         for cx in -2..2 {
             for cz in -2..2 {
@@ -697,6 +702,8 @@ mod tests {
                             let block = col.get(lx, y, lz);
                             if block != COAL_ORE
                                 && block != DEEPSLATE_COAL_ORE
+                                && block != COPPER_ORE
+                                && block != DEEPSLATE_COPPER_ORE
                                 && block != IRON_ORE
                                 && block != DEEPSLATE_IRON_ORE
                             {
@@ -710,6 +717,14 @@ mod tests {
                                 assert_eq!(block == DEEPSLATE_COAL_ORE, gen.deepslate_at(x, y, z));
                                 coal += 1;
                                 deep_coal += usize::from(block == DEEPSLATE_COAL_ORE);
+                            } else if matches!(block, COPPER_ORE | DEEPSLATE_COPPER_ORE) {
+                                assert!((-16..=112).contains(&y));
+                                assert_eq!(
+                                    block == DEEPSLATE_COPPER_ORE,
+                                    gen.deepslate_at(x, y, z)
+                                );
+                                copper += 1;
+                                deep_copper += usize::from(block == DEEPSLATE_COPPER_ORE);
                             } else {
                                 assert!(y <= 64);
                                 assert_eq!(block == DEEPSLATE_IRON_ORE, gen.deepslate_at(x, y, z));
@@ -727,6 +742,10 @@ mod tests {
         assert!(
             deep_coal > 0,
             "transition layer should contain rare deepslate coal"
+        );
+        assert!(
+            copper > 0 && deep_copper > 0,
+            "both copper variants should generate"
         );
         let a = gen.generate_column(-1, -1);
         let b = gen.generate_column(-1, -1);
@@ -751,10 +770,16 @@ mod tests {
                     }
                     let block = col.get(lx, y, lz);
                     if y < 0 {
-                        assert!(matches!(block, DEEPSLATE | DEEPSLATE_IRON_ORE | GRAVEL));
+                        assert!(matches!(
+                            block,
+                            DEEPSLATE | DEEPSLATE_IRON_ORE | DEEPSLATE_COPPER_ORE | GRAVEL
+                        ));
                     }
                     if y >= 8 {
-                        assert!(matches!(block, STONE | COAL_ORE | IRON_ORE | GRAVEL));
+                        assert!(matches!(
+                            block,
+                            STONE | COAL_ORE | IRON_ORE | COPPER_ORE | GRAVEL
+                        ));
                     }
                 }
             }

@@ -29,6 +29,8 @@ pub const DEEPSLATE: BlockId = 17;
 pub const COBBLED_DEEPSLATE: BlockId = 18;
 pub const DEEPSLATE_IRON_ORE: BlockId = 19;
 pub const DEEPSLATE_COAL_ORE: BlockId = 20;
+pub const COPPER_ORE: BlockId = 21;
+pub const DEEPSLATE_COPPER_ORE: BlockId = 22;
 
 // Atlas tile ids (16×16 tiles per row/column in the 256×256 atlas).
 pub const TILE_MISSING: u16 = 0;
@@ -54,6 +56,8 @@ pub const TILE_DEEPSLATE: u16 = 19;
 pub const TILE_COBBLED_DEEPSLATE: u16 = 20;
 pub const TILE_DEEPSLATE_IRON_ORE: u16 = 21;
 pub const TILE_DEEPSLATE_COAL_ORE: u16 = 22;
+pub const TILE_COPPER_ORE: u16 = 23;
+pub const TILE_DEEPSLATE_COPPER_ORE: u16 = 24;
 
 /// Face indices into [`BlockInfo::tiles`].
 pub const FACE_TOP: usize = 0;
@@ -236,6 +240,22 @@ pub const BLOCKS: &[BlockInfo] = &[
             TILE_DEEPSLATE_COAL_ORE,
             TILE_DEEPSLATE_COAL_ORE,
             TILE_DEEPSLATE_COAL_ORE,
+        ),
+        4.5,
+        true,
+    ),
+    b(
+        "copper_ore",
+        t(TILE_COPPER_ORE, TILE_COPPER_ORE, TILE_COPPER_ORE),
+        3.0,
+        true,
+    ),
+    b(
+        "deepslate_copper_ore",
+        t(
+            TILE_DEEPSLATE_COPPER_ORE,
+            TILE_DEEPSLATE_COPPER_ORE,
+            TILE_DEEPSLATE_COPPER_ORE,
         ),
         4.5,
         true,

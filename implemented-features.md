@@ -58,7 +58,9 @@ Every implemented wiki feature gets a line here. Status legend:
   borders consistently via neighbor scan); water fills basins up to sea
   level. Below Y=0 the stone body becomes deepslate, with a mixed transition
   from Y=0 through Y=7. Seeded coal and iron ore clusters replace stone/deepslate in depth-limited
-  bands (coal Y≥0, iron Y≤64) and drop coal/raw iron, respectively. Coal
+  bands (coal Y≥0, iron Y≤64) and drop coal/raw iron, respectively. Copper
+  ore generates between Y=−16 and 112, with deepslate copper below Y=0
+  or in mixed deepslate; a stone pickaxe yields 2–5 raw copper. Coal
   clusters in deepslate in the Y=0–7 transition generate deepslate coal ore
   instead of being skipped. Ore
   frequency and shapes are approximate; small gravel pockets also replace
@@ -87,6 +89,11 @@ Every implemented wiki feature gets a line here. Status legend:
 - `partial` — Coal and iron ore blocks (hardness 3) appear in generated
   stone and drop one coal/raw iron with the correct pickaxe tier.
   No fortune, silk touch, or iron smelting yet.
+- `partial` — Copper ore (hardness 3) and deepslate copper ore (4.5)
+  generate in approximate depth-limited clusters and yield 2–5 raw copper
+  with a stone pickaxe or better. Output partially fills inventory stacks
+  and any remainder drops as a server-owned item. No copper smelting,
+  Fortune, Silk Touch, or exact Bedrock ore distribution yet.
 - `partial` — Deepslate (hardness 3) and deepslate iron ore (4.5)
   generate below Y=0; breaking deepslate drops cobbled deepslate and both
   iron ore variants drop raw iron with a stone pickaxe. Rare deepslate coal
