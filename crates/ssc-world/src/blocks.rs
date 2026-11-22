@@ -81,9 +81,8 @@ pub struct BlockInfo {
     pub tiles: [u16; 6],
     /// Breaking hardness (wiki values). `f32::INFINITY` = unbreakable.
     pub hardness: f32,
-    /// Whether a proper tool is required (hand digging is 5× slower
-    /// instead of 1.5×; no tools exist yet, so it is always the slow
-    /// path for these blocks).
+    /// Whether harvesting requires a proper tool. Tool classes and tiers
+    /// are server-owned; without one mining uses the slower hardness × 5 path.
     pub needs_tool: bool,
 }
 
@@ -179,7 +178,7 @@ pub const BLOCKS: &[BlockInfo] = &[
         false,
     ),
     // 12 — snow block (hardness 0.2)
-    b("snow_block", t(TILE_SNOW, TILE_SNOW, TILE_SNOW), 0.2, false),
+    b("snow_block", t(TILE_SNOW, TILE_SNOW, TILE_SNOW), 0.2, true),
     // 13 — bricks (hardness 2)
     b(
         "bricks",

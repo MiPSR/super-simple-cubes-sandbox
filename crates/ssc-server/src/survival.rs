@@ -26,16 +26,16 @@ pub const RESPAWN_DELAY: Duration = Duration::from_secs(2);
 /// One inventory slot: (item, count). `None` = empty.
 pub type Slot = Option<(ItemId, u8)>;
 
-/// Maximum uses for the two currently implemented pickaxe tiers.
+/// Bedrock durability for the currently implemented wooden/stone tools.
 pub fn max_durability(item: ItemId) -> u16 {
     match item {
-        ssc_world::WOODEN_PICKAXE => 60,
-        ssc_world::STONE_PICKAXE => 132,
+        ssc_world::WOODEN_PICKAXE | ssc_world::WOODEN_AXE | ssc_world::WOODEN_SHOVEL => 60,
+        ssc_world::STONE_PICKAXE | ssc_world::STONE_AXE | ssc_world::STONE_SHOVEL => 132,
         _ => 0,
     }
 }
 
-/// Old saves and server-created pickaxes without metadata start at full wear.
+/// Old saves and server-created tools without metadata start at full durability.
 pub fn effective_durability(item: ItemId, remaining: u16) -> u16 {
     if remaining == 0 {
         max_durability(item)
@@ -44,12 +44,15 @@ pub fn effective_durability(item: ItemId, remaining: u16) -> u16 {
     }
 }
 
-/// Bedrock melee damage (health points): bare hand 2, wooden/stone
-/// pickaxe 3/4. Other items currently act as a bare hand.
+/// Bedrock melee damage (health points). Other items act as a bare hand.
 pub fn attack_damage(held: Option<ItemId>) -> f32 {
     match held {
         Some(ssc_world::WOODEN_PICKAXE) => 3.0,
         Some(ssc_world::STONE_PICKAXE) => 4.0,
+        Some(ssc_world::WOODEN_AXE) => 4.0,
+        Some(ssc_world::STONE_AXE) => 5.0,
+        Some(ssc_world::WOODEN_SHOVEL) => 2.0,
+        Some(ssc_world::STONE_SHOVEL) => 3.0,
         _ => 2.0,
     }
 }
@@ -317,28 +320,46 @@ impl SurvivalState {
 // ---------------------------------------------------------------------------
 
 /// Time (seconds) to break a block by hand: hardness × 1.5, or × 5 when
-/// a proper tool is required (and none exists yet). Bedrock/air: never.
+/// a proper tool is required. Bedrock/air: never.
 pub fn dig_time(block: BlockId) -> Option<f32> {
     dig_time_with_tool(block, None)
 }
 
-/// Bedrock mining speed: a correct wooden/stone pickaxe mines at speed 2/4;
-/// without the correct tool, tool-required blocks take hardness × 5.
+/// Wooden/stone tools mine their effective block classes at speed 2/4.
+/// An insufficient mining tier uses the slower, non-harvestable timing.
 pub fn dig_time_with_tool(block: BlockId, held: Option<ItemId>) -> Option<f32> {
     let bi = block_info(block);
     if bi.hardness.is_infinite() {
         return None;
     }
-    let speed = match held {
-        Some(ssc_world::WOODEN_PICKAXE) => 2.0,
-        Some(ssc_world::STONE_PICKAXE) => 4.0,
-        _ => 1.0,
+    let effective = match held {
+        Some(ssc_world::WOODEN_PICKAXE | ssc_world::STONE_PICKAXE) => {
+            bi.needs_tool && block != ssc_world::SNOW_BLOCK
+        }
+        Some(ssc_world::WOODEN_AXE | ssc_world::STONE_AXE) => {
+            matches!(block, ssc_world::OAK_LOG | ssc_world::OAK_PLANKS)
+        }
+        Some(ssc_world::WOODEN_SHOVEL | ssc_world::STONE_SHOVEL) => matches!(
+            block,
+            ssc_world::DIRT
+                | ssc_world::GRASS_BLOCK
+                | ssc_world::SAND
+                | ssc_world::GRAVEL
+                | ssc_world::SNOW_BLOCK
+        ),
+        _ => false,
     };
-    Some(if bi.needs_tool && speed == 1.0 {
-        bi.hardness * 5.0
+    let speed = if !effective {
+        1.0
     } else {
-        bi.hardness * 1.5 / if bi.needs_tool { speed } else { 1.0 }
-    })
+        match held {
+            Some(ssc_world::WOODEN_PICKAXE | ssc_world::WOODEN_AXE | ssc_world::WOODEN_SHOVEL) => {
+                2.0
+            }
+            _ => 4.0,
+        }
+    };
+    Some(bi.hardness * if can_harvest(block, held) { 1.5 } else { 5.0 } / speed)
 }
 
 /// Bedrock mining penalties: a submerged head and no supporting ground
@@ -405,6 +426,22 @@ pub fn craft(inv: &mut [Slot], recipe: u8) -> bool {
             &[(ssc_world::COBBLESTONE, 3), (ssc_world::STICK, 2)][..],
             (ssc_world::STONE_PICKAXE, 1),
         ),
+        4 => (
+            &[(ssc_world::OAK_PLANKS, 3), (ssc_world::STICK, 2)][..],
+            (ssc_world::WOODEN_AXE, 1),
+        ),
+        5 => (
+            &[(ssc_world::COBBLESTONE, 3), (ssc_world::STICK, 2)][..],
+            (ssc_world::STONE_AXE, 1),
+        ),
+        6 => (
+            &[(ssc_world::OAK_PLANKS, 1), (ssc_world::STICK, 2)][..],
+            (ssc_world::WOODEN_SHOVEL, 1),
+        ),
+        7 => (
+            &[(ssc_world::COBBLESTONE, 1), (ssc_world::STICK, 2)][..],
+            (ssc_world::STONE_SHOVEL, 1),
+        ),
         _ => return false,
     };
     let mut next = inv.to_vec();
@@ -449,9 +486,14 @@ pub fn drop_for(block: BlockId, rng: f32) -> Option<ItemId> {
     ssc_world::items::block_drop(block)
 }
 
-/// Tool tiers currently represented in inventory. Iron ore requires stone
-/// or better; stone, deepslate and coal accept any pickaxe.
-pub fn drop_with_tool(block: BlockId, rng: f32, held: Option<ItemId>) -> Option<ItemId> {
+/// Shared harvesting rules for timing and drops.
+fn can_harvest(block: BlockId, held: Option<ItemId>) -> bool {
+    if block == ssc_world::SNOW_BLOCK {
+        return matches!(
+            held,
+            Some(ssc_world::WOODEN_SHOVEL | ssc_world::STONE_SHOVEL)
+        );
+    }
     if block_info(block).needs_tool {
         let required_stone = matches!(
             block,
@@ -468,9 +510,14 @@ pub fn drop_with_tool(block: BlockId, rng: f32, held: Option<ItemId>) -> Option<
                 Some(ssc_world::WOODEN_PICKAXE | ssc_world::STONE_PICKAXE)
             )
         };
-        if !valid {
-            return None;
-        }
+        return valid;
+    }
+    true
+}
+
+pub fn drop_with_tool(block: BlockId, rng: f32, held: Option<ItemId>) -> Option<ItemId> {
+    if !can_harvest(block, held) {
+        return None;
     }
     drop_for(block, rng)
 }
@@ -478,6 +525,9 @@ pub fn drop_with_tool(block: BlockId, rng: f32, held: Option<ItemId>) -> Option<
 /// Unenchanted copper ore yields 2–5 raw copper; other block drops are
 /// single items. Called only once the mining tier has been validated.
 pub fn drop_count(block: BlockId, rng: f32) -> u8 {
+    if block == ssc_world::SNOW_BLOCK {
+        return 4;
+    }
     if matches!(
         block,
         ssc_world::COPPER_ORE | ssc_world::DEEPSLATE_COPPER_ORE
@@ -548,6 +598,107 @@ mod tests {
         assert_eq!(attack_damage(None), 2.0);
         assert_eq!(attack_damage(Some(ssc_world::WOODEN_PICKAXE)), 3.0);
         assert_eq!(attack_damage(Some(ssc_world::STONE_PICKAXE)), 4.0);
+        for (wood, stone, wood_damage, stone_damage) in [
+            (ssc_world::WOODEN_AXE, ssc_world::STONE_AXE, 4.0, 5.0),
+            (ssc_world::WOODEN_SHOVEL, ssc_world::STONE_SHOVEL, 2.0, 3.0),
+        ] {
+            assert_eq!(max_durability(wood), 60);
+            assert_eq!(max_durability(stone), 132);
+            assert_eq!(attack_damage(Some(wood)), wood_damage);
+            assert_eq!(attack_damage(Some(stone)), stone_damage);
+        }
+    }
+
+    #[test]
+    fn axes_and_shovels_speed_only_their_effective_block_classes() {
+        for block in [ssc_world::OAK_LOG, ssc_world::OAK_PLANKS] {
+            let hand = dig_time(block).unwrap();
+            assert_eq!(
+                dig_time_with_tool(block, Some(ssc_world::WOODEN_AXE)),
+                Some(hand / 2.0)
+            );
+            assert_eq!(
+                dig_time_with_tool(block, Some(ssc_world::STONE_AXE)),
+                Some(hand / 4.0)
+            );
+            assert_eq!(
+                dig_time_with_tool(block, Some(ssc_world::STONE_SHOVEL)),
+                Some(hand)
+            );
+        }
+        for block in [
+            ssc_world::DIRT,
+            ssc_world::GRASS_BLOCK,
+            ssc_world::SAND,
+            ssc_world::GRAVEL,
+        ] {
+            let hand = dig_time(block).unwrap();
+            assert_eq!(
+                dig_time_with_tool(block, Some(ssc_world::WOODEN_SHOVEL)),
+                Some(hand / 2.0)
+            );
+            assert_eq!(
+                dig_time_with_tool(block, Some(ssc_world::STONE_SHOVEL)),
+                Some(hand / 4.0)
+            );
+            assert_eq!(
+                dig_time_with_tool(block, Some(ssc_world::STONE_AXE)),
+                Some(hand)
+            );
+        }
+        assert_eq!(
+            drop_with_tool(ssc_world::STONE, 0.5, Some(ssc_world::STONE_AXE)),
+            None
+        );
+        for block in [ssc_world::IRON_ORE, ssc_world::COPPER_ORE] {
+            assert_eq!(
+                dig_time_with_tool(block, Some(ssc_world::WOODEN_PICKAXE)),
+                Some(7.5)
+            );
+            assert_eq!(
+                drop_with_tool(block, 0.5, Some(ssc_world::WOODEN_PICKAXE)),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn snow_requires_a_shovel_and_drops_four_snowballs() {
+        let block = ssc_world::SNOW_BLOCK;
+        assert_eq!(drop_with_tool(block, 0.5, None), None);
+        assert_eq!(
+            drop_with_tool(block, 0.5, Some(ssc_world::STONE_PICKAXE)),
+            None
+        );
+        for tool in [ssc_world::WOODEN_SHOVEL, ssc_world::STONE_SHOVEL] {
+            assert_eq!(
+                drop_with_tool(block, 0.5, Some(tool)),
+                Some(ssc_world::SNOWBALL)
+            );
+            assert_eq!(drop_count(block, 0.5), 4);
+        }
+    }
+
+    #[test]
+    fn crafting_axes_and_shovels_consumes_correct_materials_atomically() {
+        for (recipe, material, amount, tool) in [
+            (4, ssc_world::OAK_PLANKS, 3, ssc_world::WOODEN_AXE),
+            (5, ssc_world::COBBLESTONE, 3, ssc_world::STONE_AXE),
+            (6, ssc_world::OAK_PLANKS, 1, ssc_world::WOODEN_SHOVEL),
+            (7, ssc_world::COBBLESTONE, 1, ssc_world::STONE_SHOVEL),
+        ] {
+            let mut inv = vec![None; INVENTORY_SIZE];
+            inv[0] = Some((material, amount));
+            let before = inv.clone();
+            assert!(!craft(&mut inv, recipe), "sticks required");
+            assert_eq!(inv, before);
+            inv[35] = Some((ssc_world::STICK, 2));
+            assert!(craft(&mut inv, recipe));
+            assert_eq!(
+                inv.iter().flatten().copied().collect::<Vec<_>>(),
+                vec![(tool, 1)]
+            );
+        }
     }
 
     #[test]

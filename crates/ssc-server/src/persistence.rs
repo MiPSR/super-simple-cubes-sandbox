@@ -903,6 +903,35 @@ mod tests {
     }
 
     #[test]
+    fn axes_shovels_and_snowball_stacks_round_trip() {
+        let path = std::env::temp_dir().join(format!("ssc-tools-save-{}.dat", std::process::id()));
+        let id = [0x79; 16];
+        let mut data = PlayerSave::default();
+        data.position = Some([8.5, 70.0, 8.5]);
+        for (slot, item) in [
+            ssc_world::WOODEN_AXE,
+            ssc_world::STONE_AXE,
+            ssc_world::WOODEN_SHOVEL,
+            ssc_world::STONE_SHOVEL,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            data.inventory[slot] = Some((item, 1));
+            data.durability[slot] = 17;
+        }
+        data.inventory[4] = Some((ssc_world::SNOWBALL, 16));
+        save_player(&path, &id, &data).unwrap();
+        assert_eq!(load_player(&path, &id).unwrap().unwrap(), data);
+        data.inventory[4] = Some((ssc_world::SNOWBALL, 17));
+        assert_eq!(
+            save_player(&path, &id, &data).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn v3_pickaxe_loads_with_full_durability() {
         let path = std::env::temp_dir().join(format!(
             "ssc-player-wear-migration-{}.dat",

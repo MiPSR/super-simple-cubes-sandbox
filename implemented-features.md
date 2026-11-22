@@ -106,8 +106,7 @@ Every implemented wiki feature gets a line here. Status legend:
   shape/distribution is approximate. Placed sand/gravel and stacks above
   broken supports settle immediately with persisted block updates (no
   animated falling entity, water displacement, suffocation or automatic
-  updates of suspended worldgen deposits yet); no shovels or Fortune/Silk
-  Touch yet.
+  updates of suspended worldgen deposits yet); no Fortune/Silk Touch yet.
 
 ## Player
 
@@ -158,12 +157,16 @@ Every implemented wiki feature gets a line here. Status legend:
   server-side DDA voxel raycast, entity attacks
   blocked by solid terrain, placement
   rejected inside any player; no survival dig particles/crack overlay
-  or additional tool types yet.
+  or enchantments yet.
 - `partial` — Wooden and stone pickaxes mine tool-required blocks at
   speed 2/4; stone/deepslate/coal require any pickaxe for a drop, and iron
-  ore requires stone. The server offers four inventory-wide recipes:
+  and copper ores require stone. Wooden pickaxes use the slower
+  non-harvestable timing for iron/copper (7.5 seconds instead of 2.25).
+  The server offers eight inventory-wide recipes:
   log→4 planks, 2 planks→4 sticks, 3 planks+2 sticks→wooden pickaxe,
-  3 cobblestone+2 sticks→stone pickaxe. Survival inventory keys 1–4
+  3 cobblestone+2 sticks→stone pickaxe, wooden/stone axes
+  (3 planks/cobblestone + 2 sticks), wooden/stone shovels
+  (1 plank/cobblestone + 2 sticks). Survival inventory keys 1–8
   request these recipes, validated atomically by the server. Unlike wiki
   crafting, this does not require shaped grid placement or a crafting table;
   higher tool tiers and enchantments are not implemented. Bedrock
@@ -173,6 +176,14 @@ Every implemented wiki feature gets a line here. Status legend:
   and reconnects; the inventory HUD displays remaining uses. Version-4
   player saves and version-2 world-item saves retain wear while older
   saves migrate with full durability.
+- `partial` — Wooden/stone axes chop oak logs and planks at speed 2/4;
+  wooden/stone shovels dig dirt, grass, sand, gravel and snow at speed 2/4.
+  They have Bedrock durability 60/132, axe damage 4/5 and shovel damage
+  2/3; wear uses the same persisted tool metadata as pickaxes and survives
+  swaps between tools of the same type. Snow blocks require a shovel and
+  drop four snowballs (stack limit 16), not a snow block. Stripping logs,
+  making paths, throwing snowballs and Silk Touch are missing. Protocol 12
+  requires matching clients for the expanded block/item registries.
 - `dev` — Sound triggers (dig/place/step) are chosen and sent by the server
   and flow end-to-end; playback via owner-approved **kira** with distance
   attenuation + stereo panning; `--sounds DIR` loads real OGG/WAV packs

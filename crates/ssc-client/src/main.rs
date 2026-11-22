@@ -155,7 +155,7 @@ struct App {
     hotbar: [u16; 9],
     /// Full inventory from the server (36 slots: (item, count)).
     inventory: Vec<(u16, u8)>,
-    /// Remaining pickaxe uses from the server (zero for other items).
+    /// Remaining tool uses from the server (zero for other items).
     tool_durability: Vec<u16>,
     /// Game mode (0 survival / 1 creative).
     mode: u8,
@@ -382,7 +382,7 @@ impl App {
         const ROW_H: f32 = 22.0;
         const COLS: f32 = 9.0;
         let panel_w = COL_W * COLS + 30.0;
-        let panel_h = 4.0 * ROW_H + 64.0;
+        let panel_h = 4.0 * ROW_H + 84.0;
         let x0 = ((w - panel_w) / 2.0).max(10.0);
         let y0 = (h - panel_h) / 2.0;
         (x0, y0, COL_W, ROW_H)
@@ -390,11 +390,11 @@ impl App {
 
     fn inventory_hit(&self, mx: f32, my: f32, w: f32, h: f32) -> Option<u8> {
         let (x0, y0, col_w, row_h) = self.inventory_layout(w, h);
-        if mx < x0 || my < y0 + 40.0 {
+        if mx < x0 || my < y0 + 60.0 {
             return None;
         }
         let col = ((mx - x0) / col_w).floor() as i32;
-        let row = ((my - y0 - 40.0) / row_h).floor() as i32;
+        let row = ((my - y0 - 60.0) / row_h).floor() as i32;
         if !(0..9).contains(&col) || !(0..4).contains(&row) {
             return None;
         }
@@ -487,7 +487,7 @@ impl App {
                     key: Key::Digit(n),
                     state: KeyState::Pressed,
                 } => {
-                    if self.picker_open && self.mode == 0 && (1..=4).contains(&n) {
+                    if self.picker_open && self.mode == 0 && (1..=8).contains(&n) {
                         self.send(&ClientPacket::Craft { recipe: n - 1 });
                         continue;
                     }
@@ -895,6 +895,13 @@ impl App {
                 14.0,
                 [1.0, 0.85, 0.3, 1.0],
             );
+            frame.hud_text(
+                "5:wood axe 6:stone axe 7:wood shovel 8:stone shovel".to_string(),
+                x0 + 15.0,
+                y0 + 42.0,
+                14.0,
+                [1.0, 0.85, 0.3, 1.0],
+            );
             for i in 0..36usize {
                 let col = (i % 9) as f32;
                 let row = (i / 9) as f32;
@@ -924,7 +931,7 @@ impl App {
                 frame.hud_text(
                     label,
                     x0 + 15.0 + col * col_w,
-                    y0 + 40.0 + row * row_h,
+                    y0 + 60.0 + row * row_h,
                     15.0,
                     color,
                 );

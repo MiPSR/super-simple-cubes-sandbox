@@ -57,10 +57,13 @@ runnable through Nix.
   Horizons-style LOD.
 - Survival crafting: open inventory with E, then press 1 for 4 planks from a
   log, 2 for 4 sticks from 2 planks, 3 for a wooden pickaxe (3 planks +
-  2 sticks), or 4 for a stone pickaxe (3 cobblestone + 2 sticks). Drag the
-  pickaxe into a hotbar slot to mine stone and ores for drops. This is an
+  2 sticks), or 4 for a stone pickaxe (3 cobblestone + 2 sticks).
+  Keys 5/6 craft wooden/stone axes (3 planks/cobblestone + 2 sticks);
+  7/8 craft wooden/stone shovels (1 plank/cobblestone + 2 sticks). Drag a
+  tool into the hotbar: pickaxes mine stone/ores, axes chop wood faster,
+  and shovels dig soil faster and collect snowballs from snow blocks. This is an
   interim inventory-wide recipe UI, not the full Minecraft crafting grid.
-  Pickaxes wear out and remaining uses appear in the inventory.
+  Tools wear out and remaining uses appear in the inventory.
 - Q drops one item from the selected survival hotbar stack into the world.
 
 See `implemented-features.md` for the full parity tracker.

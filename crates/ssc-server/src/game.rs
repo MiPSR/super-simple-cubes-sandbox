@@ -2092,7 +2092,7 @@ impl Server {
                     }
                     match (session.inventory[a], session.inventory[b]) {
                         (Some((item, source_count)), Some((target_item, target_count)))
-                            if item == target_item =>
+                            if item == target_item && ssc_world::item_info(item).max_stack > 1 =>
                         {
                             let capacity = ssc_world::item_info(item)
                                 .max_stack
@@ -3344,6 +3344,67 @@ mod tests {
             .iter()
             .flatten()
             .any(|(item, _)| *item == ssc_world::COBBLESTONE));
+    }
+
+    #[test]
+    fn crafted_axe_mines_logs_and_same_type_swaps_preserve_wear() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.inventory[0] = Some((ssc_world::OAK_PLANKS, 3));
+        session.inventory[1] = Some((ssc_world::STICK, 2));
+        rig.server
+            .handle_packet(1, ClientPacket::Craft { recipe: 4 })
+            .unwrap();
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::WOODEN_AXE, 1))
+        );
+        assert_eq!(rig.server.sessions[&1].durability[0], 60);
+        rig.server.world.set_block(8, 54, 8, ssc_world::OAK_LOG);
+        rig.server.handle_dig_start(1);
+        for _ in 0..32 {
+            rig.server.tick();
+        }
+        assert!(rig.server.sessions[&1]
+            .inventory
+            .iter()
+            .flatten()
+            .any(|(item, _)| *item == ssc_world::OAK_LOG));
+        assert_eq!(rig.server.sessions[&1].durability[0], 59);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.inventory[4] = Some((ssc_world::WOODEN_AXE, 1));
+        session.durability[4] = 7;
+        rig.server
+            .handle_packet(1, ClientPacket::SwapSlots { a: 0, b: 4 })
+            .unwrap();
+        assert_eq!(rig.server.sessions[&1].durability[0], 7);
+        assert_eq!(rig.server.sessions[&1].durability[4], 59);
+    }
+
+    #[test]
+    fn shovel_mines_snow_into_stack_limited_snowballs_and_wears() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.inventory[0] = Some((ssc_world::STONE_SHOVEL, 1));
+        session.durability[0] = 1;
+        session.inventory[1] = Some((ssc_world::SNOWBALL, 15));
+        rig.server.world.set_block(8, 54, 8, ssc_world::SNOW_BLOCK);
+        rig.server.handle_dig_start(1);
+        for _ in 0..4 {
+            rig.server.tick();
+        }
+        let session = &rig.server.sessions[&1];
+        assert_eq!(session.inventory[0], None, "last use breaks the shovel");
+        assert_eq!(session.durability[0], 0);
+        let snowballs: u16 = session
+            .inventory
+            .iter()
+            .flatten()
+            .filter(|(item, _)| *item == ssc_world::SNOWBALL)
+            .map(|(_, count)| *count as u16)
+            .sum();
+        assert_eq!(snowballs, 19);
+        assert_eq!(session.inventory[1], Some((ssc_world::SNOWBALL, 16)));
     }
 
     #[test]

@@ -33,6 +33,11 @@ pub const WOODEN_PICKAXE: ItemId = 106;
 pub const STONE_PICKAXE: ItemId = 107;
 pub const FLINT: ItemId = 108;
 pub const RAW_COPPER: ItemId = 109;
+pub const WOODEN_AXE: ItemId = 110;
+pub const STONE_AXE: ItemId = 111;
+pub const WOODEN_SHOVEL: ItemId = 112;
+pub const STONE_SHOVEL: ItemId = 113;
+pub const SNOWBALL: ItemId = 114;
 
 /// Static item description. No behavior — behavior lives in the server.
 pub struct ItemInfo {
@@ -146,6 +151,36 @@ pub fn item_info(id: ItemId) -> ItemInfo {
             places: None,
             food: None,
         },
+        WOODEN_AXE => ItemInfo {
+            name: "wooden_axe",
+            max_stack: 1,
+            places: None,
+            food: None,
+        },
+        STONE_AXE => ItemInfo {
+            name: "stone_axe",
+            max_stack: 1,
+            places: None,
+            food: None,
+        },
+        WOODEN_SHOVEL => ItemInfo {
+            name: "wooden_shovel",
+            max_stack: 1,
+            places: None,
+            food: None,
+        },
+        STONE_SHOVEL => ItemInfo {
+            name: "stone_shovel",
+            max_stack: 1,
+            places: None,
+            food: None,
+        },
+        SNOWBALL => ItemInfo {
+            name: "snowball",
+            max_stack: 16,
+            places: None,
+            food: None,
+        },
         _ => ItemInfo {
             name: "unknown",
             max_stack: 64,
@@ -171,6 +206,11 @@ pub fn valid_item_id(id: ItemId) -> bool {
             | STONE_PICKAXE
             | FLINT
             | RAW_COPPER
+            | WOODEN_AXE
+            | STONE_AXE
+            | WOODEN_SHOVEL
+            | STONE_SHOVEL
+            | SNOWBALL
     );
     id == EMPTY_ITEM || block_items || free_items
 }
@@ -210,6 +250,7 @@ pub fn block_drop(b: BlockId) -> Option<ItemId> {
         COPPER_ORE | DEEPSLATE_COPPER_ORE => Some(RAW_COPPER),
         GRASS_BLOCK => Some(for_block(DIRT)),
         OAK_LEAVES => None,
+        SNOW_BLOCK => Some(SNOWBALL),
         other => Some(for_block(other)),
     }
 }
