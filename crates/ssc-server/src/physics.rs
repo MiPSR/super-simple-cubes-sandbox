@@ -49,6 +49,20 @@ pub fn move_player(world: &World, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> Mo
     )
 }
 
+/// Grounded sneaking keeps part of the player's footprint over support.
+/// Jumping, flying and swimming callers use normal movement instead.
+pub fn move_sneaking_player(world: &World, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> MoveResult {
+    move_entity_inner(
+        world,
+        pos,
+        vel,
+        dt,
+        ssc_math::PLAYER_HALF_WIDTH,
+        ssc_math::PLAYER_HEIGHT,
+        true,
+    )
+}
+
 /// Generic entity movement with per-axis swept AABB collision and
 /// sub-stepping (players, mobs).
 pub fn move_entity(
@@ -58,6 +72,18 @@ pub fn move_entity(
     dt: f32,
     hw: f32,
     height: f32,
+) -> MoveResult {
+    move_entity_inner(world, pos, vel, dt, hw, height, false)
+}
+
+fn move_entity_inner(
+    world: &World,
+    pos: &mut Vec3,
+    vel: &mut Vec3,
+    dt: f32,
+    hw: f32,
+    height: f32,
+    sneak: bool,
 ) -> MoveResult {
     let mut on_ground = false;
 
@@ -72,13 +98,25 @@ pub fn move_entity(
 
     for _ in 0..steps {
         // Y first (so landing is exact), then X, then Z.
-        if sweep_axis(world, pos, vel.y * step_dt, Axis::Y, &mut on_ground, hw, height) {
+        if sweep_axis(
+            world,
+            pos,
+            vel.y * step_dt,
+            Axis::Y,
+            &mut on_ground,
+            hw,
+            height,
+        ) {
             vel.y = 0.0;
         }
-        if sweep_axis(world, pos, vel.x * step_dt, Axis::X, &mut on_ground, hw, height) {
+        let (mut dx, mut dz) = (vel.x * step_dt, vel.z * step_dt);
+        if sneak && vel.y <= 0.0 && has_foot_support(world, *pos, hw) {
+            (dx, dz) = trim_sneak_motion(world, *pos, dx, dz, hw);
+        }
+        if sweep_axis(world, pos, dx, Axis::X, &mut on_ground, hw, height) {
             vel.x = 0.0;
         }
-        if sweep_axis(world, pos, vel.z * step_dt, Axis::Z, &mut on_ground, hw, height) {
+        if sweep_axis(world, pos, dz, Axis::Z, &mut on_ground, hw, height) {
             vel.z = 0.0;
         }
         in_water |= entity_in_water(world, *pos, height);
@@ -93,7 +131,41 @@ pub fn move_entity(
         on_ground = true;
     }
 
-    MoveResult { on_ground, in_water }
+    MoveResult {
+        on_ground,
+        in_water,
+    }
+}
+
+fn has_foot_support(world: &World, pos: Vec3, hw: f32) -> bool {
+    // Only full cubes exist so far. Probe immediately below the feet, not
+    // a whole block below (that would allow sneaking down one-block drops).
+    let y = (pos.y - 0.05).floor() as i32;
+    if (pos.y - (y + 1) as f32).abs() > 0.05 {
+        return false;
+    }
+    let x0 = (pos.x - hw + EPS).floor() as i32;
+    let x1 = (pos.x + hw - EPS).floor() as i32;
+    let z0 = (pos.z - hw + EPS).floor() as i32;
+    let z1 = (pos.z + hw - EPS).floor() as i32;
+    (x0..=x1).any(|x| (z0..=z1).any(|z| is_solid(world.block_or_air(x, y, z))))
+}
+
+fn trim_sneak_motion(world: &World, pos: Vec3, mut dx: f32, mut dz: f32, hw: f32) -> (f32, f32) {
+    let reduce = |d: f32| d.signum() * (d.abs() - 0.05).max(0.0);
+    while dx != 0.0 && !has_foot_support(world, pos + Vec3::new(dx, 0.0, 0.0), hw) {
+        dx = reduce(dx);
+    }
+    while dz != 0.0 && !has_foot_support(world, pos + Vec3::new(0.0, 0.0, dz), hw) {
+        dz = reduce(dz);
+    }
+    // Both individual axes can be safe while their diagonal goes beyond
+    // a corner. Check the combined destination as well.
+    while (dx != 0.0 || dz != 0.0) && !has_foot_support(world, pos + Vec3::new(dx, 0.0, dz), hw) {
+        dx = reduce(dx);
+        dz = reduce(dz);
+    }
+    (dx, dz)
 }
 
 fn entity_in_water(world: &World, pos: Vec3, height: f32) -> bool {
@@ -204,6 +276,55 @@ fn sweep_axis(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sneaking_stops_at_edges_and_corners_including_negative_coordinates() {
+        for (x, z) in [(0, 0), (-1, -1), (15, 15)] {
+            let mut world = World::default();
+            world.set_block(x, 54, z, ssc_world::STONE);
+            for (vx, vz) in [(1.31, 0.0), (-1.31, 0.0), (0.0, 1.31), (1.0, 1.0)] {
+                let mut pos = Vec3::new(x as f32 + 0.5, 55.0001, z as f32 + 0.5);
+                for _ in 0..100 {
+                    let mut vel = Vec3::new(vx, -1.6, vz);
+                    let result = move_sneaking_player(&world, &mut pos, &mut vel, 0.05);
+                    assert!(result.on_ground);
+                    assert!(has_foot_support(&world, pos, ssc_math::PLAYER_HALF_WIDTH));
+                    assert!((pos.y - 55.0001).abs() < 0.001);
+                }
+                assert!((pos.x - (x as f32 + 0.5)).abs() < 0.8);
+                assert!((pos.z - (z as f32 + 0.5)).abs() < 0.8);
+            }
+        }
+    }
+
+    #[test]
+    fn sneaking_does_not_suspend_players_when_support_is_removed() {
+        let mut world = World::default();
+        world.set_block(0, 54, 0, ssc_world::STONE);
+        let mut pos = Vec3::new(0.5, 55.0001, 0.5);
+        world.set_block(0, 54, 0, ssc_world::AIR);
+        let mut vel = Vec3::new(1.31, -1.6, 0.0);
+        let result = move_sneaking_player(&world, &mut pos, &mut vel, 0.05);
+        assert!(!result.on_ground);
+        assert!(pos.y < 55.0);
+        assert!(pos.x > 0.5);
+    }
+
+    #[test]
+    fn sneaking_crosses_flat_bridges_but_not_one_block_drops() {
+        let mut world = World::default();
+        for x in 0..6 {
+            world.set_block(x, 54, 0, ssc_world::STONE);
+        }
+        world.set_block(6, 53, 0, ssc_world::STONE);
+        let mut pos = Vec3::new(0.5, 55.0001, 0.5);
+        for _ in 0..150 {
+            let mut vel = Vec3::new(1.31, -1.6, 0.0);
+            move_sneaking_player(&world, &mut pos, &mut vel, 0.05);
+        }
+        assert!(pos.x > 5.5 && pos.x < 6.3);
+        assert!(pos.y > 55.0);
+    }
 
     #[test]
     fn fast_fall_detects_water_crossed_between_ticks() {

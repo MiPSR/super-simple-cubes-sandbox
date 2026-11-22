@@ -145,8 +145,12 @@ Every implemented wiki feature gets a line here. Status legend:
   inventory screen, drag stacks between slots with server-authoritative
   swaps and same-item stack merging.
 - `partial` — Movement: axis-separated swept-AABB collision with sub-stepping
-  (no tunneling), jump, sneak/sprint speeds and basic swimming; no
-  momentum/drag simulation, auto step-up or water-aware mob AI yet.
+  (no tunneling), jump, sneak/sprint speeds and basic swimming. Grounded
+  sneaking prevents walking over full-block ledges and diagonal corners;
+  jumping, releasing sneak, or removing the support still permits falling.
+  Sneak protection is skipped during swimming and creative flight.
+  Crouch-height/eye-level changes, momentum/drag simulation, auto step-up
+  and water-aware mob AI are pending.
 - `partial` — Block interaction: creative instant dig / survival timed dig
   (server-side progress with re-target on look change, progress broadcast
   for the HUD; mining is 5× slower with a submerged head and 5× slower

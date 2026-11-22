@@ -1701,7 +1701,11 @@ fn step_player(world: &World, player: &mut Player, dt: f32, flying: bool, sprint
 
     let mut pos = player.pos;
     let mut vel = player.vel;
-    let res = move_player(world, &mut pos, &mut vel, dt);
+    let res = if sneak && player.on_ground && !flying && !in_water {
+        crate::physics::move_sneaking_player(world, &mut pos, &mut vel, dt)
+    } else {
+        move_player(world, &mut pos, &mut vel, dt)
+    };
     player.pos = pos;
     player.vel = vel;
     player.on_ground = res.on_ground;
@@ -2900,6 +2904,48 @@ mod tests {
             rig.server.sessions[&1].survival.hunger,
             crate::survival::MAX_HUNGER
         );
+    }
+
+    #[test]
+    fn sneak_holds_the_ledge_until_released_or_jumped() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.player.pos = Vec3::new(15.25, 55.0001, 8.5);
+        session.player.on_ground = true;
+        session.player.keys = keys::FORWARD | keys::SNEAK;
+        for _ in 0..20 {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            step_player(&rig.server.world, &mut session.player, 0.05, false, false);
+        }
+        assert!(rig.server.sessions[&1].player.pos.x < 16.3);
+        assert!(rig.server.sessions[&1].player.on_ground);
+
+        // Jumping still lets the player leave the ledge.
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.player.keys |= keys::JUMP;
+        step_player(&rig.server.world, &mut session.player, 0.05, false, false);
+        assert!(session.player.pos.y > 55.1);
+        assert!(!session.player.on_ground);
+        session.player.keys = keys::FORWARD;
+        for _ in 0..25 {
+            step_player(&rig.server.world, &mut session.player, 0.05, false, false);
+        }
+        assert!(session.player.pos.x > 16.3);
+        assert!(session.player.pos.y < 55.0);
+    }
+
+    #[test]
+    fn releasing_sneak_walks_off_the_ledge() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.player.pos = Vec3::new(16.25, 55.0001, 8.5);
+        session.player.on_ground = true;
+        session.player.keys = keys::FORWARD;
+        for _ in 0..10 {
+            step_player(&rig.server.world, &mut session.player, 0.05, false, false);
+        }
+        assert!(session.player.pos.x > 16.3);
+        assert!(session.player.pos.y < 55.0);
     }
 
     #[test]
