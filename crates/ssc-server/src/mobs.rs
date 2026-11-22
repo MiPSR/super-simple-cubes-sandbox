@@ -96,6 +96,8 @@ pub struct Mob {
     pub attack_cooldown: u32,
     /// Daylight burn interval counter.
     pub burn_timer: u8,
+    /// Short flee response after a pig takes melee damage.
+    pub panic_timer: u8,
     /// Marked for removal (death or despawn).
     pub dead: bool,
     /// Set by the physics step, read by the AI next tick.
@@ -115,6 +117,7 @@ impl Mob {
             wander_dir: None,
             attack_cooldown: 0,
             burn_timer: 0,
+            panic_timer: 0,
             dead: false,
             on_ground_hint: false,
             combat_immunity: crate::survival::DamageImmunity::default(),
@@ -192,6 +195,19 @@ impl Mob {
                     self.vel.y = 8.4;
                 }
             }
+        } else if self.panic_timer > 0 {
+            self.panic_timer -= 1;
+            if let Some(dir) = self.wander_dir {
+                self.vel.x = dir.x * speed * 2.0;
+                self.vel.z = dir.y * speed * 2.0;
+                self.yaw = dir.x.atan2(dir.y);
+            }
+            if self.on_ground_hint && self.is_blocked(world, hw) {
+                self.vel.y = 8.4;
+            }
+            if self.panic_timer == 0 {
+                self.wander_timer = 0;
+            }
         } else {
             // Passive wander: pick a direction or pause.
             if self.wander_timer == 0 {
@@ -255,6 +271,15 @@ impl Mob {
         self.health = (self.health - damage).max(0.0);
         // Knockback away from the attacker.
         let delta = (self.pos - from).normalize_or_zero();
+        if self.kind == MobKind::Pig {
+            self.panic_timer = 60;
+            let direction = Vec2::new(delta.x, delta.z).normalize_or_zero();
+            self.wander_dir = Some(if direction == Vec2::ZERO {
+                Vec2::X
+            } else {
+                direction
+            });
+        }
         self.vel.x += delta.x * 6.0;
         self.vel.z += delta.z * 6.0;
         self.vel.y = 4.0;
@@ -354,6 +379,30 @@ mod tests {
         for _ in 0..200 {
             assert!(pig.tick(&world, &players, 0.05, false).is_none());
         }
+    }
+
+    #[test]
+    fn hurt_pig_flees_then_returns_to_wandering_without_retaliating() {
+        let world = flat_world();
+        let mut pig = Mob::new(MobKind::Pig, Vec3::new(8.5, 49.02, 8.5));
+        let attacker = Vec3::new(6.5, 49.02, 8.5);
+        pig.hurt(1.0, attacker);
+        assert_eq!(pig.panic_timer, 60);
+        assert!(pig.wander_dir.unwrap().x > 0.9);
+        let before = pig.pos.x;
+        assert_eq!(pig.tick(&world, &[attacker], 0.05, false), None);
+        assert!(pig.pos.x > before);
+        assert!((pig.vel.x - MobKind::Pig.speed() * 2.0).abs() < 0.001);
+        let timer = pig.panic_timer;
+        pig.hurt(1.0, attacker);
+        assert_eq!(pig.panic_timer, timer, "immune hits do not restart fleeing");
+        for _ in 0..59 {
+            assert_eq!(pig.tick(&world, &[attacker], 0.05, false), None);
+        }
+        assert_eq!(pig.panic_timer, 0);
+        assert_eq!(pig.wander_timer, 0);
+        pig.tick(&world, &[], 0.05, false);
+        assert!(pig.wander_timer > 0);
     }
 
     #[test]

@@ -26,6 +26,7 @@ const PLAYER_MAGIC_V5: &[u8; 8] = b"SSCPLY05";
 const ITEMS_MAGIC: &[u8; 8] = b"SSCITM01";
 const ITEMS_MAGIC_V2: &[u8; 8] = b"SSCITM02";
 const MOBS_MAGIC: &[u8; 8] = b"SSCMOB01";
+const MOBS_MAGIC_V2: &[u8; 8] = b"SSCMOB02";
 const MAX_SAVED_ITEMS: u32 = 1_000_000;
 const MAX_SAVED_MOBS: u32 = 4_096;
 
@@ -51,6 +52,7 @@ pub struct SavedMob {
     pub wander_dir: Option<[f32; 2]>,
     pub attack_cooldown: u32,
     pub burn_timer: u8,
+    pub panic_timer: u8,
     pub on_ground: bool,
 }
 
@@ -629,7 +631,6 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
         Err(err) => return Err(err),
     };
     const HEADER: u64 = 12;
-    const RECORD: u64 = 51;
     let file_len = file.metadata()?.len();
     if file_len < HEADER {
         return Err(io::Error::new(
@@ -639,14 +640,16 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
     }
     let mut header = [0u8; HEADER as usize];
     file.read_exact(&mut header)?;
-    if &header[..8] != MOBS_MAGIC {
+    let v2 = &header[..8] == MOBS_MAGIC_V2;
+    if !v2 && &header[..8] != MOBS_MAGIC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid mob save magic",
         ));
     }
     let count = u32::from_le_bytes(header[8..12].try_into().expect("fixed mob header"));
-    if count > MAX_SAVED_MOBS || file_len != HEADER + count as u64 * RECORD {
+    let record_len = if v2 { 52 } else { 51 };
+    if count > MAX_SAVED_MOBS || file_len != HEADER + count as u64 * record_len {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid mob save length",
@@ -654,8 +657,8 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
     }
     let mut mobs = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let mut record = [0u8; RECORD as usize];
-        file.read_exact(&mut record)?;
+        let mut record = [0u8; 52];
+        file.read_exact(&mut record[..record_len as usize])?;
         let kind = record[0];
         let flags = record[1];
         let mut floats = [0.0f32; 8];
@@ -666,6 +669,7 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
         let attack_cooldown =
             u32::from_le_bytes(record[46..50].try_into().expect("fixed mob cooldown"));
         let burn_timer = record[50];
+        let panic_timer = if v2 { record[51] } else { 0 };
         let max_health = match kind {
             1 => 10.0,
             2 => 20.0,
@@ -701,6 +705,8 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
             || wander_timer > 120
             || attack_cooldown > 20
             || burn_timer >= 20
+            || panic_timer > 60
+            || (panic_timer > 0 && (kind != 1 || wander_dir.is_none()))
             || wander_dir.is_some_and(|d| d.iter().any(|v| !v.is_finite()))
         {
             return Err(io::Error::new(
@@ -718,6 +724,7 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
             wander_dir,
             attack_cooldown,
             burn_timer,
+            panic_timer,
             on_ground,
         });
     }
@@ -745,6 +752,8 @@ pub fn save_mobs(path: &Path, mobs: &[SavedMob]) -> io::Result<()> {
             || mob.wander_timer > 120
             || mob.attack_cooldown > 20
             || mob.burn_timer >= 20
+            || mob.panic_timer > 60
+            || (mob.panic_timer > 0 && (mob.kind != 1 || mob.wander_dir.is_none()))
             || mob
                 .wander_dir
                 .is_some_and(|d| d.iter().any(|v| !v.is_finite()))
@@ -759,7 +768,7 @@ pub fn save_mobs(path: &Path, mobs: &[SavedMob]) -> io::Result<()> {
     }
     let temp_path = path.with_extension("tmp");
     let mut file = File::create(&temp_path)?;
-    file.write_all(MOBS_MAGIC)?;
+    file.write_all(MOBS_MAGIC_V2)?;
     file.write_all(&(mobs.len() as u32).to_le_bytes())?;
     for mob in mobs {
         let flags = u8::from(mob.wander_dir.is_some()) | (u8::from(mob.on_ground) << 1);
@@ -778,6 +787,7 @@ pub fn save_mobs(path: &Path, mobs: &[SavedMob]) -> io::Result<()> {
         file.write_all(&direction[1].to_le_bytes())?;
         file.write_all(&mob.attack_cooldown.to_le_bytes())?;
         file.write_all(&[mob.burn_timer])?;
+        file.write_all(&[mob.panic_timer])?;
     }
     file.sync_all()?;
     fs::rename(temp_path, path)?;
@@ -1124,10 +1134,49 @@ mod tests {
             wander_dir: Some([0.5, -0.5]),
             attack_cooldown: 12,
             burn_timer: 8,
+            panic_timer: 0,
             on_ground: true,
         }];
         save_mobs(&path, &mobs).unwrap();
         assert_eq!(load_mobs(&path).unwrap().unwrap(), mobs);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn fleeing_pig_round_trips_and_legacy_mobs_default_to_no_panic() {
+        let path =
+            std::env::temp_dir().join(format!("ssc-panic-mob-save-{}.dat", std::process::id()));
+        let pig = SavedMob {
+            kind: 1,
+            pos: [8.5, 65.0, 8.5],
+            vel: [1.2, 0.0, 0.0],
+            yaw: 0.0,
+            health: 9.0,
+            wander_timer: 0,
+            wander_dir: Some([1.0, 0.0]),
+            attack_cooldown: 0,
+            burn_timer: 0,
+            panic_timer: 37,
+            on_ground: true,
+        };
+        save_mobs(&path, &[pig]).unwrap();
+        assert_eq!(load_mobs(&path).unwrap().unwrap(), vec![pig]);
+        let valid = fs::read(&path).unwrap();
+        let mut legacy = valid.clone();
+        legacy[..8].copy_from_slice(MOBS_MAGIC);
+        legacy.pop();
+        fs::write(&path, &legacy).unwrap();
+        let migrated = load_mobs(&path).unwrap().unwrap();
+        assert_eq!(migrated[0].panic_timer, 0);
+        assert_eq!(migrated[0].wander_dir, pig.wander_dir);
+        let mut invalid = valid;
+        *invalid.last_mut().unwrap() = 61;
+        fs::write(&path, &invalid).unwrap();
+        assert_eq!(
+            load_mobs(&path).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(fs::read(&path).unwrap(), invalid);
         fs::remove_file(path).unwrap();
     }
 
@@ -1147,6 +1196,7 @@ mod tests {
             wander_dir: None,
             attack_cooldown: 0,
             burn_timer: 0,
+            panic_timer: 0,
             on_ground: true,
         };
         assert!(save_mobs(&path, &[mob]).is_err());

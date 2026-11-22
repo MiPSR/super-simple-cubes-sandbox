@@ -257,6 +257,12 @@ Every implemented wiki feature gets a line here. Status legend:
   Spawn/despawn rules and AI are simplified; no pathfinding, fire visuals,
   breeding, or full Bedrock mob roster. Pigs drop 1–3 raw porkchops,
   zombies 0–2 rotten flesh; drops use the basic item-entity system.
+- `partial` — Hurt pigs flee away from the attacker for a three-second
+  panic interval at twice their wander speed and can hop one-block obstacles;
+  they remain passive. Flee direction/timer persist in version-2 mob saves
+  and pause while offline; version-1 mob saves migrate with no panic.
+  The fixed interval, straight-line steering and speed are approximations
+  of Bedrock panic AI; full pathfinding and other panic triggers are pending.
 
 ## Client
 

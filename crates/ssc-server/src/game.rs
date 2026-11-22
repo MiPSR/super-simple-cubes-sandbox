@@ -379,6 +379,7 @@ impl Server {
                 .map(|dir| ssc_math::Vec2::new(dir[0], dir[1]));
             mob.attack_cooldown = saved.attack_cooldown;
             mob.burn_timer = saved.burn_timer;
+            mob.panic_timer = saved.panic_timer;
             mob.on_ground_hint = saved.on_ground;
             let column = (
                 (pos.x.floor() as i32).div_euclid(16),
@@ -475,6 +476,7 @@ impl Server {
                 wander_dir: mob.wander_dir.map(|dir| [dir.x, dir.y]),
                 attack_cooldown: mob.attack_cooldown,
                 burn_timer: mob.burn_timer,
+                panic_timer: mob.panic_timer,
                 on_ground: mob.on_ground_hint,
             })
             .collect();
@@ -5096,6 +5098,29 @@ mod tests {
         assert_eq!(restored.mobs.len(), 1);
         assert_eq!(restored.mobs.values().next().unwrap().pos, position);
         std::fs::remove_file(&world_path).unwrap();
+        std::fs::remove_file(crate::persistence::mob_save_path(&world_path)).unwrap();
+    }
+
+    #[test]
+    fn fleeing_pig_restores_its_timer_and_pauses_while_offline() {
+        let world_path =
+            std::env::temp_dir().join(format!("ssc-fleeing-pig-world-{}.bin", std::process::id()));
+        let mut cfg = ServerConfig::default();
+        cfg.world_path = Some(world_path.clone());
+        let mut server = Server::empty(cfg.clone());
+        let pos = Vec3::new(8.5, 65.0, 8.5);
+        let mut pig = crate::mobs::Mob::new(crate::mobs::MobKind::Pig, pos);
+        pig.hurt(1.0, pos - Vec3::new(2.0, 0.0, 0.0));
+        pig.panic_timer = 37;
+        let id = server.allocate_mob_id().unwrap();
+        server.mobs.insert(id, pig);
+        server.save_mobs();
+        let mut restored = Server::empty(cfg);
+        restored.tick();
+        let pig = restored.mobs.values().next().unwrap();
+        assert_eq!(pig.panic_timer, 37);
+        assert_eq!(pig.pos, pos);
+        assert_eq!(pig.wander_dir, Some(ssc_math::Vec2::X));
         std::fs::remove_file(crate::persistence::mob_save_path(&world_path)).unwrap();
     }
 
