@@ -107,6 +107,10 @@ fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgba {
             let ring = ((r * 1.4).sin() * 0.5 + 0.5) * 0.25;
             mix([160, 130, 78], 0.85 - ring + noise2(x, y, 10) * 0.1, 255)
         }
+        ssc_world::TILE_STRIPPED_LOG_SIDE => {
+            let grain = noise2(x / 2, y / 6, 31);
+            mix([182, 148, 91], 0.86 + grain * 0.22, 255)
+        }
         ssc_world::TILE_LOG_SIDE => {
             // Vertical bark streaks.
             let streak = noise2(x, 0, 11);

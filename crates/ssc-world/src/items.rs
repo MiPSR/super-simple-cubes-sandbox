@@ -7,7 +7,8 @@
 use super::blocks::{
     BlockId, AIR, BEDROCK, BRICKS, COAL_ORE, COBBLED_DEEPSLATE, COBBLESTONE, COPPER_ORE, DEEPSLATE,
     DEEPSLATE_COAL_ORE, DEEPSLATE_COPPER_ORE, DEEPSLATE_IRON_ORE, DIRT, GRASS_BLOCK, GRAVEL,
-    IRON_ORE, OAK_LEAVES, OAK_LOG, OAK_PLANKS, SAND, SANDSTONE, SNOW_BLOCK, STONE, WATER,
+    IRON_ORE, OAK_LEAVES, OAK_LOG, OAK_PLANKS, SAND, SANDSTONE, SNOW_BLOCK, STONE,
+    STRIPPED_OAK_LOG, WATER,
 };
 
 pub type ItemId = u16;
@@ -91,6 +92,7 @@ pub fn item_info(id: ItemId) -> ItemInfo {
         20 => block_item(DEEPSLATE_COAL_ORE, "deepslate_coal_ore"),
         21 => block_item(COPPER_ORE, "copper_ore"),
         22 => block_item(DEEPSLATE_COPPER_ORE, "deepslate_copper_ore"),
+        23 => block_item(STRIPPED_OAK_LOG, "stripped_oak_log"),
         APPLE => ItemInfo {
             name: "apple",
             max_stack: 64,

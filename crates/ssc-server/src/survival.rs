@@ -337,7 +337,10 @@ pub fn dig_time_with_tool(block: BlockId, held: Option<ItemId>) -> Option<f32> {
             bi.needs_tool && block != ssc_world::SNOW_BLOCK
         }
         Some(ssc_world::WOODEN_AXE | ssc_world::STONE_AXE) => {
-            matches!(block, ssc_world::OAK_LOG | ssc_world::OAK_PLANKS)
+            matches!(
+                block,
+                ssc_world::OAK_LOG | ssc_world::STRIPPED_OAK_LOG | ssc_world::OAK_PLANKS
+            )
         }
         Some(ssc_world::WOODEN_SHOVEL | ssc_world::STONE_SHOVEL) => matches!(
             block,
@@ -449,13 +452,15 @@ pub fn craft(inv: &mut [Slot], recipe: u8) -> bool {
         let mut remaining = count;
         for slot in &mut next {
             if let Some((held, available)) = *slot {
-                if held == item {
+                if held == item
+                    || (item == ssc_world::OAK_LOG && held == ssc_world::STRIPPED_OAK_LOG)
+                {
                     let taken = available.min(remaining);
                     remaining -= taken;
                     *slot = if taken == available {
                         None
                     } else {
-                        Some((item, available - taken))
+                        Some((held, available - taken))
                     };
                     if remaining == 0 {
                         break;
@@ -699,6 +704,25 @@ mod tests {
                 vec![(tool, 1)]
             );
         }
+    }
+
+    #[test]
+    fn stripped_logs_drop_themselves_and_craft_into_planks() {
+        let block = ssc_world::STRIPPED_OAK_LOG;
+        assert_eq!(drop_with_tool(block, 0.5, None), Some(block));
+        assert_eq!(
+            dig_time_with_tool(block, Some(ssc_world::STONE_AXE)),
+            Some(0.75)
+        );
+        let mut inv = vec![None; INVENTORY_SIZE];
+        inv[35] = Some((block, 2));
+        assert!(craft(&mut inv, 0));
+        assert_eq!(
+            inv[35],
+            Some((block, 1)),
+            "remaining material stays stripped"
+        );
+        assert_eq!(inv[0], Some((ssc_world::OAK_PLANKS, 4)));
     }
 
     #[test]

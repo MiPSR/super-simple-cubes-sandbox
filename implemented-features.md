@@ -181,9 +181,15 @@ Every implemented wiki feature gets a line here. Status legend:
   They have Bedrock durability 60/132, axe damage 4/5 and shovel damage
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
-  drop four snowballs (stack limit 16), not a snow block. Stripping logs,
-  making paths, throwing snowballs and Silk Touch are missing. Protocol 12
+  drop four snowballs (stack limit 16), not a snow block. Making paths,
+  throwing snowballs and Silk Touch are missing. Protocol 13
   requires matching clients for the expanded block/item registries.
+- `partial` — Using a wooden/stone axe on an oak log strips it in place,
+  within server-validated reach and line of sight; each successful strip
+  costs one durability in survival and none in creative. Stripped oak logs
+  persist as block edits, drop themselves and craft into four planks.
+  Placeholder textures and the generic place sound are used; log-axis
+  orientation, other wood species and a dedicated strip sound are pending.
 - `dev` — Sound triggers (dig/place/step) are chosen and sent by the server
   and flow end-to-end; playback via owner-approved **kira** with distance
   attenuation + stereo panning; `--sounds DIR` loads real OGG/WAV packs

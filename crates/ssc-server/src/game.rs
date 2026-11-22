@@ -2572,6 +2572,32 @@ impl Server {
             return;
         }
 
+        // Axe use transforms a targeted log in place; it is not a break or
+        // placement and never creates loot or charges mining exhaustion.
+        if matches!(item, ssc_world::WOODEN_AXE | ssc_world::STONE_AXE) {
+            let (yaw, pitch) = self.look_of(id);
+            let Some(hit) = raycast(&self.world, self.eye_of(id), look_dir(yaw, pitch), REACH)
+            else {
+                return;
+            };
+            let [x, y, z] = hit.block;
+            if self.world.block_or_air(x, y, z) == ssc_world::OAK_LOG {
+                let block = ssc_world::STRIPPED_OAK_LOG;
+                self.world.set_block(x, y, z, block);
+                self.record_block_edit(x, y, z, block);
+                let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block });
+                self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
+                self.send_sound(SoundId::Place, x, y, z);
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    session.survival.digging = None;
+                    if self.cfg.game_mode == GameMode::Survival {
+                        damage_held_tool(session, 1);
+                    }
+                }
+            }
+            return;
+        }
+
         // Placing.
         let Some(block) = item_info.places else {
             return;
@@ -3379,6 +3405,83 @@ mod tests {
             .unwrap();
         assert_eq!(rig.server.sessions[&1].durability[0], 7);
         assert_eq!(rig.server.sessions[&1].durability[4], 59);
+    }
+
+    #[test]
+    fn axe_strips_logs_in_place_once_and_records_the_edit() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.world.set_block(10, 56, 8, ssc_world::OAK_LOG);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.inventory[0] = Some((ssc_world::WOODEN_AXE, 1));
+        session.durability[0] = 2;
+        rig.server.handle_packet(1, ClientPacket::Place).unwrap();
+        assert_eq!(
+            rig.server.world.block_or_air(10, 56, 8),
+            ssc_world::STRIPPED_OAK_LOG
+        );
+        assert_eq!(
+            rig.server.block_edits[&(0, 0)][&(10, 56, 8)],
+            ssc_world::STRIPPED_OAK_LOG
+        );
+        assert_eq!(rig.server.sessions[&1].durability[0], 1);
+        assert_eq!(rig.server.sessions[&1].survival.exhaustion, 0.0);
+        assert!(rig.server.items.is_empty());
+        assert!(rig.drain(0).iter().any(|packet| matches!(
+            packet,
+            ServerPacket::BlockUpdate {
+                block: ssc_world::STRIPPED_OAK_LOG,
+                ..
+            }
+        )));
+
+        rig.server.handle_packet(1, ClientPacket::Place).unwrap();
+        assert_eq!(
+            rig.server.sessions[&1].durability[0], 1,
+            "already stripped is a no-op"
+        );
+        rig.server.world.set_block(10, 56, 8, ssc_world::OAK_LOG);
+        rig.server.handle_packet(1, ClientPacket::Place).unwrap();
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0], None,
+            "last use breaks the axe"
+        );
+        assert_eq!(
+            rig.server.world.block_or_air(10, 56, 8),
+            ssc_world::STRIPPED_OAK_LOG
+        );
+    }
+
+    #[test]
+    fn stripping_requires_an_axe_reach_and_clear_line_of_sight() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.world.set_block(10, 56, 8, ssc_world::OAK_LOG);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::STONE_SHOVEL, 1));
+        rig.server.handle_packet(1, ClientPacket::Place).unwrap();
+        assert_eq!(rig.server.world.block_or_air(10, 56, 8), ssc_world::OAK_LOG);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::STONE_AXE, 1));
+        rig.server.world.set_block(9, 56, 8, ssc_world::STONE);
+        rig.server.handle_packet(1, ClientPacket::Place).unwrap();
+        assert_eq!(rig.server.world.block_or_air(10, 56, 8), ssc_world::OAK_LOG);
+        rig.server.world.set_block(9, 56, 8, ssc_world::AIR);
+        rig.server.world.set_block(10, 56, 8, ssc_world::AIR);
+        rig.server.world.set_block(14, 56, 8, ssc_world::OAK_LOG);
+        rig.server.handle_packet(1, ClientPacket::Place).unwrap();
+        assert_eq!(rig.server.world.block_or_air(14, 56, 8), ssc_world::OAK_LOG);
+    }
+
+    #[test]
+    fn creative_stripping_preserves_axe_durability() {
+        let mut rig = Rig::new(1, 0.0);
+        rig.server.world.set_block(10, 56, 8, ssc_world::OAK_LOG);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.inventory[0] = Some((ssc_world::STONE_AXE, 1));
+        session.durability[0] = 7;
+        rig.server.handle_packet(1, ClientPacket::Place).unwrap();
+        assert_eq!(
+            rig.server.world.block_or_air(10, 56, 8),
+            ssc_world::STRIPPED_OAK_LOG
+        );
+        assert_eq!(rig.server.sessions[&1].durability[0], 7);
     }
 
     #[test]

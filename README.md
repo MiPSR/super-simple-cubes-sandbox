@@ -64,6 +64,8 @@ runnable through Nix.
   and shovels dig soil faster and collect snowballs from snow blocks. This is an
   interim inventory-wide recipe UI, not the full Minecraft crafting grid.
   Tools wear out and remaining uses appear in the inventory.
+- Right-click oak logs with an axe to strip them; stripped logs still craft
+  into planks.
 - Q drops one item from the selected survival hotbar stack into the world.
 
 See `implemented-features.md` for the full parity tracker.
