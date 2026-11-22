@@ -765,7 +765,12 @@ impl Server {
                     }
                 } else {
                     let block = self.world.block_or_air(dig.x, dig.y, dig.z);
-                    let time = crate::survival::dig_time_with_tool(block, held);
+                    let time = crate::survival::dig_time_with_penalties(
+                        block,
+                        held,
+                        eye_in_water,
+                        p.on_ground,
+                    );
                     match time {
                         Some(time) => {
                             dig.progress += dt / time;
@@ -3054,6 +3059,36 @@ mod tests {
             .iter()
             .all(Option::is_none));
         assert!((rig.server.sessions[&1].survival.exhaustion - 0.005).abs() < 0.0001);
+    }
+
+    #[test]
+    fn submerged_dig_progress_is_slower_than_on_land() {
+        let mut dry = Rig::new_mode(1, -1.5, GameMode::Survival);
+        let mut wet = Rig::new_mode(1, -1.5, GameMode::Survival);
+        for rig in [&mut dry, &mut wet] {
+            rig.server.sessions.get_mut(&1).unwrap().inventory[0] =
+                Some((ssc_world::STONE_PICKAXE, 1));
+            rig.server.sessions.get_mut(&1).unwrap().player.on_ground = true;
+        }
+        wet.server.world.set_block(8, 56, 8, ssc_world::WATER);
+        dry.server.handle_dig_start(1);
+        wet.server.handle_dig_start(1);
+        dry.server.tick();
+        wet.server.tick();
+        let dry_progress = dry.server.sessions[&1]
+            .survival
+            .digging
+            .as_ref()
+            .unwrap()
+            .progress;
+        let wet_progress = wet.server.sessions[&1]
+            .survival
+            .digging
+            .as_ref()
+            .unwrap()
+            .progress;
+        assert!(wet_progress > 0.0);
+        assert!(wet_progress <= dry_progress / 5.0 + f32::EPSILON);
     }
 
     #[test]

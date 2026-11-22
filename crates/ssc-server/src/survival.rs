@@ -341,6 +341,18 @@ pub fn dig_time_with_tool(block: BlockId, held: Option<ItemId>) -> Option<f32> {
     })
 }
 
+/// Bedrock mining penalties: a submerged head and no supporting ground
+/// each divide mining speed by five. They stack to 25× while swimming.
+pub fn dig_time_with_penalties(
+    block: BlockId,
+    held: Option<ItemId>,
+    eye_in_water: bool,
+    on_ground: bool,
+) -> Option<f32> {
+    dig_time_with_tool(block, held)
+        .map(|base| base * if eye_in_water { 5.0 } else { 1.0 } * if on_ground { 1.0 } else { 5.0 })
+}
+
 // ---------------------------------------------------------------------------
 // Inventory
 // ---------------------------------------------------------------------------
@@ -500,6 +512,32 @@ mod tests {
                 - 0.5625)
                 .abs()
                 < 0.01
+        );
+    }
+
+    #[test]
+    fn water_and_airborne_mining_penalties_stack() {
+        let held = Some(ssc_world::STONE_PICKAXE);
+        let base = dig_time_with_tool(ssc_world::STONE, held).unwrap();
+        assert_eq!(
+            dig_time_with_penalties(ssc_world::STONE, held, false, true),
+            Some(base)
+        );
+        assert_eq!(
+            dig_time_with_penalties(ssc_world::STONE, held, true, true),
+            Some(base * 5.0)
+        );
+        assert_eq!(
+            dig_time_with_penalties(ssc_world::STONE, held, false, false),
+            Some(base * 5.0)
+        );
+        assert_eq!(
+            dig_time_with_penalties(ssc_world::STONE, held, true, false),
+            Some(base * 25.0)
+        );
+        assert_eq!(
+            dig_time_with_penalties(ssc_world::BEDROCK, held, true, false),
+            None
         );
     }
 
