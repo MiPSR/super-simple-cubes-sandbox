@@ -90,7 +90,15 @@ Every implemented wiki feature gets a line here. Status legend:
   random ticking pauses with no joined players or beyond a fixed four-column
   radius. The one-sample-per-section scheduler and direct-skylight estimate
   are approximations; propagated lighting, gamerule tuning and other
-  random-ticked blocks are pending.
+  random-ticked blocks such as crops are pending.
+- `partial` — Unsupported natural oak leaves decay on nearby random ticks.
+  Support follows connected leaves to ordinary or stripped oak logs within
+  Bedrock's four-block distance; unloaded neighboring columns defer the
+  check. Player-placed leaves are identified by persisted leaf block
+  overrides and never decay. Decay persists as an air edit and can drop a
+  server-owned apple stack using the existing boosted 5% apple chance;
+  sapling/stick drops, exact Bedrock update propagation and leaf particles
+  are pending.
 - `dev` — 20 placeholder blocks with procedurally generated textures in
   Minecraft's 16×16 tile atlas convention; real texture packs load via
   `--textures <256×256 atlas.png>` (PNG decode through the approved

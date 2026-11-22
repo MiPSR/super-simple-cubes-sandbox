@@ -1,6 +1,8 @@
 //! Random-ticked grass rules. Lighting is a direct-skylight approximation
 //! until the server has propagated block/sky light.
 
+use std::collections::{HashSet, VecDeque};
+
 use ssc_world::{BlockId, World, DIRT, GRASS_BLOCK, MAX_Y, MIN_Y, OAK_LEAVES, WATER};
 
 pub type BlockChange = ((i32, i32, i32), BlockId);
@@ -91,6 +93,48 @@ pub fn grass_changes(
     changes
 }
 
+/// Bedrock oak leaves need a log within four connected leaf steps. Treat
+/// missing neighbor columns as unknown support so loading edges cannot
+/// destroy a canopy whose trunk has not arrived yet.
+pub fn leaf_can_decay(world: &World, x: i32, y: i32, z: i32) -> bool {
+    if world.block_or_air(x, y, z) != OAK_LEAVES {
+        return false;
+    }
+    for cx in (x - 4).div_euclid(16)..=(x + 4).div_euclid(16) {
+        for cz in (z - 4).div_euclid(16)..=(z + 4).div_euclid(16) {
+            if world.column(cx, cz).is_none() {
+                return false;
+            }
+        }
+    }
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::from([((x, y, z), 0)]);
+    visited.insert((x, y, z));
+    while let Some(((x, y, z), distance)) = queue.pop_front() {
+        if distance >= 4 {
+            continue;
+        }
+        for (dx, dy, dz) in [
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ] {
+            let neighbor = (x + dx, y + dy, z + dz);
+            let block = world.block_or_air(neighbor.0, neighbor.1, neighbor.2);
+            if matches!(block, ssc_world::OAK_LOG | ssc_world::STRIPPED_OAK_LOG) {
+                return false;
+            }
+            if block == OAK_LEAVES && visited.insert(neighbor) {
+                queue.push_back((neighbor, distance + 1));
+            }
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +202,37 @@ mod tests {
             assert!(grass_changes(&world, -1, 54, 0, roll, false).is_empty());
         }
         assert!(flat && downhill);
+    }
+
+    #[test]
+    fn leaves_need_connected_log_support_within_bedrocks_four_blocks() {
+        let mut world = World::default();
+        for x in 4..=8 {
+            world.set_block(x, 64, 8, OAK_LEAVES);
+        }
+        world.set_block(4, 64, 8, ssc_world::OAK_LOG);
+        assert!(!leaf_can_decay(&world, 8, 64, 8));
+        world.set_block(4, 64, 8, ssc_world::STRIPPED_OAK_LOG);
+        assert!(!leaf_can_decay(&world, 8, 64, 8));
+        world.set_block(4, 64, 8, OAK_LEAVES);
+        world.set_block(3, 64, 8, ssc_world::OAK_LOG);
+        assert!(
+            leaf_can_decay(&world, 8, 64, 8),
+            "five blocks away is too far"
+        );
+        world.set_block(4, 64, 8, ssc_world::OAK_LOG);
+        world.set_block(6, 64, 8, ssc_world::AIR);
+        assert!(leaf_can_decay(&world, 8, 64, 8), "air gaps break support");
+    }
+
+    #[test]
+    fn leaves_at_loading_edges_wait_for_neighbor_columns() {
+        let mut world = World::default();
+        world.set_block(15, 64, 8, OAK_LEAVES);
+        assert!(!leaf_can_decay(&world, 15, 64, 8));
+        world.column_mut(1, 0);
+        assert!(leaf_can_decay(&world, 15, 64, 8));
+        world.set_block(16, 64, 8, ssc_world::OAK_LOG);
+        assert!(!leaf_can_decay(&world, 15, 64, 8));
     }
 }

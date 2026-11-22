@@ -1440,9 +1440,33 @@ impl Server {
         let daylight = self.time_of_day > 0.25 && self.time_of_day < 0.75;
         let mut dirty_columns = HashSet::new();
         for ((x, y, z), roll) in samples {
-            for ((x, y, z), block) in
+            let changes = if self.world.block_or_air(x, y, z) == ssc_world::OAK_LEAVES {
+                let column = (x.div_euclid(16), z.div_euclid(16));
+                let local = (x.rem_euclid(16), y, z.rem_euclid(16));
+                // Leaf overrides are player placements. Natural leaves are
+                // regenerated from the seed and have no such override.
+                let persistent = self
+                    .block_edits
+                    .get(&column)
+                    .and_then(|edits| edits.get(&local))
+                    == Some(&ssc_world::OAK_LEAVES);
+                if !persistent && crate::block_ticks::leaf_can_decay(&self.world, x, y, z) {
+                    let rng = (roll & 0xffff) as f32 / 65535.0;
+                    if let Some(item) = crate::survival::drop_for(ssc_world::OAK_LEAVES, rng) {
+                        self.spawn_item_entity(
+                            item,
+                            1,
+                            Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5),
+                        );
+                    }
+                    vec![((x, y, z), AIR)]
+                } else {
+                    Vec::new()
+                }
+            } else {
                 crate::block_ticks::grass_changes(&self.world, x, y, z, roll, daylight)
-            {
+            };
+            for ((x, y, z), block) in changes {
                 if self.world.block_or_air(x, y, z) == block {
                     continue;
                 }
@@ -3032,6 +3056,41 @@ mod tests {
         let (_, _, edits) = crate::persistence::load(&path).unwrap().unwrap();
         assert_eq!(edits[&(0, 0)][&(x, y, z)], ssc_world::DIRT);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn natural_leaf_decay_drops_world_items_but_placed_leaves_persist() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let (tick, (x, y, z)) = (1..10000)
+            .find_map(|tick| {
+                let ((x, y, z), roll) =
+                    crate::block_ticks::sample(tick, rig.server.gen.seed(), 0, 0, 8);
+                ((4..=11).contains(&x)
+                    && (4..=11).contains(&z)
+                    && (roll & 0xffff) as f32 / 65535.0 < ssc_world::LEAF_APPLE_CHANCE)
+                    .then_some((tick, (x, y, z)))
+            })
+            .expect("a reproducible apple-drop leaf sample");
+        rig.server.tick = tick;
+        rig.server.world.set_block(x, y, z, ssc_world::OAK_LEAVES);
+        rig.server.tick_blocks();
+        assert_eq!(rig.server.world.block_or_air(x, y, z), AIR);
+        assert_eq!(rig.server.block_edits[&(0, 0)][&(x, y, z)], AIR);
+        assert!(rig
+            .server
+            .items
+            .values()
+            .any(|item| item.item == ssc_world::APPLE && item.count == 1));
+
+        rig.server.world.set_block(x, y, z, ssc_world::OAK_LEAVES);
+        rig.server.record_block_edit(x, y, z, ssc_world::OAK_LEAVES);
+        let item_count = rig.server.items.len();
+        rig.server.tick_blocks();
+        assert_eq!(
+            rig.server.world.block_or_air(x, y, z),
+            ssc_world::OAK_LEAVES
+        );
+        assert_eq!(rig.server.items.len(), item_count);
     }
 
     #[test]
