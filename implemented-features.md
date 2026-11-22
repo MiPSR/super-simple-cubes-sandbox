@@ -195,6 +195,12 @@ Every implemented wiki feature gets a line here. Status legend:
   still block digging through the target. Timers reset on respawn/reload;
   environmental hazards still use independent damage timers and the client
   does not yet show the red hurt flash.
+- `partial` — Inventory key 9 repairs the selected hotbar tool using another
+  tool of the exact same type anywhere in inventory. Remaining uses are
+  added with the 5% repair bonus (wood +3, stone +6), capped at the tool's
+  maximum; one tool is consumed and wear syncs/persists normally. Unlike
+  wiki crafting this uses the interim inventory-wide UI, not a grid.
+  Grindstones, anvils and enchantment handling are not implemented.
 - `partial` — Using a wooden/stone axe on an oak log strips it in place,
   within server-validated reach and line of sight; each successful strip
   costs one durability in survival and none in creative. Stripped oak logs

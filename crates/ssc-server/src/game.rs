@@ -2162,6 +2162,22 @@ impl Server {
                 let Some(session) = self.sessions.get_mut(&id) else {
                     return Ok(());
                 };
+                if recipe == 8 {
+                    if session.player.joined
+                        && self.cfg.game_mode == GameMode::Survival
+                        && !session.survival.dead
+                        && crate::survival::repair_tool(
+                            &mut session.inventory,
+                            &mut session.durability,
+                            session.player.selected_slot as usize,
+                        )
+                    {
+                        session.inv_dirty = true;
+                        session.survival.digging = None;
+                        session.eating = None;
+                    }
+                    return Ok(());
+                }
                 let before = session.inventory.clone();
                 if session.player.joined
                     && self.cfg.game_mode == GameMode::Survival
@@ -3542,6 +3558,41 @@ mod tests {
             .unwrap();
         assert_eq!(rig.server.sessions[&1].durability[0], 7);
         assert_eq!(rig.server.sessions[&1].durability[4], 59);
+    }
+
+    #[test]
+    fn repair_request_preserves_wear_and_cannot_run_dead_or_in_creative() {
+        for (mode, dead, allowed) in [
+            (GameMode::Survival, false, true),
+            (GameMode::Survival, true, false),
+            (GameMode::Creative, false, false),
+        ] {
+            let mut rig = Rig::new_mode(1, 0.0, mode);
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((ssc_world::STONE_PICKAXE, 1));
+            session.inventory[35] = Some((ssc_world::STONE_PICKAXE, 1));
+            session.durability[0] = 11;
+            session.durability[35] = 17;
+            session.inv_dirty = false;
+            if dead {
+                session.survival.die();
+            }
+            rig.server
+                .handle_packet(1, ClientPacket::Craft { recipe: 8 })
+                .unwrap();
+            let session = &rig.server.sessions[&1];
+            if allowed {
+                assert_eq!(session.durability[0], 34);
+                assert_eq!(session.inventory[35], None);
+                assert_eq!(session.durability[35], 0);
+                assert!(session.inv_dirty);
+            } else {
+                assert_eq!(session.durability[0], 11);
+                assert_eq!(session.durability[35], 17);
+                assert_eq!(session.inventory[35], Some((ssc_world::STONE_PICKAXE, 1)));
+                assert!(!session.inv_dirty);
+            }
+        }
     }
 
     #[test]

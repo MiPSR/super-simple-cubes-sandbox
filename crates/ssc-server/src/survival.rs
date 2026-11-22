@@ -424,6 +424,37 @@ pub fn dig_time_with_penalties(
 // Inventory
 // ---------------------------------------------------------------------------
 
+/// Interim inventory-wide equivalent of the two-tool crafting repair.
+/// The selected tool is repaired using the first other tool of the exact
+/// same item type. Failure leaves both inventory and wear untouched.
+pub fn repair_tool(inv: &mut [Slot], durability: &mut [u16], selected: usize) -> bool {
+    if inv.len() != durability.len() {
+        return false;
+    }
+    let Some(Some((item, 1))) = inv.get(selected).copied() else {
+        return false;
+    };
+    let max = max_durability(item);
+    if max == 0 {
+        return false;
+    }
+    let Some(other) = inv
+        .iter()
+        .enumerate()
+        .position(|(slot, value)| slot != selected && *value == Some((item, 1)))
+    else {
+        return false;
+    };
+    let repaired = effective_durability(item, durability[selected])
+        .saturating_add(effective_durability(item, durability[other]))
+        .saturating_add(max / 20)
+        .min(max);
+    inv[other] = None;
+    durability[other] = 0;
+    durability[selected] = repaired;
+    true
+}
+
 /// Add `count` of `item` to the inventory. Returns the leftover count.
 pub fn add_item(inv: &mut [Slot], item: ItemId, count: u8) -> u8 {
     if item == 0 {
@@ -774,6 +805,52 @@ mod tests {
                 inv.iter().flatten().copied().collect::<Vec<_>>(),
                 vec![(tool, 1)]
             );
+        }
+    }
+
+    #[test]
+    fn repair_combines_identical_tools_and_adds_five_percent_bonus() {
+        for (item, max, bonus) in [
+            (ssc_world::WOODEN_PICKAXE, 60, 3),
+            (ssc_world::STONE_PICKAXE, 132, 6),
+            (ssc_world::WOODEN_AXE, 60, 3),
+            (ssc_world::STONE_AXE, 132, 6),
+            (ssc_world::WOODEN_SHOVEL, 60, 3),
+            (ssc_world::STONE_SHOVEL, 132, 6),
+        ] {
+            let mut inv = vec![Some((ssc_world::STONE, 64)); INVENTORY_SIZE];
+            let mut wear = vec![0; INVENTORY_SIZE];
+            inv[0] = Some((item, 1));
+            inv[35] = Some((item, 1));
+            wear[0] = 7;
+            wear[35] = 11;
+            assert!(repair_tool(&mut inv, &mut wear, 0));
+            assert_eq!(inv[0], Some((item, 1)));
+            assert_eq!(wear[0], 18 + bonus);
+            assert_eq!(inv[35], None);
+            assert_eq!(wear[35], 0);
+            inv[35] = Some((item, 1));
+            wear[35] = max;
+            assert!(repair_tool(&mut inv, &mut wear, 0));
+            assert_eq!(wear[0], max, "repair is capped");
+        }
+    }
+
+    #[test]
+    fn repair_rejects_non_tools_and_mixed_types_without_changes() {
+        let mut inv = vec![None; INVENTORY_SIZE];
+        let mut wear = vec![0; INVENTORY_SIZE];
+        inv[0] = Some((ssc_world::WOODEN_AXE, 1));
+        inv[1] = Some((ssc_world::STONE_AXE, 1));
+        inv[2] = Some((ssc_world::WOODEN_PICKAXE, 1));
+        inv[3] = Some((ssc_world::STICK, 12));
+        wear[0] = 5;
+        wear[1] = 17;
+        wear[2] = 4;
+        let before = (inv.clone(), wear.clone());
+        for selected in [0, 1, 2, 3, 4, 36] {
+            assert!(!repair_tool(&mut inv, &mut wear, selected));
+            assert_eq!((&inv, &wear), (&before.0, &before.1));
         }
     }
 

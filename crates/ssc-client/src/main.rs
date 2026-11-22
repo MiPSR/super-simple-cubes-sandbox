@@ -492,7 +492,7 @@ impl App {
                     key: Key::Digit(n),
                     state: KeyState::Pressed,
                 } => {
-                    if self.picker_open && self.mode == 0 && (1..=8).contains(&n) {
+                    if self.picker_open && self.mode == 0 && (1..=9).contains(&n) {
                         self.send(&ClientPacket::Craft { recipe: n - 1 });
                         continue;
                     }
@@ -920,7 +920,8 @@ impl App {
                 [1.0, 0.85, 0.3, 1.0],
             );
             frame.hud_text(
-                "5:wood axe 6:stone axe 7:wood shovel 8:stone shovel".to_string(),
+                "5:wood axe 6:stone axe 7:wood shovel 8:stone shovel 9:repair held tool"
+                    .to_string(),
                 x0 + 15.0,
                 y0 + 42.0,
                 14.0,

@@ -64,6 +64,8 @@ runnable through Nix.
   and shovels dig soil faster and collect snowballs from snow blocks. This is an
   interim inventory-wide recipe UI, not the full Minecraft crafting grid.
   Tools wear out and remaining uses appear in the inventory.
+- To repair a tool, select its hotbar slot, open E and press 9. Another tool
+  of the exact same type is consumed, combining remaining uses plus a 5% bonus.
 - Right-click oak logs with an axe to strip them; stripped logs still craft
   into planks.
 - Hold right-click for 1.6 seconds to eat; releasing use or switching items
