@@ -59,6 +59,34 @@ pub fn attack_damage(held: Option<ItemId>) -> f32 {
     }
 }
 
+/// Short-lived combat protection, shared by players and mobs. A stronger
+/// follow-up hit deals only its excess without extending the original window.
+#[derive(Default)]
+pub(crate) struct DamageImmunity {
+    remaining: u8,
+    strongest: f32,
+}
+
+impl DamageImmunity {
+    pub fn tick(&mut self) {
+        self.remaining = self.remaining.saturating_sub(1);
+    }
+
+    pub fn filter(&mut self, amount: f32) -> f32 {
+        if !amount.is_finite() || amount <= 0.0 {
+            return 0.0;
+        }
+        if self.remaining == 0 {
+            self.remaining = 10;
+            self.strongest = amount;
+            return amount;
+        }
+        let extra = (amount - self.strongest).max(0.0);
+        self.strongest = self.strongest.max(amount);
+        extra
+    }
+}
+
 /// Survival-mode per-player state.
 pub struct SurvivalState {
     pub health: f32,
@@ -80,6 +108,7 @@ pub struct SurvivalState {
     pub hunger_effect_ticks: u16,
     /// Hunger exhaustion (4.0 = one hunger point).
     pub exhaustion: f32,
+    combat_immunity: DamageImmunity,
 }
 
 /// A dig in progress.
@@ -108,6 +137,7 @@ impl Default for SurvivalState {
             void_timer: 0,
             hunger_effect_ticks: 0,
             exhaustion: 0.0,
+            combat_immunity: DamageImmunity::default(),
         }
     }
 }
@@ -152,6 +182,7 @@ impl SurvivalState {
         if self.dead {
             return fx;
         }
+        self.combat_immunity.tick();
 
         // --- Fall damage -------------------------------------------------
         if input.in_water || input.below_world {
@@ -268,7 +299,17 @@ impl SurvivalState {
         fx
     }
 
-    /// External damage (fall handled above; future: mobs, combat).
+    /// Melee damage uses a ten-tick protection window. Environmental damage
+    /// remains on its own timers for now.
+    pub fn apply_combat_damage(&mut self, amount: f32, fx: &mut TickEffects) {
+        if self.dead {
+            return;
+        }
+        let damage = self.combat_immunity.filter(amount);
+        self.apply_damage(damage, fx);
+    }
+
+    /// Direct damage, also used by environmental hazards.
     pub fn apply_damage(&mut self, amount: f32, fx: &mut TickEffects) {
         if self.dead || amount <= 0.0 {
             return;
@@ -548,6 +589,34 @@ pub fn drop_count(block: BlockId, rng: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combat_immunity_ignores_weaker_hits_and_only_applies_stronger_difference() {
+        let mut s = SurvivalState::default();
+        let hit = |s: &mut SurvivalState, damage| {
+            let mut fx = TickEffects::default();
+            s.apply_combat_damage(damage, &mut fx);
+            fx.hurt
+        };
+        assert!(hit(&mut s, 3.0));
+        assert_eq!(s.health, 17.0);
+        assert!(!hit(&mut s, 2.0));
+        assert!(!hit(&mut s, 3.0));
+        assert!(hit(&mut s, 5.0));
+        assert_eq!(s.health, 15.0);
+        for _ in 0..9 {
+            s.tick(TickInput::default());
+        }
+        assert!(!hit(&mut s, 5.0));
+        s.tick(TickInput::default());
+        assert!(
+            hit(&mut s, 3.0),
+            "stronger follow-ups must not restart the timer"
+        );
+        assert_eq!(s.health, 12.0);
+        s.respawn();
+        assert!(hit(&mut s, 3.0), "respawn resets immunity");
+    }
 
     #[test]
     fn dig_times_match_wiki_approximations() {

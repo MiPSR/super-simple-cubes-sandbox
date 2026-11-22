@@ -923,9 +923,12 @@ impl Server {
                 let damage = self.mobs[&mob_id].kind.attack_damage();
                 let mut fx = crate::survival::TickEffects::default();
                 let session = self.sessions.get_mut(player_id).unwrap();
-                session.survival.apply_damage(damage, &mut fx);
+                session.survival.apply_combat_damage(damage, &mut fx);
                 if fx.hurt {
                     session.survival.exhaustion += 0.1;
+                }
+                if !fx.hurt {
+                    continue;
                 }
                 session.status_dirty = true;
                 let pos = session.player.pos;
@@ -1540,7 +1543,13 @@ impl Server {
             // Bedrock tool damage; knockback remains server-owned.
             let from = self.sessions[&id].player.pos;
             if let Some(mob) = self.mobs.get_mut(&target) {
+                let before = mob.health;
                 mob.hurt(damage, from);
+                if mob.health >= before {
+                    // This still intercepted the attack ray: don't start
+                    // digging terrain behind an immune mob.
+                    return true;
+                }
             }
             let pos = self.mobs.get(&target).map(|m| m.pos);
             if let Some(p) = pos {
@@ -1566,12 +1575,15 @@ impl Server {
             let from = self.sessions[&id].player.pos;
             let session = self.sessions.get_mut(&target).unwrap();
             if self.cfg.game_mode == GameMode::Survival {
+                let mut fx = crate::survival::TickEffects::default();
+                session.survival.apply_combat_damage(damage, &mut fx);
+                if !fx.hurt {
+                    return true;
+                }
                 let delta = (session.player.pos - from).normalize_or_zero();
                 session.player.vel.x += delta.x * 6.0;
                 session.player.vel.z += delta.z * 6.0;
                 session.player.vel.y = (session.player.vel.y + 4.0).min(6.0);
-                let mut fx = crate::survival::TickEffects::default();
-                session.survival.apply_damage(damage, &mut fx);
                 if fx.hurt {
                     session.survival.exhaustion += 0.1;
                 }
@@ -4428,6 +4440,41 @@ mod tests {
         assert_eq!(rig.server.sessions[&2].survival.health, before - 4.0);
         assert_eq!(rig.server.sessions[&1].inventory[0], None);
         assert_eq!(rig.server.sessions[&1].durability[0], 0);
+    }
+
+    #[test]
+    fn immune_pvp_hits_do_not_cost_tool_wear_or_exhaustion() {
+        let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.inventory[0] = Some((ssc_world::STONE_AXE, 1));
+        session.durability[0] = 132;
+        for _ in 0..30 {
+            rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
+        }
+        assert_eq!(rig.server.sessions[&2].survival.health, 15.0);
+        assert_eq!(rig.server.sessions[&1].durability[0], 130);
+        assert!((rig.server.sessions[&1].survival.exhaustion - 0.1).abs() < 0.0001);
+        assert!((rig.server.sessions[&2].survival.exhaustion - 0.1).abs() < 0.0001);
+        assert!(rig.server.sessions[&1].survival.digging.is_none());
+    }
+
+    #[test]
+    fn immune_mob_hits_do_not_cost_tool_wear_or_exhaustion() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.inventory[0] = Some((ssc_world::STONE_AXE, 1));
+        session.durability[0] = 132;
+        rig.server.mobs.insert(
+            FIRST_MOB_ID,
+            crate::mobs::Mob::new(crate::mobs::MobKind::Zombie, Vec3::new(10.5, 55.02, 8.5)),
+        );
+        for _ in 0..30 {
+            rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
+        }
+        assert_eq!(rig.server.mobs[&FIRST_MOB_ID].health, 15.0);
+        assert_eq!(rig.server.sessions[&1].durability[0], 130);
+        assert!((rig.server.sessions[&1].survival.exhaustion - 0.1).abs() < 0.0001);
+        assert!(rig.server.sessions[&1].survival.digging.is_none());
     }
 
     #[test]

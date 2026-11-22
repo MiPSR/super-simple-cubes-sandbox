@@ -188,6 +188,13 @@ Every implemented wiki feature gets a line here. Status legend:
   drop four snowballs (stack limit 16), not a snow block. Making paths,
   throwing snowballs and Silk Touch are missing. Protocol 14
   requires matching clients for the expanded block/item registries.
+- `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
+  immunity window. Equal/weaker follow-ups are ignored; a stronger hit
+  deals only its excess without restarting the timer. Ignored hits do not
+  cause sound, knockback, attacker tool wear or combat exhaustion, and
+  still block digging through the target. Timers reset on respawn/reload;
+  environmental hazards still use independent damage timers and the client
+  does not yet show the red hurt flash.
 - `partial` — Using a wooden/stone axe on an oak log strips it in place,
   within server-validated reach and line of sight; each successful strip
   costs one durability in survival and none in creative. Stripped oak logs

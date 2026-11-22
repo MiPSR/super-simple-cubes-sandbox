@@ -100,6 +100,7 @@ pub struct Mob {
     pub dead: bool,
     /// Set by the physics step, read by the AI next tick.
     pub on_ground_hint: bool,
+    combat_immunity: crate::survival::DamageImmunity,
 }
 
 impl Mob {
@@ -116,6 +117,7 @@ impl Mob {
             burn_timer: 0,
             dead: false,
             on_ground_hint: false,
+            combat_immunity: crate::survival::DamageImmunity::default(),
         }
     }
 
@@ -132,6 +134,7 @@ impl Mob {
         if self.dead {
             return None;
         }
+        self.combat_immunity.tick();
         if self.kind == MobKind::Zombie
             && daylight
             && has_open_sky(world, self.pos, self.kind.dims().1)
@@ -242,7 +245,14 @@ impl Mob {
 
     /// External damage (player punch). Knockback along `from`.
     pub fn hurt(&mut self, amount: f32, from: Vec3) -> bool {
-        self.health -= amount;
+        if self.dead {
+            return false;
+        }
+        let damage = self.combat_immunity.filter(amount);
+        if damage == 0.0 {
+            return false;
+        }
+        self.health = (self.health - damage).max(0.0);
         // Knockback away from the attacker.
         let delta = (self.pos - from).normalize_or_zero();
         self.vel.x += delta.x * 6.0;
@@ -371,6 +381,25 @@ mod tests {
         assert!(pig.vel.y > 0.0, "knockback should pop the mob up");
         assert!(pig.hurt(10.0, Vec3::new(8.5, 48.0, 6.5)));
         assert!(pig.dead);
+    }
+
+    #[test]
+    fn immune_mob_hits_do_not_repeat_damage_or_knockback() {
+        let mut mob = Mob::new(MobKind::Zombie, Vec3::new(8.5, 49.02, 8.5));
+        let from = Vec3::new(6.5, 49.02, 8.5);
+        mob.hurt(3.0, from);
+        let velocity = mob.vel;
+        mob.hurt(3.0, from);
+        assert_eq!(mob.health, 17.0);
+        assert_eq!(mob.vel, velocity);
+        mob.hurt(5.0, from);
+        assert_eq!(mob.health, 15.0);
+        let world = flat_world();
+        for _ in 0..10 {
+            mob.tick(&world, &[], 0.05, false);
+        }
+        mob.hurt(3.0, from);
+        assert_eq!(mob.health, 12.0);
     }
 
     #[test]
