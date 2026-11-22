@@ -1380,7 +1380,12 @@ impl Server {
                 let az =
                     (pcz * 16 + 8 + (hash_tick(self.tick + attempt * 7, pcz, pcx) % 32) as i32)
                         - 16;
-                let Some(y) = crate::mobs::spawn_column_ok(&self.world, ax, az) else {
+                let y = if want_pig {
+                    crate::mobs::pig_spawn_column_ok(&self.world, ax, az)
+                } else {
+                    crate::mobs::spawn_column_ok(&self.world, ax, az)
+                };
+                let Some(y) = y else {
                     continue;
                 };
                 // Column must exist server-side (spawn only in streamed

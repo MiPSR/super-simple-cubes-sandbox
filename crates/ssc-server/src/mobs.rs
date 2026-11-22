@@ -264,8 +264,8 @@ fn has_open_sky(world: &World, pos: Vec3, height: f32) -> bool {
         .all(|y| !ssc_world::is_opaque(world.block_or_air(x, y, z)))
 }
 
-/// Spawn eligibility for a mob at a world column: solid ground with air
-/// above (the worldgen surface is grass unless carved).
+/// Spawn eligibility for a mob at a world column: solid ground with
+/// two dry, non-solid blocks above.
 pub fn spawn_column_ok(world: &World, x: i32, z: i32) -> Option<i32> {
     for y in (ssc_world::MIN_Y + 8..ssc_world::MAX_Y - 40).rev() {
         let ground = world.block_or_air(x, y - 1, z);
@@ -275,11 +275,19 @@ pub fn spawn_column_ok(world: &World, x: i32, z: i32) -> Option<i32> {
             && !ssc_world::is_solid(here)
             && !ssc_world::is_solid(above)
             && here != ssc_world::WATER
+            && above != ssc_world::WATER
         {
             return Some(y);
         }
     }
     None
+}
+
+/// Natural Bedrock pig spawns require a grass block. In particular, desert
+/// sand, snow caps and player-built stone floors are not pig spawn surfaces.
+pub fn pig_spawn_column_ok(world: &World, x: i32, z: i32) -> Option<i32> {
+    let y = spawn_column_ok(world, x, z)?;
+    (world.block_or_air(x, y - 1, z) == ssc_world::GRASS_BLOCK).then_some(y)
 }
 
 #[cfg(test)]
@@ -359,6 +367,31 @@ mod tests {
         let world = flat_world();
         // Ground cells at y 48; the standing surface is the top face = 49.
         assert_eq!(spawn_column_ok(&world, 8, 8), Some(49));
+    }
+
+    #[test]
+    fn pigs_need_grass_and_two_dry_blocks_of_clearance() {
+        let mut world = flat_world();
+        assert_eq!(spawn_column_ok(&world, 8, 8), Some(49));
+        assert_eq!(pig_spawn_column_ok(&world, 8, 8), None);
+
+        world.set_block(8, 48, 8, ssc_world::GRASS_BLOCK);
+        assert_eq!(pig_spawn_column_ok(&world, 8, 8), Some(49));
+
+        world.set_block(8, 50, 8, ssc_world::WATER);
+        assert_eq!(pig_spawn_column_ok(&world, 8, 8), None);
+        assert_eq!(spawn_column_ok(&world, 8, 8), None);
+        world.set_block(8, 50, 8, ssc_world::AIR);
+        world.set_block(8, 49, 8, ssc_world::WATER);
+        assert_eq!(pig_spawn_column_ok(&world, 8, 8), None);
+        assert_eq!(spawn_column_ok(&world, 8, 8), None);
+        world.set_block(8, 49, 8, ssc_world::STONE);
+        assert_eq!(pig_spawn_column_ok(&world, 8, 8), None);
+
+        world.set_block(8, 49, 8, ssc_world::AIR);
+        world.set_block(8, 48, 8, ssc_world::SAND);
+        assert_eq!(spawn_column_ok(&world, 8, 8), Some(49));
+        assert_eq!(pig_spawn_column_ok(&world, 8, 8), None);
     }
 
     #[test]

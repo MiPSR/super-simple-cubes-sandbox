@@ -67,8 +67,10 @@ Every implemented wiki feature gets a line here. Status legend:
   flowing water are pending.
 - `partial` — Desert/plains surface classification is server-generated from
   world-coordinate noise and shared by terrain and LOD summaries. Deserts
-  suppress oak candidates and use sand/sandstone layers, but lack cactus,
-  dead bushes, biome-specific spawns/temperature and Bedrock multinoise;
+  suppress oak candidates and use sand/sandstone layers. Natural pig spawns
+  now require grass and two dry blocks of clearance, preventing spawns on
+  desert sand; other biome-specific spawns, cactus, dead bushes, temperature
+  and Bedrock multinoise are missing;
   existing seed-based worlds will regenerate their unedited terrain with
   this new surface distribution.
 - `partial` — Water: static lakes rendered translucent (blend pass,
