@@ -130,7 +130,12 @@ pub fn item_info(id: ItemId) -> ItemInfo {
             places: None,
             food: None,
         },
-        FLINT => ItemInfo { name: "flint", max_stack: 64, places: None, food: None },
+        FLINT => ItemInfo {
+            name: "flint",
+            max_stack: 64,
+            places: None,
+            food: None,
+        },
         _ => ItemInfo {
             name: "unknown",
             max_stack: 64,
@@ -146,9 +151,27 @@ pub fn valid_item_id(id: ItemId) -> bool {
     let block_items = id >= FIRST_BLOCK_ITEM && id < super::BLOCK_COUNT;
     let free_items = matches!(
         id,
-        APPLE | PORKCHOP | ROTTEN_FLESH | COAL | RAW_IRON | STICK | WOODEN_PICKAXE | STONE_PICKAXE | FLINT
+        APPLE
+            | PORKCHOP
+            | ROTTEN_FLESH
+            | COAL
+            | RAW_IRON
+            | STICK
+            | WOODEN_PICKAXE
+            | STONE_PICKAXE
+            | FLINT
     );
     id == EMPTY_ITEM || block_items || free_items
+}
+
+/// Saturation restored by the foods currently in the registry (Bedrock).
+pub fn food_saturation(id: ItemId) -> f32 {
+    match id {
+        APPLE => 2.4,
+        PORKCHOP => 1.8,
+        ROTTEN_FLESH => 0.8,
+        _ => 0.0,
+    }
 }
 
 /// The item form of a block.
@@ -185,6 +208,14 @@ pub const LEAF_APPLE_CHANCE: f32 = 0.05;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn available_foods_restore_wiki_saturation() {
+        assert_eq!(food_saturation(APPLE), 2.4);
+        assert_eq!(food_saturation(PORKCHOP), 1.8);
+        assert_eq!(food_saturation(ROTTEN_FLESH), 0.8);
+        assert_eq!(food_saturation(STONE_PICKAXE), 0.0);
+    }
 
     #[test]
     fn food_items_have_expected_values_and_are_wire_valid() {

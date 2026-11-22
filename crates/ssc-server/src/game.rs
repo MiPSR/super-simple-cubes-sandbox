@@ -524,6 +524,11 @@ impl Server {
             position,
             health,
             hunger,
+            saturation: if session.survival.dead {
+                crate::survival::INITIAL_SATURATION
+            } else {
+                session.survival.saturation
+            },
             air,
             selected_slot: session.player.selected_slot,
             hunger_effect_ticks: if session.survival.dead {
@@ -2260,6 +2265,7 @@ impl Server {
             } else {
                 session.survival.health = data.health;
                 session.survival.hunger = data.hunger;
+                session.survival.saturation = data.saturation;
                 session.survival.air = data.air;
                 session.survival.hunger_effect_ticks = data.hunger_effect_ticks;
                 session.survival.exhaustion = data.exhaustion;
@@ -2514,7 +2520,11 @@ impl Server {
                         return;
                     };
                     let s = &mut session.survival;
-                    let ate = s.eat(food);
+                    let ate = s.eat(
+                        food,
+                        ssc_world::items::food_saturation(item),
+                        item == ssc_world::APPLE,
+                    );
                     if ate && rotten_flesh_causes_hunger {
                         s.apply_rotten_flesh_effect();
                     }
@@ -3311,8 +3321,9 @@ mod tests {
         rig.server.handle_use(1);
         let session = &rig.server.sessions[&1];
         assert_eq!(session.survival.hunger, 14, "apple restores 4 hunger");
+        assert!((session.survival.saturation - 7.4).abs() < 0.0001);
         assert_eq!(session.inventory[0], Some((ssc_world::APPLE, 2)));
-        // Full hunger: no further eating.
+        // Unlike other food, Bedrock apples are edible at full hunger.
         {
             let session = rig.server.sessions.get_mut(&1).unwrap();
             session.survival.hunger = 20;
@@ -3320,8 +3331,9 @@ mod tests {
         rig.server.handle_use(1);
         assert_eq!(
             rig.server.sessions[&1].inventory[0],
-            Some((ssc_world::APPLE, 2))
+            Some((ssc_world::APPLE, 1))
         );
+        assert!((rig.server.sessions[&1].survival.saturation - 9.8).abs() < 0.0001);
     }
 
     #[test]
@@ -3335,7 +3347,15 @@ mod tests {
         rig.server.handle_use(1);
         let session = &rig.server.sessions[&1];
         assert_eq!(session.survival.hunger, 13);
+        assert!((session.survival.saturation - 6.8).abs() < 0.0001);
         assert_eq!(session.inventory[0], None);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::PORKCHOP, 1));
+        rig.server.sessions.get_mut(&1).unwrap().survival.hunger = 20;
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::PORKCHOP, 1))
+        );
     }
 
     #[test]
@@ -4001,6 +4021,7 @@ mod tests {
             position: Some([12.5, 70.0, -9.25]),
             health: 13.0,
             hunger: 7,
+            saturation: 2.5,
             air: 250,
             selected_slot: 4,
             hunger_effect_ticks: 410,
@@ -4043,6 +4064,7 @@ mod tests {
         assert_ne!(server.sessions[&id].spawn, server.sessions[&id].player.pos);
         assert_eq!(server.sessions[&id].survival.health, 13.0);
         assert_eq!(server.sessions[&id].survival.hunger, 7);
+        assert_eq!(server.sessions[&id].survival.saturation, 2.5);
         assert_eq!(server.sessions[&id].survival.air, 250);
         assert_eq!(server.sessions[&id].player.selected_slot, 4);
         assert_eq!(server.sessions[&id].survival.hunger_effect_ticks, 410);
@@ -4056,6 +4078,7 @@ mod tests {
         assert_eq!(saved.durability[3], 18);
         assert_eq!(saved.hunger_effect_ticks, 410);
         assert_eq!(saved.exhaustion, 2.5);
+        assert_eq!(saved.saturation, 2.5);
         let respawn_point = server.sessions[&id].spawn;
         server.sessions.get_mut(&id).unwrap().survival.die();
         server.tick(); // drop inventory at the death location before respawning
@@ -4185,6 +4208,7 @@ mod tests {
                 position: Some([4.5, 70.0, -2.5]),
                 health: 0.0,
                 hunger: 0,
+                saturation: 0.0,
                 air: 0,
                 selected_slot: 0,
                 hunger_effect_ticks: 0,

@@ -26,8 +26,9 @@ Every implemented wiki feature gets a line here. Status legend:
   seed, day/night clock and block edits, autosaved once a minute and on
   shutdown. Version-1 saves migrate with the default morning time. Anonymous
   player state persists by client-generated UUID (inventory, position, vitals,
-  Hunger-effect duration, exhaustion and selected hotbar slot); legacy player
-  saves migrate with default effect state. Dropped stacks persist with physics state;
+  Hunger-effect duration, exhaustion, hidden saturation and selected hotbar slot);
+  version-5 player saves preserve saturation, while earlier versions migrate
+  with zero to avoid changing existing hunger. Dropped stacks persist with physics state;
   mob kind, health, position and AI timers persist too. Mobs and dropped
   items pause while no players are online; distant dropped items also pause
   until a player approaches. Collision terrain is generated
@@ -109,7 +110,8 @@ Every implemented wiki feature gets a line here. Status legend:
   (0.1 per meter actually sprinted, 0.01 per meter swum, 0.05 per jump or
   0.2 per sprint-jump; walking and bumping into walls cost no movement
   exhaustion, successful attacks cost 0.1), sprinting only above 6 hunger
-  points (creative is unrestricted), regen 1 HP/4 s at hunger ≥ 18, starvation stops at
+  points (creative is unrestricted); initial saturation is 5 and exhaustion
+  spends saturation before visible hunger, regen 1 HP/4 s at hunger ≥ 18, starvation stops at
   half a heart (normal difficulty), timed digging (hardness × 1.5, × 5
   for tool-required blocks without a pickaxe), block drops into a 36-slot
   inventory (stone→cobble, grass→dirt, leaves→apple at 5%), placing
@@ -120,7 +122,11 @@ Every implemented wiki feature gets a line here. Status legend:
   further descent. Void-floor landings do not add fall damage; logging out
   there restores a safe spawn position. Anonymous UUID saves preserve
   inventory, position, vitals and selected slot. No armor, XP,
-  saturation, general crafting or mode switching mid-session yet.
+  general crafting or mode switching mid-session yet. Apple, raw porkchop
+  and rotten flesh restore 2.4/1.8/0.8 saturation respectively, capped
+  at current hunger; Bedrock apples can be eaten at full hunger. Eating is
+  immediate instead of taking 32 ticks, and the full Bedrock food roster is
+  missing.
 - `partial` — Game modes: creative (default hotbar blocks, instant dig,
   no consumption, E = block picker, double-jump flight with server
   authority) and survival (empty start, E =

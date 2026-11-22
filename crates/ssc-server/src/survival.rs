@@ -14,6 +14,8 @@ pub const INVENTORY_SIZE: usize = 36;
 pub const MAX_HEALTH: f32 = 20.0;
 /// Max hunger (Minecraft: 20 = 10 drumsticks).
 pub const MAX_HUNGER: u8 = 20;
+/// A newly spawned player starts with 5 hidden saturation points.
+pub const INITIAL_SATURATION: f32 = 5.0;
 /// Sprinting requires more than three full drumsticks.
 pub const MIN_SPRINT_HUNGER: u8 = 7;
 /// Max air, in ticks (Minecraft: 300 = 15 s of breath).
@@ -56,6 +58,8 @@ pub fn attack_damage(held: Option<ItemId>) -> f32 {
 pub struct SurvivalState {
     pub health: f32,
     pub hunger: u8,
+    /// Hidden food buffer, consumed before the visible hunger bar.
+    pub saturation: f32,
     pub air: u16,
     /// Accumulated fall distance (blocks) since last ground/water.
     pub fall_distance: f32,
@@ -87,6 +91,7 @@ impl Default for SurvivalState {
         Self {
             health: MAX_HEALTH,
             hunger: MAX_HUNGER,
+            saturation: INITIAL_SATURATION,
             air: MAX_AIR,
             fall_distance: 0.0,
             dead: false,
@@ -161,7 +166,7 @@ impl SurvivalState {
         // --- Hunger (exhaustion model, simplified) ------------------------
         // Exertion is based on distance actually traveled, not held input:
         // walking and sneaking cost nothing; swimming costs 0.01/m, sprinting
-        // 0.1/m. Saturation is not yet modeled.
+        // 0.1/m.
         self.exhaustion += input.horizontal_distance.max(0.0)
             * if input.in_water {
                 0.01
@@ -183,7 +188,9 @@ impl SurvivalState {
         }
         while self.exhaustion >= 4.0 {
             self.exhaustion -= 4.0;
-            if self.hunger > 0 {
+            if self.saturation > 0.0 {
+                self.saturation = (self.saturation - 1.0).max(0.0);
+            } else if self.hunger > 0 {
                 self.hunger -= 1;
                 fx.hunger_changed = true;
             }
@@ -288,12 +295,14 @@ impl SurvivalState {
         *self = SurvivalState::default();
     }
 
-    /// Eat `points` of hunger.
-    pub fn eat(&mut self, points: u8) -> bool {
-        if self.hunger >= MAX_HUNGER {
+    /// Restore food and saturation. Bedrock apples can be eaten at full
+    /// hunger; other available foods cannot.
+    pub fn eat(&mut self, points: u8, saturation: f32, always_edible: bool) -> bool {
+        if self.hunger >= MAX_HUNGER && !always_edible {
             return false;
         }
         self.hunger = (self.hunger + points).min(MAX_HUNGER);
+        self.saturation = (self.saturation + saturation).min(self.hunger as f32);
         true
     }
 
@@ -583,7 +592,15 @@ mod tests {
     #[test]
     fn hunger_drains_from_sprinting_and_regen_heals() {
         let mut s = SurvivalState::default();
-        // 40 blocks sprinting uses one hunger point without saturation.
+        // Six 40-block sprints consume the initial 5 saturation points,
+        // then one visible hunger point.
+        for _ in 0..5 {
+            s.exhaustion = 4.0;
+            s.tick(TickInput::default());
+        }
+        assert_eq!(s.saturation, 0.0);
+        assert_eq!(s.hunger, MAX_HUNGER);
+        // 40 more blocks sprinting uses one visible hunger point.
         for _ in 0..101 {
             s.tick(TickInput {
                 horizontal_distance: 0.4,
@@ -601,6 +618,27 @@ mod tests {
             s.tick(TickInput::default());
         }
         assert_eq!(s.health, 11.0, "one heart per 4 s at full hunger");
+    }
+
+    #[test]
+    fn food_replenishes_saturation_without_exceeding_hunger() {
+        let mut s = SurvivalState::default();
+        s.hunger = 1;
+        s.saturation = 0.0;
+        assert!(s.eat(3, 1.8, false));
+        assert_eq!(s.hunger, 4);
+        assert!((s.saturation - 1.8).abs() < 0.0001);
+        assert!(s.eat(4, 2.4, true));
+        assert_eq!(s.hunger, 8);
+        assert!((s.saturation - 4.2).abs() < 0.0001);
+        s.hunger = MAX_HUNGER;
+        assert!(!s.eat(4, 0.8, false));
+        assert!(s.eat(4, 2.4, true));
+        assert!((s.saturation - 6.6).abs() < 0.0001);
+        s.hunger = 1;
+        s.saturation = 1.0;
+        assert!(s.eat(1, 20.0, false));
+        assert_eq!(s.saturation, 2.0);
     }
 
     #[test]
