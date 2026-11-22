@@ -82,6 +82,15 @@ Every implemented wiki feature gets a line here. Status legend:
   back-to-front, no depth writes), same-type face merging; swimming
   physics (slow sink, jump-to-rise, drag). No flow simulation, waves or
   underwater fog yet; cave pockets under lakes stay dry.
+- `partial` — Nearby loaded sections receive deterministic random block
+  ticks: grass under opaque cover decays to dirt, and daylight grass
+  attempts four dirt targets within the wiki's 3×5×3 spread area (one block
+  upward, three downward). Water-covered dirt does not accept grass.
+  Updates are broadcast, refresh LODs and persist as ordinary world edits;
+  random ticking pauses with no joined players or beyond a fixed four-column
+  radius. The one-sample-per-section scheduler and direct-skylight estimate
+  are approximations; propagated lighting, gamerule tuning and other
+  random-ticked blocks are pending.
 - `dev` — 20 placeholder blocks with procedurally generated textures in
   Minecraft's 16×16 tile atlas convention; real texture packs load via
   `--textures <256×256 atlas.png>` (PNG decode through the approved

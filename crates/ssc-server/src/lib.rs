@@ -8,6 +8,7 @@
 //! Reference for game behavior: <https://minecraft.wiki/> (Bedrock
 //! semantics). See `implemented-features.md` for parity status.
 
+mod block_ticks;
 pub mod game;
 pub mod mobs;
 pub mod persistence;
@@ -16,5 +17,5 @@ pub mod raycast;
 pub mod survival;
 pub mod worldgen;
 
-pub use game::{Server, ServerConfig, GameMode, HOTBAR};
 pub use game::spawn_local;
+pub use game::{GameMode, Server, ServerConfig, HOTBAR};

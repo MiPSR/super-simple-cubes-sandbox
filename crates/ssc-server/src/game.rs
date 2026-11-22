@@ -1079,6 +1079,7 @@ impl Server {
             let lods_this_tick = if self.cfg.local { usize::MAX } else { 48 };
             self.stream_to(id, cols_this_tick, lods_this_tick);
         }
+        self.tick_blocks();
 
         // Time advances every tick; broadcast once a second.
         self.time_of_day += 1.0 / 24000.0;
@@ -1389,6 +1390,70 @@ impl Server {
         for id in empty {
             self.items.remove(&id);
             let _ = self.broadcast(&ServerPacket::EntityRemove { id });
+        }
+    }
+
+    /// Random block ticks only run in loaded columns near joined players.
+    /// The fixed four-column radius is independent of visual LOD distance.
+    fn tick_blocks(&mut self) {
+        let players: Vec<ColumnKey> = self
+            .sessions
+            .values()
+            .filter(|session| session.player.joined)
+            .map(|session| {
+                (
+                    (session.player.pos.x.floor() as i32).div_euclid(16),
+                    (session.player.pos.z.floor() as i32).div_euclid(16),
+                )
+            })
+            .collect();
+        if players.is_empty() {
+            return;
+        }
+        let mut columns: Vec<ColumnKey> = self
+            .world
+            .columns
+            .keys()
+            .copied()
+            .filter(|(cx, cz)| {
+                players
+                    .iter()
+                    .any(|(px, pz)| (cx - px).abs() <= 4 && (cz - pz).abs() <= 4)
+            })
+            .collect();
+        columns.sort_unstable();
+        let mut samples = Vec::new();
+        for (cx, cz) in columns {
+            let column = &self.world.columns[&(cx, cz)];
+            for (section, subchunk) in column.subchunks.iter().enumerate() {
+                if subchunk.is_some() {
+                    samples.push(crate::block_ticks::sample(
+                        self.tick,
+                        self.gen.seed(),
+                        cx,
+                        cz,
+                        section,
+                    ));
+                }
+            }
+        }
+        let daylight = self.time_of_day > 0.25 && self.time_of_day < 0.75;
+        let mut dirty_columns = HashSet::new();
+        for ((x, y, z), roll) in samples {
+            for ((x, y, z), block) in
+                crate::block_ticks::grass_changes(&self.world, x, y, z, roll, daylight)
+            {
+                if self.world.block_or_air(x, y, z) == block {
+                    continue;
+                }
+                self.world.set_block(x, y, z, block);
+                self.record_block_edit(x, y, z, block);
+                let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block });
+                dirty_columns.insert((x.div_euclid(16), z.div_euclid(16)));
+            }
+        }
+        for column in dirty_columns {
+            self.refresh_lod_for(column);
         }
     }
 
@@ -2930,6 +2995,43 @@ mod tests {
             }
             out
         }
+    }
+
+    #[test]
+    fn grass_random_ticks_sync_and_persist_only_near_online_players() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.tick = 77;
+        let ((x, y, z), _) = crate::block_ticks::sample(77, rig.server.gen.seed(), 0, 0, 7);
+        rig.server.world.set_block(x, y, z, ssc_world::GRASS_BLOCK);
+        rig.server.world.set_block(x, y + 1, z, ssc_world::STONE);
+        rig.server.sessions.get_mut(&1).unwrap().player.joined = false;
+        rig.server.tick_blocks();
+        assert_eq!(
+            rig.server.world.block_or_air(x, y, z),
+            ssc_world::GRASS_BLOCK
+        );
+        rig.server.sessions.get_mut(&1).unwrap().player.joined = true;
+        rig.server.sessions.get_mut(&1).unwrap().player.pos.x = 1024.0;
+        rig.server.tick_blocks();
+        assert_eq!(
+            rig.server.world.block_or_air(x, y, z),
+            ssc_world::GRASS_BLOCK
+        );
+        rig.server.sessions.get_mut(&1).unwrap().player.pos.x = 8.5;
+        rig.server.tick_blocks();
+        assert_eq!(rig.server.world.block_or_air(x, y, z), ssc_world::DIRT);
+        assert_eq!(rig.server.block_edits[&(0, 0)][&(x, y, z)], ssc_world::DIRT);
+        assert!(rig.drain(0).iter().any(|packet| matches!(
+            packet, ServerPacket::BlockUpdate { x: px, y: py, z: pz, block: ssc_world::DIRT }
+                if (*px, *py, *pz) == (x, y, z)
+        )));
+        let path =
+            std::env::temp_dir().join(format!("ssc-grass-tick-save-{}.bin", std::process::id()));
+        rig.server.cfg.world_path = Some(path.clone());
+        rig.server.save_world();
+        let (_, _, edits) = crate::persistence::load(&path).unwrap().unwrap();
+        assert_eq!(edits[&(0, 0)][&(x, y, z)], ssc_world::DIRT);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
