@@ -55,7 +55,7 @@ pub fn attack_damage(held: Option<ItemId>) -> f32 {
         Some(ssc_world::STONE_AXE) => 5.0,
         Some(ssc_world::WOODEN_SHOVEL) => 2.0,
         Some(ssc_world::STONE_SHOVEL) => 3.0,
-        _ => 2.0,
+        _ => 1.0,
     }
 }
 
@@ -702,7 +702,7 @@ mod tests {
     fn pickaxe_stats_use_bedrock_values() {
         assert_eq!(max_durability(ssc_world::WOODEN_PICKAXE), 60);
         assert_eq!(max_durability(ssc_world::STONE_PICKAXE), 132);
-        assert_eq!(attack_damage(None), 2.0);
+        assert_eq!(attack_damage(None), 1.0);
         assert_eq!(attack_damage(Some(ssc_world::WOODEN_PICKAXE)), 3.0);
         assert_eq!(attack_damage(Some(ssc_world::STONE_PICKAXE)), 4.0);
         for (wood, stone, wood_damage, stone_damage) in [

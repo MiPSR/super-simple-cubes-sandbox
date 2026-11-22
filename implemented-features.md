@@ -175,7 +175,7 @@ Every implemented wiki feature gets a line here. Status legend:
   crafting, this does not require shaped grid placement or a crafting table;
   higher tool tiers and enchantments are not implemented. Bedrock
   wooden/stone pickaxe durability is 60/132 uses; block breaks consume one
-  use, successful entity hits consume two and deal 3/4 damage (versus 2
+  use, successful entity hits consume two and deal 3/4 damage (versus 1
   by hand). Wear follows the tool through slot swaps, drops, death, pickups
   and reconnects; the inventory HUD displays remaining uses. Version-4
   player saves and version-2 world-item saves retain wear while older
@@ -195,6 +195,12 @@ Every implemented wiki feature gets a line here. Status legend:
   still block digging through the target. Timers reset on respawn/reload;
   environmental hazards still use independent damage timers and the client
   does not yet show the red hurt flash.
+- `partial` — Modern Bedrock bare-hand melee damage is 1 health point.
+  Falling, airborne, non-swimming/non-flying players deal 1.5× melee
+  damage on critical hits, including while sprinting as in Bedrock.
+  Stronger criticals respect damage-immunity excess rules. Critical
+  particles/sounds, mount/climbable/status-effect exclusions and
+  sprint-specific knockback are pending.
 - `partial` — Inventory key 9 repairs the selected hotbar tool using another
   tool of the exact same type anywhere in inventory. Remaining uses are
   added with the 5% repair bonus (wood +3, stone +6), capped at the tool's

@@ -1537,7 +1537,12 @@ impl Server {
             return false;
         }
         let held = self.selected_item(id).map(|(item, _)| item);
-        let damage = crate::survival::attack_damage(held);
+        let attacker = &self.sessions[&id].player;
+        // Unlike Java, Bedrock permits a sprinting falling critical.
+        // No mounts, climbable blocks or status effects exist yet.
+        let critical =
+            attacker.vel.y < 0.0 && !attacker.on_ground && !attacker.in_water && !attacker.flying;
+        let damage = crate::survival::attack_damage(held) * if critical { 1.5 } else { 1.0 };
 
         if is_mob {
             // Bedrock tool damage; knockback remains server-owned.
@@ -4476,7 +4481,7 @@ mod tests {
 
         rig.server.world.set_block(10, 56, 8, AIR);
         rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
-        assert_eq!(rig.server.sessions[&2].survival.health, before - 2.0);
+        assert_eq!(rig.server.sessions[&2].survival.health, before - 1.0);
         assert!((rig.server.sessions[&1].survival.exhaustion - 0.1).abs() < 0.0001);
         assert!((rig.server.sessions[&2].survival.exhaustion - 0.1).abs() < 0.0001);
     }
@@ -4491,6 +4496,45 @@ mod tests {
         assert_eq!(rig.server.sessions[&2].survival.health, before - 4.0);
         assert_eq!(rig.server.sessions[&1].inventory[0], None);
         assert_eq!(rig.server.sessions[&1].durability[0], 0);
+    }
+
+    #[test]
+    fn falling_critical_hits_use_authoritative_state_and_allow_bedrock_sprinting() {
+        for (vy, grounded, wet, flying, expected) in [
+            (-1.0, false, false, false, 7.5),
+            (1.0, false, false, false, 5.0),
+            (-1.0, true, false, false, 5.0),
+            (-1.0, false, true, false, 5.0),
+            (-1.0, false, false, true, 5.0),
+        ] {
+            let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((ssc_world::STONE_AXE, 1));
+            session.durability[0] = 132;
+            session.player.vel.y = vy;
+            session.player.on_ground = grounded;
+            session.player.in_water = wet;
+            session.player.flying = flying;
+            session.player.keys = keys::FORWARD | keys::SPRINT;
+            rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
+            assert_eq!(rig.server.sessions[&2].survival.health, 20.0 - expected);
+            assert_eq!(rig.server.sessions[&1].durability[0], 130);
+        }
+    }
+
+    #[test]
+    fn a_stronger_critical_applies_only_excess_damage_during_immunity() {
+        let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::STONE_AXE, 1));
+        rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
+        assert_eq!(rig.server.sessions[&2].survival.health, 15.0);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.player.vel.y = -1.0;
+        session.player.on_ground = false;
+        rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
+        assert_eq!(rig.server.sessions[&2].survival.health, 12.5);
+        rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
+        assert_eq!(rig.server.sessions[&2].survival.health, 12.5);
     }
 
     #[test]
@@ -4546,7 +4590,7 @@ mod tests {
 
         rig.server.world.set_block(10, 56, 8, AIR);
         rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
-        assert_eq!(rig.server.mobs[&mob_id].health, before - 2.0);
+        assert_eq!(rig.server.mobs[&mob_id].health, before - 1.0);
     }
 
     #[test]
@@ -4560,7 +4604,7 @@ mod tests {
 
         rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
 
-        assert_eq!(rig.server.sessions[&3].survival.health, health - 2.0);
+        assert_eq!(rig.server.sessions[&3].survival.health, health - 1.0);
     }
 
     #[test]
@@ -4584,7 +4628,7 @@ mod tests {
 
         rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
 
-        assert_eq!(rig.server.mobs[&(FIRST_MOB_ID + 1)].health, health - 2.0);
+        assert_eq!(rig.server.mobs[&(FIRST_MOB_ID + 1)].health, health - 1.0);
     }
 
     #[test]
