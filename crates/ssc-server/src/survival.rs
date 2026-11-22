@@ -113,8 +113,8 @@ pub struct TickInput {
     pub eye_in_water: bool,
     /// Player feet crossed below the Overworld's minimum build height.
     pub below_world: bool,
-    /// Moving horizontally this tick.
-    pub moving: bool,
+    /// Actual horizontal distance traveled this tick (blocks).
+    pub horizontal_distance: f32,
     pub sprinting: bool,
     /// Jumped this tick.
     pub jumped: bool,
@@ -159,13 +159,19 @@ impl SurvivalState {
         }
 
         // --- Hunger (exhaustion model, simplified) ------------------------
-        // Moving/sprinting/jumping build exhaustion; 4 exhaustion = 1
-        // hunger point. Regen costs exhaustion too.
-        if input.moving {
-            self.exhaustion += if input.sprinting { 0.025 } else { 0.005 };
-        }
+        // Exertion is based on distance actually traveled, not held input:
+        // walking and sneaking cost nothing; swimming costs 0.01/m, sprinting
+        // 0.1/m. Saturation is not yet modeled.
+        self.exhaustion += input.horizontal_distance.max(0.0)
+            * if input.in_water {
+                0.01
+            } else if input.sprinting {
+                0.1
+            } else {
+                0.0
+            };
         if input.jumped {
-            self.exhaustion += 0.05;
+            self.exhaustion += if input.sprinting { 0.2 } else { 0.05 };
         }
         if self.hunger_effect_ticks > 0 {
             self.hunger_effect_ticks -= 1;
@@ -577,10 +583,10 @@ mod tests {
     #[test]
     fn hunger_drains_from_sprinting_and_regen_heals() {
         let mut s = SurvivalState::default();
-        // Sprint exhaustion: 0.025/tick → 1 hunger point per 160 ticks.
-        for _ in 0..160 {
+        // 40 blocks sprinting uses one hunger point without saturation.
+        for _ in 0..101 {
             s.tick(TickInput {
-                moving: true,
+                horizontal_distance: 0.4,
                 sprinting: true,
                 ..Default::default()
             });
@@ -595,6 +601,42 @@ mod tests {
             s.tick(TickInput::default());
         }
         assert_eq!(s.health, 11.0, "one heart per 4 s at full hunger");
+    }
+
+    #[test]
+    fn exhaustion_uses_travel_and_sprint_jump_costs() {
+        let mut s = SurvivalState::default();
+        s.tick(TickInput {
+            sprinting: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            s.exhaustion, 0.0,
+            "held sprint without movement costs nothing"
+        );
+        s.tick(TickInput {
+            horizontal_distance: 2.0,
+            ..Default::default()
+        });
+        assert_eq!(s.exhaustion, 0.0, "walking costs nothing");
+        s.tick(TickInput {
+            horizontal_distance: 2.0,
+            in_water: true,
+            ..Default::default()
+        });
+        assert!((s.exhaustion - 0.02).abs() < 0.0001);
+        s.tick(TickInput {
+            horizontal_distance: 2.0,
+            sprinting: true,
+            jumped: true,
+            ..Default::default()
+        });
+        assert!((s.exhaustion - 0.42).abs() < 0.0001);
+        s.tick(TickInput {
+            jumped: true,
+            ..Default::default()
+        });
+        assert!((s.exhaustion - 0.47).abs() < 0.0001);
     }
 
     #[test]

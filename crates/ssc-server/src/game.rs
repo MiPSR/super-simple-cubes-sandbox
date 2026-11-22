@@ -679,6 +679,7 @@ impl Server {
             }
 
             let was_on_ground = p.on_ground;
+            let old_pos = p.pos;
             let old_y = p.pos.y;
             let jumped = p.keys & keys::JUMP != 0 && p.on_ground;
             let flying = p.flying;
@@ -689,7 +690,8 @@ impl Server {
                 && p.keys & keys::FORWARD != 0
                 && p.keys & keys::SNEAK == 0;
             step_player(&self.world, p, dt, flying, sprinting);
-            let moving = p.keys & (keys::FORWARD | keys::BACKWARD | keys::LEFT | keys::RIGHT) != 0;
+            let dx = p.pos.x - old_pos.x;
+            let dz = p.pos.z - old_pos.z;
 
             // Survival vitals (one tick).
             let eye = p.pos + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0);
@@ -705,7 +707,7 @@ impl Server {
                     in_water: p.in_water,
                     eye_in_water,
                     below_world: p.pos.y < ssc_world::MIN_Y as f32,
-                    moving,
+                    horizontal_distance: (dx * dx + dz * dz).sqrt(),
                     sprinting,
                     jumped,
                     dy: p.pos.y - old_y,
@@ -1521,6 +1523,7 @@ impl Server {
             // remove in consecutive packets.
             if self.cfg.game_mode == GameMode::Survival {
                 if let Some(session) = self.sessions.get_mut(&id) {
+                    session.survival.exhaustion += 0.1;
                     damage_held_tool(session, 2);
                 }
             }
@@ -1547,6 +1550,7 @@ impl Server {
             );
             if self.cfg.game_mode == GameMode::Survival {
                 if let Some(session) = self.sessions.get_mut(&id) {
+                    session.survival.exhaustion += 0.1;
                     damage_held_tool(session, 2);
                 }
             }
@@ -2832,8 +2836,11 @@ mod tests {
         assert!((distance(&walk) - WALK_SPEED / TICK_RATE).abs() < 0.001);
         assert!((distance(&sprint) - SPRINT_SPEED / TICK_RATE).abs() < 0.001);
         assert!((distance(&creative) - SPRINT_SPEED / TICK_RATE).abs() < 0.001);
-        assert!((walk.server.sessions[&1].survival.exhaustion - 0.005).abs() < 0.0001);
-        assert!((sprint.server.sessions[&1].survival.exhaustion - 0.025).abs() < 0.0001);
+        assert_eq!(walk.server.sessions[&1].survival.exhaustion, 0.0);
+        assert!(
+            (sprint.server.sessions[&1].survival.exhaustion - distance(&sprint) * 0.1).abs()
+                < 0.0001
+        );
 
         // Holding sprint while strafing or sneaking is ordinary movement.
         for keys in [
@@ -2845,8 +2852,27 @@ mod tests {
             session.player.keys = keys;
             session.player.on_ground = true;
             rig.server.tick();
-            assert!((rig.server.sessions[&1].survival.exhaustion - 0.005).abs() < 0.0001);
+            assert_eq!(rig.server.sessions[&1].survival.exhaustion, 0.0);
         }
+    }
+
+    #[test]
+    fn sprinting_into_a_wall_does_not_drain_hunger() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.world.set_block(9, 55, 8, ssc_world::STONE);
+        rig.server.world.set_block(9, 56, 8, ssc_world::STONE);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.player.pos.x = 8.7;
+        session.player.on_ground = true;
+        session.player.keys = keys::FORWARD | keys::SPRINT;
+        for _ in 0..200 {
+            rig.server.tick();
+        }
+        assert!(rig.server.sessions[&1].survival.exhaustion < 0.001);
+        assert_eq!(
+            rig.server.sessions[&1].survival.hunger,
+            crate::survival::MAX_HUNGER
+        );
     }
 
     #[test]
@@ -3781,10 +3807,12 @@ mod tests {
 
         rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
         assert_eq!(rig.server.sessions[&2].survival.health, before);
+        assert_eq!(rig.server.sessions[&1].survival.exhaustion, 0.0);
 
         rig.server.world.set_block(10, 56, 8, AIR);
         rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
         assert_eq!(rig.server.sessions[&2].survival.health, before - 2.0);
+        assert!((rig.server.sessions[&1].survival.exhaustion - 0.1).abs() < 0.0001);
     }
 
     #[test]

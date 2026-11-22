@@ -106,8 +106,10 @@ Every implemented wiki feature gets a line here. Status legend:
 - `partial` — Survival mode (`--mode survival|creative`, default survival):
   health 20 / hunger 20 / air 300 with wiki-accurate rules — fall damage
   (distance − 3), drowning (1 heart/s after 15 s), exhaustion-driven hunger
-  (sprint 5× walking exhaustion), sprinting only above 6 hunger points
-  (creative is unrestricted), regen 1 HP/4 s at hunger ≥ 18, starvation stops at
+  (0.1 per meter actually sprinted, 0.01 per meter swum, 0.05 per jump or
+  0.2 per sprint-jump; walking and bumping into walls cost no movement
+  exhaustion, successful attacks cost 0.1), sprinting only above 6 hunger
+  points (creative is unrestricted), regen 1 HP/4 s at hunger ≥ 18, starvation stops at
   half a heart (normal difficulty), timed digging (hardness × 1.5, × 5
   for tool-required blocks without a pickaxe), block drops into a 36-slot
   inventory (stone→cobble, grass→dirt, leaves→apple at 5%), placing
