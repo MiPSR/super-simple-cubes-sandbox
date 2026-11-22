@@ -7,9 +7,9 @@
 //! Every extension is logged in `implemented-features.md`.
 
 use ssc_world::{
-    Column, SubChunk, AIR, BEDROCK, COAL_ORE, DEEPSLATE, DEEPSLATE_IRON_ORE, DIRT, GRASS_BLOCK,
-    GRAVEL, IRON_ORE, MAX_Y, MIN_Y, OAK_LEAVES, OAK_LOG, SAND, SANDSTONE, SNOW_BLOCK, STONE,
-    SUBCHUNKS_PER_COLUMN, WATER,
+    Column, SubChunk, AIR, BEDROCK, COAL_ORE, DEEPSLATE, DEEPSLATE_COAL_ORE, DEEPSLATE_IRON_ORE,
+    DIRT, GRASS_BLOCK, GRAVEL, IRON_ORE, MAX_Y, MIN_Y, OAK_LEAVES, OAK_LOG, SAND, SANDSTONE,
+    SNOW_BLOCK, STONE, SUBCHUNKS_PER_COLUMN, WATER,
 };
 
 /// Sea level (water surfaces sit at the top of this block).
@@ -19,9 +19,9 @@ pub const SEA_LEVEL: i32 = 63;
 pub struct WorldGen {
     seed: u64,
     noise: Simplex2,
-    noise_d: Simplex2, // second field for material variation
+    noise_d: Simplex2,     // second field for material variation
     biome_noise: Simplex2, // broad desert/plains regions
-    noise3: Simplex3,  // cave carving
+    noise3: Simplex3,      // cave carving
 }
 
 impl WorldGen {
@@ -86,7 +86,7 @@ impl WorldGen {
             (IRON_ORE, 0x1A0F_u64, MIN_Y, 64, 3),
             (COAL_ORE, 0xC0A1_u64, 0, 192, 2),
         ] {
-            if !(min_y..=max_y).contains(&y) || (ore == COAL_ORE && self.deepslate_at(x, y, z)) {
+            if !(min_y..=max_y).contains(&y) {
                 continue;
             }
             let hash = hash3(
@@ -101,10 +101,10 @@ impl WorldGen {
             let dy = local_y - 2 - ((hash >> 16) % 4) as i32;
             let dz = local_z - 2 - ((hash >> 24) % 4) as i32;
             if dx * dx + dy * dy + dz * dz <= 4 {
-                return if ore == IRON_ORE && self.deepslate_at(x, y, z) {
-                    DEEPSLATE_IRON_ORE
-                } else {
-                    ore
+                return match (ore, self.deepslate_at(x, y, z)) {
+                    (IRON_ORE, true) => DEEPSLATE_IRON_ORE,
+                    (COAL_ORE, true) => DEEPSLATE_COAL_ORE,
+                    _ => ore,
                 };
             }
         }
@@ -212,7 +212,11 @@ impl WorldGen {
                     } else if y > h - 4 {
                         // Sub-surface band: dirt, or sand/sandstone near sea.
                         if self.is_desert(wx, wz) && h > SEA_LEVEL + 1 {
-                            if y >= h - 2 { SAND } else { SANDSTONE }
+                            if y >= h - 2 {
+                                SAND
+                            } else {
+                                SANDSTONE
+                            }
                         } else if h <= SEA_LEVEL + 1 {
                             if dirt_noise > 0.35 && y > h - 2 {
                                 SANDSTONE
@@ -637,8 +641,15 @@ mod tests {
             assert_eq!(col.get(lx, h, lz), top);
             // Sandstone is a lower band: the first desert layer can be sand.
             assert_eq!(col.get(lx, h - 3, lz), under);
-            let summary = gen.lod_summary(x.div_euclid(16), z.div_euclid(16), &ssc_world::World::default(), &std::collections::HashSet::new());
-            assert!(summary.chunks_exact(2).any(|cell| cell[1] == ssc_world::block_info(top).tiles[ssc_world::FACE_TOP]));
+            let summary = gen.lod_summary(
+                x.div_euclid(16),
+                z.div_euclid(16),
+                &ssc_world::World::default(),
+                &std::collections::HashSet::new(),
+            );
+            assert!(summary
+                .chunks_exact(2)
+                .any(|cell| cell[1] == ssc_world::block_info(top).tiles[ssc_world::FACE_TOP]));
         }
     }
 
@@ -649,7 +660,9 @@ mod tests {
         for cx in -64..64 {
             for cz in -64..64 {
                 let roll = hash3(cx, cz, gen.seed ^ 0x7EE5_0000_0000_0001);
-                if roll % 16 != 0 { continue; }
+                if roll % 16 != 0 {
+                    continue;
+                }
                 let lx = (4 + (roll >> 8) % 8) as i32;
                 let lz = (4 + (roll >> 16) % 8) as i32;
                 let (x, z) = (cx * 16 + lx, cz * 16 + lz);
@@ -659,13 +672,17 @@ mod tests {
                 }
             }
         }
-        assert!(candidates > 0, "test region must include dry desert tree candidates");
+        assert!(
+            candidates > 0,
+            "test region must include dry desert tree candidates"
+        );
     }
 
     #[test]
     fn coal_and_iron_generate_only_in_stone_at_their_depths() {
         let gen = WorldGen::new(31415);
         let mut coal = 0;
+        let mut deep_coal = 0;
         let mut iron = 0;
         for cx in -2..2 {
             for cz in -2..2 {
@@ -678,16 +695,21 @@ mod tests {
                         let bedrock_h = MIN_Y + (hash3(x, z, gen.seed) % 4) as i32;
                         for y in MIN_Y..=h {
                             let block = col.get(lx, y, lz);
-                            if block != COAL_ORE && block != IRON_ORE && block != DEEPSLATE_IRON_ORE
+                            if block != COAL_ORE
+                                && block != DEEPSLATE_COAL_ORE
+                                && block != IRON_ORE
+                                && block != DEEPSLATE_IRON_ORE
                             {
                                 continue;
                             }
                             assert!(y > bedrock_h && y <= h - 4);
                             assert!(!gen.is_cave(x, y, z, h, bedrock_h));
                             assert_eq!(block, gen.ore_at(x, y, z));
-                            if block == COAL_ORE {
+                            if matches!(block, COAL_ORE | DEEPSLATE_COAL_ORE) {
                                 assert!(y >= 0);
+                                assert_eq!(block == DEEPSLATE_COAL_ORE, gen.deepslate_at(x, y, z));
                                 coal += 1;
+                                deep_coal += usize::from(block == DEEPSLATE_COAL_ORE);
                             } else {
                                 assert!(y <= 64);
                                 assert_eq!(block == DEEPSLATE_IRON_ORE, gen.deepslate_at(x, y, z));
@@ -701,6 +723,10 @@ mod tests {
         assert!(
             coal > 0 && iron > 0,
             "expected both ores: coal={coal} iron={iron}"
+        );
+        assert!(
+            deep_coal > 0,
+            "transition layer should contain rare deepslate coal"
         );
         let a = gen.generate_column(-1, -1);
         let b = gen.generate_column(-1, -1);
@@ -834,7 +860,10 @@ mod tests {
             let (x, h, z) = pos.expect("seed 42 has both submerged gravel and sand");
             let col = gen.generate_column(x.div_euclid(16), z.div_euclid(16));
             assert_eq!(col.get(x.rem_euclid(16), h, z.rem_euclid(16)), expected);
-            assert_eq!(col.get(x.rem_euclid(16), SEA_LEVEL, z.rem_euclid(16)), WATER);
+            assert_eq!(
+                col.get(x.rem_euclid(16), SEA_LEVEL, z.rem_euclid(16)),
+                WATER
+            );
         }
     }
 

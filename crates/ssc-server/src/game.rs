@@ -3187,6 +3187,37 @@ mod tests {
     }
 
     #[test]
+    fn deepslate_coal_requires_pickaxe_and_yields_coal() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        rig.server
+            .world
+            .set_block(8, 54, 8, ssc_world::DEEPSLATE_COAL_ORE);
+        rig.server.handle_dig_start(1);
+        for _ in 0..75 {
+            rig.server.tick();
+        }
+        assert!(rig.server.sessions[&1]
+            .inventory
+            .iter()
+            .flatten()
+            .all(|(item, _)| *item != ssc_world::COAL));
+
+        rig.server
+            .world
+            .set_block(8, 54, 8, ssc_world::DEEPSLATE_COAL_ORE);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::STONE_PICKAXE, 1));
+        rig.server.handle_dig_start(1);
+        for _ in 0..50 {
+            rig.server.tick();
+        }
+        assert!(rig.server.sessions[&1]
+            .inventory
+            .iter()
+            .flatten()
+            .any(|(item, _)| *item == ssc_world::COAL));
+    }
+
+    #[test]
     fn pickaxe_wear_follows_slot_swaps_and_breaks_after_last_use() {
         let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
         let session = rig.server.sessions.get_mut(&1).unwrap();

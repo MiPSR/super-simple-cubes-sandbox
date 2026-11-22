@@ -6,8 +6,8 @@
 
 use super::blocks::{
     BlockId, AIR, BEDROCK, BRICKS, COAL_ORE, COBBLED_DEEPSLATE, COBBLESTONE, DEEPSLATE,
-    DEEPSLATE_IRON_ORE, DIRT, GRASS_BLOCK, GRAVEL, IRON_ORE, OAK_LEAVES, OAK_LOG, OAK_PLANKS, SAND,
-    SANDSTONE, SNOW_BLOCK, STONE, WATER,
+    DEEPSLATE_COAL_ORE, DEEPSLATE_IRON_ORE, DIRT, GRASS_BLOCK, GRAVEL, IRON_ORE, OAK_LEAVES,
+    OAK_LOG, OAK_PLANKS, SAND, SANDSTONE, SNOW_BLOCK, STONE, WATER,
 };
 
 pub type ItemId = u16;
@@ -82,6 +82,7 @@ pub fn item_info(id: ItemId) -> ItemInfo {
         17 => block_item(DEEPSLATE, "deepslate"),
         18 => block_item(COBBLED_DEEPSLATE, "cobbled_deepslate"),
         19 => block_item(DEEPSLATE_IRON_ORE, "deepslate_iron_ore"),
+        20 => block_item(DEEPSLATE_COAL_ORE, "deepslate_coal_ore"),
         APPLE => ItemInfo {
             name: "apple",
             max_stack: 64,
@@ -194,7 +195,7 @@ pub fn block_drop(b: BlockId) -> Option<ItemId> {
         AIR | BEDROCK | WATER => None,
         STONE => Some(for_block(COBBLESTONE)),
         DEEPSLATE => Some(for_block(COBBLED_DEEPSLATE)),
-        COAL_ORE => Some(COAL),
+        COAL_ORE | DEEPSLATE_COAL_ORE => Some(COAL),
         IRON_ORE | DEEPSLATE_IRON_ORE => Some(RAW_IRON),
         GRASS_BLOCK => Some(for_block(DIRT)),
         OAK_LEAVES => None,
@@ -229,6 +230,7 @@ mod tests {
     fn ore_drops_are_resources_not_placeable_ore_blocks() {
         for (ore, resource) in [
             (COAL_ORE, COAL),
+            (DEEPSLATE_COAL_ORE, COAL),
             (IRON_ORE, RAW_IRON),
             (DEEPSLATE_IRON_ORE, RAW_IRON),
         ] {

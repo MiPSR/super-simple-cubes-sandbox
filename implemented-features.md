@@ -58,7 +58,9 @@ Every implemented wiki feature gets a line here. Status legend:
   borders consistently via neighbor scan); water fills basins up to sea
   level. Below Y=0 the stone body becomes deepslate, with a mixed transition
   from Y=0 through Y=7. Seeded coal and iron ore clusters replace stone/deepslate in depth-limited
-  bands (coal Y≥0, iron Y≤64) and drop coal/raw iron, respectively. Ore
+  bands (coal Y≥0, iron Y≤64) and drop coal/raw iron, respectively. Coal
+  clusters in deepslate in the Y=0–7 transition generate deepslate coal ore
+  instead of being skipped. Ore
   frequency and shapes are approximate; small gravel pockets also replace
   the underground stone/deepslate body, and seeded gravel disks cover
   patches of submerged basin floors. A seeded coarse climate field makes
@@ -87,8 +89,10 @@ Every implemented wiki feature gets a line here. Status legend:
   No fortune, silk touch, or iron smelting yet.
 - `partial` — Deepslate (hardness 3) and deepslate iron ore (4.5)
   generate below Y=0; breaking deepslate drops cobbled deepslate and both
-  iron ore variants drop raw iron with a stone pickaxe. Deepslate coal ore, deepslate variants
-  of other ores and exact Bedrock distribution are pending.
+  iron ore variants drop raw iron with a stone pickaxe. Rare deepslate coal
+  ore (hardness 4.5) forms in the mixed Y=0–7 layer and drops coal with
+  either pickaxe. Deepslate variants of other ores, XP drops and exact
+  Bedrock distribution are pending.
 - `partial` — Gravel deposits occur underground and in submerged floor
   patches; breaking gravel drops flint
   at the wiki's unenchanted 10% chance, otherwise gravel. Gravel generation

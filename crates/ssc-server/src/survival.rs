@@ -753,6 +753,28 @@ mod tests {
             Some(ssc_world::COAL)
         );
         assert_eq!(
+            drop_with_tool(ssc_world::DEEPSLATE_COAL_ORE, 0.0, None),
+            None
+        );
+        assert_eq!(
+            drop_with_tool(
+                ssc_world::DEEPSLATE_COAL_ORE,
+                0.0,
+                Some(ssc_world::WOODEN_PICKAXE)
+            ),
+            Some(ssc_world::COAL)
+        );
+        assert!(
+            (dig_time_with_tool(
+                ssc_world::DEEPSLATE_COAL_ORE,
+                Some(ssc_world::STONE_PICKAXE)
+            )
+            .unwrap()
+                - 1.6875)
+                .abs()
+                < 0.001
+        );
+        assert_eq!(
             drop_with_tool(ssc_world::IRON_ORE, 0.0, Some(ssc_world::WOODEN_PICKAXE)),
             None
         );
