@@ -17,14 +17,22 @@ pub struct Furnace {
     pub cook_ticks: u16,
 }
 
+const RECIPES: &[(ItemId, ItemId)] = &[
+    (ssc_world::RAW_IRON, ssc_world::IRON_INGOT),
+    (ssc_world::RAW_COPPER, ssc_world::COPPER_INGOT),
+    (ssc_world::PORKCHOP, ssc_world::COOKED_PORKCHOP),
+    (ssc_world::OAK_LOG, ssc_world::CHARCOAL),
+    (ssc_world::STRIPPED_OAK_LOG, ssc_world::CHARCOAL),
+    (ssc_world::SAND, ssc_world::GLASS),
+    (ssc_world::COBBLESTONE, ssc_world::STONE),
+    (ssc_world::STONE, ssc_world::SMOOTH_STONE),
+    (ssc_world::COBBLED_DEEPSLATE, ssc_world::DEEPSLATE),
+];
+
 pub fn recipe(item: ItemId) -> Option<ItemId> {
-    match item {
-        ssc_world::RAW_IRON => Some(ssc_world::IRON_INGOT),
-        ssc_world::RAW_COPPER => Some(ssc_world::COPPER_INGOT),
-        ssc_world::PORKCHOP => Some(ssc_world::COOKED_PORKCHOP),
-        ssc_world::OAK_LOG | ssc_world::STRIPPED_OAK_LOG => Some(ssc_world::CHARCOAL),
-        _ => None,
-    }
+    RECIPES
+        .iter()
+        .find_map(|(input, output)| (*input == item).then_some(*output))
 }
 
 pub fn fuel_ticks(item: ItemId) -> u16 {
@@ -56,13 +64,7 @@ impl Furnace {
                         && count > 0
                         && count <= ssc_world::item_info(item).max_stack
                         && if slot == OUTPUT {
-                            matches!(
-                                item,
-                                ssc_world::IRON_INGOT
-                                    | ssc_world::COPPER_INGOT
-                                    | ssc_world::COOKED_PORKCHOP
-                                    | ssc_world::CHARCOAL
-                            )
+                            RECIPES.iter().any(|(_, output)| *output == item)
                         } else {
                             accepts(slot, item)
                         }
@@ -120,6 +122,26 @@ impl Furnace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_registered_recipes_cook_in_two_hundred_ticks_and_validate_output() {
+        for &(input, output) in RECIPES {
+            let mut furnace = Furnace::default();
+            furnace.slots[INPUT] = Some((input, 1));
+            furnace.slots[FUEL] = Some((ssc_world::COAL, 1));
+            for _ in 0..199 {
+                furnace.tick();
+            }
+            assert_eq!(furnace.slots[OUTPUT], None);
+            furnace.tick();
+            assert_eq!(furnace.slots[OUTPUT], Some((output, 1)));
+            assert_eq!(furnace.slots[INPUT], None);
+            assert!(
+                furnace.valid(),
+                "recipe output must survive saves: {output}"
+            );
+        }
+    }
 
     #[test]
     fn coal_cooks_eight_items_at_two_hundred_ticks_each() {

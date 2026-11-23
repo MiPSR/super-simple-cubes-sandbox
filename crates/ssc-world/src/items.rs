@@ -112,6 +112,8 @@ pub fn item_info(id: ItemId) -> ItemInfo {
         24 | 25 => block_item(super::OAK_SAPLING, "oak_sapling"),
         26 => block_item(OAK_LEAVES, "oak_leaves"),
         27 | 28 => block_item(super::FURNACE, "furnace"),
+        29 => block_item(super::GLASS, "glass"),
+        30 => block_item(super::SMOOTH_STONE, "smooth_stone"),
         APPLE => ItemInfo {
             name: "apple",
             max_stack: 64,
@@ -305,6 +307,7 @@ pub fn block_drop(b: BlockId) -> Option<ItemId> {
         OAK_LEAVES | super::GROWN_OAK_LEAVES => None,
         super::OAK_SAPLING | super::OAK_SAPLING_READY => Some(super::OAK_SAPLING),
         super::FURNACE | super::LIT_FURNACE => Some(super::FURNACE),
+        super::GLASS => None,
         SNOW_BLOCK => Some(SNOWBALL),
         other => Some(for_block(other)),
     }

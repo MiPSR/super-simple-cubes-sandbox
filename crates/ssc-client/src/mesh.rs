@@ -716,6 +716,42 @@ mod tests {
     }
 
     #[test]
+    fn glass_uses_translucent_pass_merges_and_keeps_solid_faces_visible() {
+        let world = column_with(|sc| {
+            sc.set(7, 0, 8, ssc_world::GLASS);
+            sc.set(8, 0, 8, ssc_world::GLASS);
+        });
+        let (meshes, _) = build_column_meshes(&world, 0, 0);
+        assert_eq!(meshes.len(), 1);
+        assert!(meshes[0].translucent);
+        assert_eq!(meshes[0].verts.len(), 24, "no internal glass faces; six merged exterior quads");
+        let world = column_with(|sc| {
+            sc.set(7, 0, 8, STONE);
+            sc.set(8, 0, 8, ssc_world::GLASS);
+        });
+        let (meshes, _) = build_column_meshes(&world, 0, 0);
+        assert_eq!(meshes.iter().find(|m| !m.translucent).unwrap().verts.len(), 24);
+        assert_eq!(meshes.iter().find(|m| m.translucent).unwrap().verts.len(), 20);
+        let masks = compute_face_masks(&SubChunk::filled(ssc_world::GLASS));
+        assert_eq!(masks.x_pos, [u16::MAX; 16], "glass must not occlusion-cull the scene");
+    }
+
+    #[test]
+    fn glass_faces_are_culled_across_loaded_column_boundaries() {
+        let world = column_with(|sc| {
+            for z in 0..16 {
+                for x in 0..16 {
+                    sc.set(x, 0, z, ssc_world::GLASS);
+                }
+            }
+        });
+        let (meshes, _) = build_column_meshes(&world, 0, 0);
+        assert_eq!(meshes.len(), 1);
+        assert!(meshes[0].translucent);
+        assert_eq!(meshes[0].verts.len(), 8, "only the top and bottom remain");
+    }
+
+    #[test]
     fn water_merges_with_itself_but_surfaces_against_air() {
         // Stone floor at the top of sub 6, water y 48..53 (sub 7 local
         // 0..5), air above: one greedy quad for the water surface.

@@ -133,6 +133,14 @@ Every implemented wiki feature gets a line here. Status legend:
   contents once; viewers close on death, range loss or block removal.
   Placeholder lit textures do not emit light. XP, hoppers, orientation,
   full recipe/fuel coverage and crash-atomic multi-file saves are pending.
+- `partial` — Building-material smelting: sand → glass, cobblestone →
+  stone → smooth stone (two separate cooks), and cobbled deepslate →
+  deepslate. Glass is solid but non-opaque, uses the translucent mesh pass,
+  passes the current skylight estimate and drops nothing without the
+  unimplemented Silk Touch enchantment. Matching glass faces are culled;
+  placeholder glass has a faint tint and visible borders. Smooth stone
+  requires a pickaxe to drop itself. Panes, stained glass and exact
+  transparency sorting are pending.
 - `partial` — Coal and iron ore blocks (hardness 3) appear in generated
   stone and drop one coal/raw iron with the correct pickaxe tier.
   No fortune or silk touch yet.
@@ -234,7 +242,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 17
+  throwing snowballs and Silk Touch are missing. Protocol 18
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit

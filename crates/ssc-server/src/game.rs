@@ -3628,6 +3628,44 @@ mod tests {
     }
 
     #[test]
+    fn building_material_smelting_transfers_and_persists_output() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        let pos = (8, 54, 8);
+        rig.server.world.set_block(8, 54, 8, ssc_world::FURNACE);
+        rig.server.handle_use(1);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::COBBLESTONE, 1));
+        rig.server.sessions.get_mut(&1).unwrap().inventory[1] = Some((ssc_world::COAL, 1));
+        rig.server.transfer_furnace(1, 0, 0, false).unwrap();
+        rig.server.transfer_furnace(1, 1, 1, false).unwrap();
+        for _ in 0..200 {
+            rig.server.tick_furnaces();
+        }
+        rig.server.transfer_furnace(1, 0, 2, true).unwrap();
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::STONE, 1))
+        );
+        rig.server.transfer_furnace(1, 0, 0, false).unwrap();
+        for _ in 0..200 {
+            rig.server.tick_furnaces();
+        }
+        assert_eq!(
+            rig.server.furnaces[&pos].slots[2],
+            Some((ssc_world::SMOOTH_STONE, 1))
+        );
+        let path = std::env::temp_dir().join(format!(
+            "ssc-building-material-furnace-{}.bin",
+            std::process::id()
+        ));
+        crate::persistence::save_furnaces(&path, &rig.server.furnaces).unwrap();
+        assert_eq!(
+            crate::persistence::load_furnaces(&path).unwrap(),
+            Some(rig.server.furnaces.clone())
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn pig_groups_require_grass_and_respect_mob_cap() {
         let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
         for cx in -2..=2 {

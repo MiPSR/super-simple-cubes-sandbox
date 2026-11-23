@@ -14,6 +14,19 @@ pub const TILE_SIZE: u32 = 16;
 /// Atlas edge in pixels (Minecraft's standard terrain-atlas size).
 pub const ATLAS_PX: u32 = ATLAS_TILES * TILE_SIZE;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn glass_texture_is_translucent_with_a_visible_border() {
+        let border = paint_pixel(ssc_world::TILE_GLASS, 0, 8);
+        let center = paint_pixel(ssc_world::TILE_GLASS, 8, 8);
+        assert!(center[3] > 0 && center[3] < border[3] && border[3] < 255);
+        assert_eq!(paint_pixel(ssc_world::TILE_SMOOTH_STONE, 8, 8)[3], 255);
+    }
+}
+
 /// Deterministic per-pixel hash noise in `0..1`.
 fn noise2(x: i32, y: i32, s: i32) -> f32 {
     let mut h = (x as u32).wrapping_mul(3_747_613_937)
@@ -130,6 +143,23 @@ fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgba {
             } else {
                 mix([162, 130, 78], 0.9 + noise2(x, y, 12) * 0.2, 255)
             }
+        }
+        ssc_world::TILE_GLASS => {
+            if x == 0 || x == 15 || y == 0 || y == 15 {
+                [180, 220, 230, 180]
+            } else if (x - y == 3 || x - y == 4) && (3..=10).contains(&x) {
+                [210, 240, 250, 110]
+            } else {
+                [185, 220, 235, 24]
+            }
+        }
+        ssc_world::TILE_SMOOTH_STONE => {
+            let shade = if x == 0 || y == 0 || x == 15 || y == 15 {
+                0.75
+            } else {
+                0.95 + noise2(x, y, 35) * 0.05
+            };
+            mix([160, 160, 160], shade, 255)
         }
         ssc_world::TILE_FURNACE | ssc_world::TILE_LIT_FURNACE => {
             if (3..=12).contains(&x) && (7..=12).contains(&y) {

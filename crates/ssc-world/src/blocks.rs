@@ -39,6 +39,8 @@ pub const OAK_SAPLING_READY: BlockId = 25;
 pub const GROWN_OAK_LEAVES: BlockId = 26;
 pub const FURNACE: BlockId = 27;
 pub const LIT_FURNACE: BlockId = 28;
+pub const GLASS: BlockId = 29;
+pub const SMOOTH_STONE: BlockId = 30;
 
 // Atlas tile ids (16×16 tiles per row/column in the 256×256 atlas).
 pub const TILE_MISSING: u16 = 0;
@@ -70,6 +72,8 @@ pub const TILE_STRIPPED_LOG_SIDE: u16 = 25;
 pub const TILE_OAK_SAPLING: u16 = 26;
 pub const TILE_FURNACE: u16 = 27;
 pub const TILE_LIT_FURNACE: u16 = 28;
+pub const TILE_GLASS: u16 = 29;
+pub const TILE_SMOOTH_STONE: u16 = 30;
 
 /// Face indices into [`BlockInfo::tiles`].
 pub const FACE_TOP: usize = 0;
@@ -296,6 +300,15 @@ pub const BLOCKS: &[BlockInfo] = &[
     b("grown_oak_leaves", [TILE_LEAVES; 6], 0.2, false),
     b("furnace", [TILE_FURNACE; 6], 3.5, true),
     b("lit_furnace", [TILE_LIT_FURNACE; 6], 3.5, true),
+    BlockInfo {
+        name: "glass",
+        solid: true,
+        opaque: false,
+        tiles: [TILE_GLASS; 6],
+        hardness: 0.3,
+        needs_tool: false,
+    },
+    b("smooth_stone", [TILE_SMOOTH_STONE; 6], 2.0, true),
 ];
 
 pub fn is_oak_leaves(block: BlockId) -> bool {

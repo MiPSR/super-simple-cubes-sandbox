@@ -670,6 +670,24 @@ pub fn drop_count(block: BlockId, rng: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn glass_drops_nothing_and_smooth_stone_requires_a_pickaxe() {
+        for tool in [
+            None,
+            Some(ssc_world::IRON_PICKAXE),
+            Some(ssc_world::IRON_AXE),
+        ] {
+            assert!(block_drops(ssc_world::GLASS, 0, tool).is_empty());
+            assert!((dig_time_with_tool(ssc_world::GLASS, tool).unwrap() - 0.45).abs() < 0.001);
+        }
+        assert!(block_drops(ssc_world::SMOOTH_STONE, 0, None).is_empty());
+        assert_eq!(
+            block_drops(ssc_world::SMOOTH_STONE, 0, Some(ssc_world::WOODEN_PICKAXE)),
+            vec![(ssc_world::SMOOTH_STONE, 1)]
+        );
+        assert!(ssc_world::is_solid(ssc_world::GLASS));
+        assert!(!ssc_world::is_opaque(ssc_world::GLASS));
+    }
+    #[test]
     fn iron_tools_craft_mine_harvest_and_repair_at_bedrock_values() {
         for (recipe, tool, ingots, block, damage) in [
             (10, ssc_world::IRON_PICKAXE, 3, ssc_world::IRON_ORE, 5.0),

@@ -208,6 +208,14 @@ pub fn sapling_changes(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn glass_passes_the_direct_skylight_estimate() {
+        let mut world = ssc_world::World::default();
+        world.set_block(8, 64, 8, ssc_world::GRASS_BLOCK);
+        world.set_block(8, 65, 8, ssc_world::GLASS);
+        assert_eq!(skylight(&world, 8, 64, 8, true), 15);
+        assert!(grass_changes(&world, 8, 64, 8, 0, false).is_empty());
+    }
     use super::*;
     use ssc_world::{AIR, OAK_LEAVES};
 
