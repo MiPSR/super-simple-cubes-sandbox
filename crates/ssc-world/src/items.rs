@@ -45,6 +45,13 @@ pub const CHARCOAL: ItemId = 118;
 pub const IRON_PICKAXE: ItemId = 119;
 pub const IRON_AXE: ItemId = 120;
 pub const IRON_SHOVEL: ItemId = 121;
+pub const WOODEN_SWORD: ItemId = 122;
+pub const STONE_SWORD: ItemId = 123;
+pub const IRON_SWORD: ItemId = 124;
+
+pub fn is_sword(item: ItemId) -> bool {
+    matches!(item, WOODEN_SWORD | STONE_SWORD | IRON_SWORD)
+}
 
 /// Static item description. No behavior — behavior lives in the server.
 pub struct ItemInfo {
@@ -70,6 +77,16 @@ fn block_item(id: BlockId, name: &'static str) -> ItemInfo {
 /// by their explicit ids.
 pub fn item_info(id: ItemId) -> ItemInfo {
     match id {
+        WOODEN_SWORD | STONE_SWORD | IRON_SWORD => ItemInfo {
+            name: match id {
+                WOODEN_SWORD => "wooden_sword",
+                STONE_SWORD => "stone_sword",
+                _ => "iron_sword",
+            },
+            max_stack: 1,
+            places: None,
+            food: None,
+        },
         IRON_PICKAXE | IRON_AXE | IRON_SHOVEL => ItemInfo {
             name: match id {
                 IRON_PICKAXE => "iron_pickaxe",
@@ -265,6 +282,9 @@ pub fn valid_item_id(id: ItemId) -> bool {
             | IRON_PICKAXE
             | IRON_AXE
             | IRON_SHOVEL
+            | WOODEN_SWORD
+            | STONE_SWORD
+            | IRON_SWORD
     );
     id == EMPTY_ITEM || block_items || free_items
 }

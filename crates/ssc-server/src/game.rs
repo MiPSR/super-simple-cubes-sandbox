@@ -1934,7 +1934,14 @@ impl Server {
             if self.cfg.game_mode == GameMode::Survival {
                 if let Some(session) = self.sessions.get_mut(&id) {
                     session.survival.exhaustion += 0.1;
-                    damage_held_tool(session, 2);
+                    damage_held_tool(
+                        session,
+                        if held.is_some_and(ssc_world::is_sword) {
+                            1
+                        } else {
+                            2
+                        },
+                    );
                 }
             }
             true
@@ -1964,7 +1971,14 @@ impl Server {
             if self.cfg.game_mode == GameMode::Survival {
                 if let Some(session) = self.sessions.get_mut(&id) {
                     session.survival.exhaustion += 0.1;
-                    damage_held_tool(session, 2);
+                    damage_held_tool(
+                        session,
+                        if held.is_some_and(ssc_world::is_sword) {
+                            1
+                        } else {
+                            2
+                        },
+                    );
                 }
             }
             true
@@ -2865,6 +2879,12 @@ impl Server {
         };
         let [x, y, z] = hit.block;
         if self.cfg.game_mode == GameMode::Creative {
+            if self
+                .selected_item(id)
+                .is_some_and(|(item, _)| ssc_world::is_sword(item))
+            {
+                return;
+            }
             self.break_block(id, x, y, z);
         } else {
             let block = self.world.block_or_air(x, y, z);
@@ -2969,7 +2989,9 @@ impl Server {
         }
         if self.cfg.game_mode == GameMode::Survival && ssc_world::block_info(block).hardness > 0.0 {
             if let Some(session) = self.sessions.get_mut(&id) {
-                damage_held_tool(session, 1);
+                let sword = session.inventory[session.player.selected_slot as usize % 9]
+                    .is_some_and(|(item, _)| ssc_world::is_sword(item));
+                damage_held_tool(session, if sword { 2 } else { 1 });
             }
         }
     }
@@ -4168,6 +4190,66 @@ mod tests {
             assert_eq!(rig.server.sessions[&2].survival.health, 20.0 - damage);
             assert_eq!(rig.server.sessions[&1].durability[0], 249);
         }
+    }
+
+    #[test]
+    fn crafted_swords_use_bedrock_damage_and_one_use_per_entity_hit() {
+        for (recipe, material, item, durability, damage) in [
+            (13, ssc_world::OAK_PLANKS, ssc_world::WOODEN_SWORD, 60, 5.0),
+            (14, ssc_world::COBBLESTONE, ssc_world::STONE_SWORD, 132, 6.0),
+            (15, ssc_world::IRON_INGOT, ssc_world::IRON_SWORD, 251, 7.0),
+        ] {
+            let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((material, 2));
+            session.inventory[1] = Some((ssc_world::STICK, 1));
+            rig.server
+                .handle_packet(1, ClientPacket::Craft { recipe })
+                .unwrap();
+            assert_eq!(rig.server.sessions[&1].inventory[0], Some((item, 1)));
+            assert_eq!(rig.server.sessions[&1].durability[0], durability);
+            rig.server.handle_dig_start(1);
+            assert_eq!(rig.server.sessions[&2].survival.health, 20.0 - damage);
+            assert_eq!(rig.server.sessions[&1].durability[0], durability - 1);
+            rig.server.handle_dig_start(1);
+            assert_eq!(
+                rig.server.sessions[&1].durability[0],
+                durability - 1,
+                "immune hits cost nothing"
+            );
+
+            let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+            rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((item, 1));
+            rig.server.sessions.get_mut(&1).unwrap().durability[0] = 1;
+            rig.server.mobs.insert(
+                FIRST_MOB_ID,
+                crate::mobs::Mob::new(crate::mobs::MobKind::Zombie, Vec3::new(10.5, 55.02, 8.5)),
+            );
+            rig.server.handle_dig_start(1);
+            assert_eq!(rig.server.mobs[&FIRST_MOB_ID].health, 20.0 - damage);
+            assert_eq!(rig.server.sessions[&1].inventory[0], None);
+        }
+    }
+
+    #[test]
+    fn swords_cost_two_uses_per_block_but_not_zero_hardness_plants() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.inventory[0] = Some((ssc_world::IRON_SWORD, 1));
+        session.durability[0] = 10;
+        rig.server.break_block(1, 8, 54, 8);
+        assert_eq!(rig.server.sessions[&1].durability[0], 8);
+        rig.server.world.set_block(8, 54, 8, ssc_world::OAK_SAPLING);
+        rig.server.break_block(1, 8, 54, 8);
+        assert_eq!(rig.server.sessions[&1].durability[0], 8);
+        let mut creative = Rig::new_mode(1, -1.5, GameMode::Creative);
+        creative.server.sessions.get_mut(&1).unwrap().inventory[0] =
+            Some((ssc_world::IRON_SWORD, 1));
+        creative.server.handle_dig_start(1);
+        assert_eq!(
+            creative.server.world.block_or_air(8, 54, 8),
+            ssc_world::STONE
+        );
     }
 
     #[test]

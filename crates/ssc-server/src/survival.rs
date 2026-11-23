@@ -31,9 +31,18 @@ pub type Slot = Option<(ItemId, u8)>;
 /// Bedrock durability for the currently implemented wooden/stone/iron tools.
 pub fn max_durability(item: ItemId) -> u16 {
     match item {
-        ssc_world::WOODEN_PICKAXE | ssc_world::WOODEN_AXE | ssc_world::WOODEN_SHOVEL => 60,
-        ssc_world::STONE_PICKAXE | ssc_world::STONE_AXE | ssc_world::STONE_SHOVEL => 132,
-        ssc_world::IRON_PICKAXE | ssc_world::IRON_AXE | ssc_world::IRON_SHOVEL => 251,
+        ssc_world::WOODEN_PICKAXE
+        | ssc_world::WOODEN_AXE
+        | ssc_world::WOODEN_SHOVEL
+        | ssc_world::WOODEN_SWORD => 60,
+        ssc_world::STONE_PICKAXE
+        | ssc_world::STONE_AXE
+        | ssc_world::STONE_SHOVEL
+        | ssc_world::STONE_SWORD => 132,
+        ssc_world::IRON_PICKAXE
+        | ssc_world::IRON_AXE
+        | ssc_world::IRON_SHOVEL
+        | ssc_world::IRON_SWORD => 251,
         _ => 0,
     }
 }
@@ -59,6 +68,9 @@ pub fn attack_damage(held: Option<ItemId>) -> f32 {
         Some(ssc_world::IRON_PICKAXE) => 5.0,
         Some(ssc_world::IRON_AXE) => 6.0,
         Some(ssc_world::IRON_SHOVEL) => 4.0,
+        Some(ssc_world::WOODEN_SWORD) => 5.0,
+        Some(ssc_world::STONE_SWORD) => 6.0,
+        Some(ssc_world::IRON_SWORD) => 7.0,
         _ => 1.0,
     }
 }
@@ -401,7 +413,9 @@ pub fn dig_time_with_tool(block: BlockId, held: Option<ItemId>) -> Option<f32> {
         }
         _ => false,
     };
-    let speed = if !effective {
+    let speed = if held.is_some_and(ssc_world::is_sword) {
+        1.5
+    } else if !effective {
         1.0
     } else {
         match held {
@@ -539,6 +553,18 @@ pub fn craft(inv: &mut [Slot], recipe: u8) -> bool {
             &[(ssc_world::IRON_INGOT, 1), (ssc_world::STICK, 2)][..],
             (ssc_world::IRON_SHOVEL, 1),
         ),
+        13 => (
+            &[(ssc_world::OAK_PLANKS, 2), (ssc_world::STICK, 1)][..],
+            (ssc_world::WOODEN_SWORD, 1),
+        ),
+        14 => (
+            &[(ssc_world::COBBLESTONE, 2), (ssc_world::STICK, 1)][..],
+            (ssc_world::STONE_SWORD, 1),
+        ),
+        15 => (
+            &[(ssc_world::IRON_INGOT, 2), (ssc_world::STICK, 1)][..],
+            (ssc_world::IRON_SWORD, 1),
+        ),
         _ => return false,
     };
     let mut next = inv.to_vec();
@@ -669,6 +695,25 @@ pub fn drop_count(block: BlockId, rng: f32) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn swords_mine_faster_but_cannot_harvest_pickaxe_blocks_and_can_repair() {
+        for item in [
+            ssc_world::WOODEN_SWORD,
+            ssc_world::STONE_SWORD,
+            ssc_world::IRON_SWORD,
+        ] {
+            assert!((dig_time_with_tool(ssc_world::DIRT, Some(item)).unwrap() - 0.5).abs() < 0.001);
+            assert!(block_drops(ssc_world::IRON_ORE, 0, Some(item)).is_empty());
+            let mut inv = vec![None; INVENTORY_SIZE];
+            let mut wear = vec![0; INVENTORY_SIZE];
+            inv[0] = Some((item, 1));
+            inv[1] = Some((item, 1));
+            wear[0] = 10;
+            wear[1] = 20;
+            assert!(repair_tool(&mut inv, &mut wear, 0));
+            assert_eq!(wear[0], 30 + max_durability(item) / 20);
+        }
+    }
     #[test]
     fn glass_drops_nothing_and_smooth_stone_requires_a_pickaxe() {
         for tool in [

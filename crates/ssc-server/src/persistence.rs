@@ -907,6 +907,28 @@ pub fn save_furnaces(path: &Path, furnaces: &FurnaceSaves) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn swords_round_trip_with_remaining_durability() {
+        use super::*;
+        let path = std::env::temp_dir().join(format!("ssc-sword-save-{}.dat", std::process::id()));
+        let id = [0xc3; 16];
+        let mut data = PlayerSave::default();
+        data.position = Some([8.5, 70.0, 8.5]);
+        for (slot, item) in [
+            ssc_world::WOODEN_SWORD,
+            ssc_world::STONE_SWORD,
+            ssc_world::IRON_SWORD,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            data.inventory[slot] = Some((item, 1));
+            data.durability[slot] = 17;
+        }
+        save_player(&path, &id, &data).unwrap();
+        assert_eq!(load_player(&path, &id).unwrap(), Some(data));
+        fs::remove_file(path).unwrap();
+    }
+    #[test]
     fn iron_tools_preserve_wear_and_validate_durability() {
         use super::*;
         let path =

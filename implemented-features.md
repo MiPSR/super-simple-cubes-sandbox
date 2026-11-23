@@ -114,6 +114,14 @@ Every implemented wiki feature gets a line here. Status legend:
   Minecraft's 16×16 tile atlas convention; real texture packs load via
   `--textures <256×256 atlas.png>` (PNG decode through the approved
   `png` crate) — we cannot ship Mojang assets (specs §1).
+- `partial` — Wooden, stone and iron swords craft from two matching
+  materials and one stick (inventory Shift+1/2/4). Bedrock damage is
+  5/6/7 and durability is 60/132/251. Successful entity hits cost one use,
+  nonzero-hardness block breaks cost two, and immune hits cost none.
+  Swords have base mining efficiency 1.5 but cannot harvest pickaxe-only
+  blocks; creative sword users cannot break blocks. Repair and saves retain
+  wear. Cobweb/bamboo special breaking, enchantments and sword visuals
+  are pending.
 - `partial` — Iron pickaxes, axes and shovels craft from ingots and sticks
   (inventory Shift+3/5/7). Effective mining speed is 6, Bedrock durability
   is 251, and melee damage is 5/6/4 respectively. Iron pickaxes harvest all
@@ -242,7 +250,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 18
+  throwing snowballs and Silk Touch are missing. Protocol 19
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit

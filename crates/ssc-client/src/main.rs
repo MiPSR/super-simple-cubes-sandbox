@@ -547,7 +547,10 @@ impl App {
                     if self.picker_open && self.mode == 0 && (1..=9).contains(&n) {
                         let recipe = if frame.input().key(Key::Shift) {
                             match n {
+                                1 => 13,
+                                2 => 14,
                                 3 => 10,
+                                4 => 15,
                                 5 => 11,
                                 7 => 12,
                                 _ => n - 1,
@@ -987,8 +990,7 @@ impl App {
                 [1.0, 0.85, 0.3, 1.0],
             );
             frame.hud_text(
-                "5:wood axe 6:stone axe 7:wood shovel 8:stone shovel 9:repair held tool"
-                    .to_string(),
+                "5/6:axes 7/8:shovels 9:repair (Shift+1/2/4:wood/stone/iron sword)".to_string(),
                 x0 + 15.0,
                 y0 + 42.0,
                 14.0,

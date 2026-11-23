@@ -78,6 +78,8 @@ runnable through Nix.
   back to your inventory. `E` or Escape closes the furnace.
 - In the inventory, `Shift+3`, `Shift+5`, and `Shift+7` craft an iron
   pickaxe, axe, and shovel from iron ingots and sticks.
+- `Shift+1`, `Shift+2`, and `Shift+4` craft wooden, stone, and iron swords
+  from two planks/cobblestone/ingots and one stick.
 - Furnaces also turn sand into glass, cobblestone into stone, stone into
   smooth stone, and cobbled deepslate into deepslate. Glass breaks without
   dropping an item.
