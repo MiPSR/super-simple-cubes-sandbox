@@ -593,6 +593,7 @@ impl Server {
             } else {
                 session.survival.exhaustion
             },
+            respawn: Some([session.spawn.x, session.spawn.y, session.spawn.z]),
         };
         if let Err(err) = crate::persistence::save_player(&path, player_id, &data) {
             eprintln!("[server] could not save anonymous player data: {err}");
@@ -727,6 +728,24 @@ impl Server {
             broke_block: Option<(i32, i32, i32, BlockId)>,
         }
         let mut fxs: Vec<PlayerFx> = Vec::new();
+
+        // Respawn may teleport into a column that is no longer streamed.
+        let respawn_columns: Vec<ColumnKey> = self
+            .sessions
+            .values()
+            .filter(|session| {
+                session.player.joined && session.survival.dead && session.survival.should_respawn()
+            })
+            .map(|session| {
+                (
+                    (session.spawn.x.floor() as i32).div_euclid(16),
+                    (session.spawn.z.floor() as i32).div_euclid(16),
+                )
+            })
+            .collect();
+        for key in respawn_columns {
+            self.ensure_column(key);
+        }
 
         for (id, session) in self.sessions.iter_mut() {
             let p = &mut session.player;
@@ -2744,10 +2763,12 @@ impl Server {
         // quit after dying, reconnect them through the same fresh respawn path
         // rather than reviving at the saved death position with zero health.
         let saved_death = saved_player.as_ref().is_some_and(|data| data.health <= 0.0);
-        let restored_position = saved_player
-            .as_ref()
-            .filter(|_| !saved_death)
-            .and_then(|data| data.position);
+        let restored_respawn = saved_player.as_ref().and_then(|data| data.respawn);
+        let restored_position = if saved_death {
+            restored_respawn
+        } else {
+            saved_player.as_ref().and_then(|data| data.position)
+        };
         if let Some(data) = saved_player {
             session.inventory = data.inventory;
             session.durability = data.durability;
@@ -2792,8 +2813,11 @@ impl Server {
         session.player.pos = restored_position
             .map(|pos| Vec3::new(pos[0], pos[1], pos[2]))
             .unwrap_or_else(|| Vec3::new(spawn_x, spawn_y, spawn_z));
-        // A saved logout position is not the world's respawn point.
-        session.spawn = Vec3::new(spawn_x, spawn_y, spawn_z);
+        // A saved logout position is not the world's respawn point; a saved
+        // bed or previous respawn point takes precedence.
+        session.spawn = restored_respawn
+            .map(|p| Vec3::new(p[0], p[1], p[2]))
+            .unwrap_or_else(|| Vec3::new(spawn_x, spawn_y, spawn_z));
         session.player.vel = Vec3::ZERO;
         session.player.joined = true;
 
@@ -3203,6 +3227,44 @@ impl Server {
         }
     }
 
+    /// Sleep in a bed at night: skip to dawn and set the respawn point.
+    /// Only zombies count as nearby monsters for now.
+    fn use_bed(&mut self, id: EntityId, pos: (i32, i32, i32)) -> bool {
+        let Some(session) = self.sessions.get(&id) else {
+            return false;
+        };
+        if !session.player.joined || session.survival.dead {
+            return false;
+        }
+        if !(self.time_of_day > 0.75 && self.time_of_day < 0.98) {
+            return false;
+        }
+        if self.mobs.values().any(|mob| {
+            !mob.dead
+                && mob.kind == crate::mobs::MobKind::Zombie
+                && (mob.pos - session.player.pos).length() < 8.0
+        }) {
+            return false;
+        }
+        if is_solid(self.world.block_or_air(pos.0, pos.1 + 1, pos.2))
+            || is_solid(self.world.block_or_air(pos.0, pos.1 + 2, pos.2))
+        {
+            return false;
+        }
+        let spawn = Vec3::new(pos.0 as f32 + 0.5, pos.1 as f32 + 1.0, pos.2 as f32 + 0.5);
+        let session = self.sessions.get_mut(&id).unwrap();
+        session.spawn = spawn;
+        session.survival.digging = None;
+        session.eating = None;
+        session.open_furnace = None;
+        self.time_of_day = 0.26;
+        let _ = self.broadcast(&ServerPacket::TimeOfDay {
+            t: self.time_of_day,
+        });
+        self.save_player_data(id);
+        true
+    }
+
     /// Hoe use: till grass or dirt into farmland when the space above is
     /// clear. Water within four blocks decides the initial wet state.
     fn use_hoe(&mut self, id: EntityId) {
@@ -3253,6 +3315,9 @@ impl Server {
                 {
                     let [x, y, z] = hit.block;
                     let pos = (x, y, z);
+                    if self.world.block_or_air(x, y, z) == ssc_world::BED && self.use_bed(id, pos) {
+                        return;
+                    }
                     if ssc_world::is_furnace(self.world.block_or_air(x, y, z))
                         && self.can_access_furnace(id, pos)
                     {
@@ -4982,6 +5047,69 @@ mod tests {
     }
 
     #[test]
+    fn beds_craft_and_sleeping_skips_night_and_persists_respawn() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((ssc_world::WOOL, 3));
+            session.inventory[1] = Some((ssc_world::OAK_PLANKS, 3));
+        }
+        rig.server
+            .handle_packet(1, ClientPacket::Craft { recipe: 21 })
+            .unwrap();
+        assert!(rig.server.sessions[&1]
+            .inventory
+            .iter()
+            .flatten()
+            .any(|(item, _)| *item == ssc_world::BED));
+        rig.server.world.set_block(8, 54, 8, ssc_world::BED);
+        rig.server.time_of_day = 0.8;
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.sessions[&1].spawn, Vec3::new(8.5, 55.0, 8.5));
+        assert!((rig.server.time_of_day - 0.26).abs() < 0.0001);
+        assert!(rig.drain(0).iter().any(|packet| matches!(packet,
+            ServerPacket::TimeOfDay { t } if (*t - 0.26).abs() < 0.0001)));
+
+        let path =
+            std::env::temp_dir().join(format!("ssc-bed-sleep-world-{}.bin", std::process::id()));
+        let player_id = [0x51; 16];
+        rig.server.cfg.world_path = Some(path.clone());
+        {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.player_id = Some(player_id);
+            session.player_data_writable = true;
+        }
+        rig.server.save_player_data(1);
+        let data = crate::persistence::load_player(
+            &crate::persistence::player_path(&path, &player_id),
+            &player_id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(data.respawn, Some([8.5, 55.0, 8.5]));
+
+        // Daytime does nothing.
+        rig.server.time_of_day = 0.5;
+        rig.server.sessions.get_mut(&1).unwrap().spawn = Vec3::new(1.5, 60.0, 1.5);
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.sessions[&1].spawn, Vec3::new(1.5, 60.0, 1.5));
+        // Nearby zombies prevent sleeping.
+        rig.server.time_of_day = 0.8;
+        rig.server.mobs.insert(
+            FIRST_MOB_ID,
+            crate::mobs::Mob::new(crate::mobs::MobKind::Zombie, Vec3::new(10.5, 55.02, 8.5)),
+        );
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.sessions[&1].spawn, Vec3::new(1.5, 60.0, 1.5));
+        rig.server.mobs.clear();
+        // A block over the bed prevents sleeping.
+        rig.server.world.set_block(8, 55, 8, ssc_world::STONE);
+        assert!(!rig.server.use_bed(1, (8, 54, 8)));
+        assert_eq!(rig.server.sessions[&1].spawn, Vec3::new(1.5, 60.0, 1.5));
+        std::fs::remove_file(crate::persistence::player_path(&path, &player_id)).unwrap();
+    }
+
+    #[test]
     fn bread_crafts_from_three_wheat_in_the_inventory() {
         let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
         rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::WHEAT, 3));
@@ -6492,6 +6620,7 @@ mod tests {
             selected_slot: 4,
             hunger_effect_ticks: 410,
             exhaustion: 2.5,
+            respawn: Some([-20.5, 72.0, 30.5]),
         };
         crate::persistence::save_player(&player_path, &player_id, &data).unwrap();
 
@@ -6527,7 +6656,11 @@ mod tests {
             server.world.column(1, -1).is_some(),
             "neighbor terrain must exist at chunk boundaries"
         );
-        assert_ne!(server.sessions[&id].spawn, server.sessions[&id].player.pos);
+        assert_eq!(
+            server.sessions[&id].spawn,
+            Vec3::new(-20.5, 72.0, 30.5),
+            "saved respawn point overrides the world spawn"
+        );
         assert_eq!(server.sessions[&id].survival.health, 13.0);
         assert_eq!(server.sessions[&id].survival.hunger, 7);
         assert_eq!(server.sessions[&id].survival.saturation, 2.5);
@@ -6679,6 +6812,7 @@ mod tests {
                 selected_slot: 0,
                 hunger_effect_ticks: 0,
                 exhaustion: 0.0,
+                respawn: Some([3.5, 66.0, 4.5]),
             },
         )
         .unwrap();
@@ -6705,7 +6839,7 @@ mod tests {
         assert_eq!(session.survival.health, crate::survival::MAX_HEALTH);
         assert_eq!(session.survival.hunger, crate::survival::MAX_HUNGER);
         assert_eq!(session.survival.air, crate::survival::MAX_AIR);
-        assert_ne!(session.player.pos, Vec3::new(4.5, 70.0, -2.5));
+        assert_eq!(session.player.pos, Vec3::new(3.5, 66.0, 4.5));
         assert_eq!(session.player.pos, session.spawn);
         std::fs::remove_dir_all(player_path.parent().unwrap()).unwrap();
     }

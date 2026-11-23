@@ -90,6 +90,9 @@ runnable through Nix.
   Ctrl+Q drops the entire stack.
 - Sheep roam the grass by day and drop white wool and raw mutton. Cook
   mutton in a furnace for a stronger meal, or use wool as a building block.
+- `Shift+B` in the inventory crafts a bed from three wool and three planks.
+  Place it and right-click at night to skip to dawn and set your respawn
+  point (no zombies within eight blocks, and two clear blocks above).
 - Farming: `Shift+6`, `Shift+8`, and `Shift+9` craft wooden, stone, and iron
   hoes. Right-click grass or dirt into farmland, then plant wheat seeds on
   top. Water within four blocks keeps farmland wet and speeds growth. Break

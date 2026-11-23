@@ -620,7 +620,12 @@ impl App {
                     state: KeyState::Pressed,
                 } => {
                     if self.picker_open && self.mode == 0 {
-                        self.send(&ClientPacket::Craft { recipe: 20 });
+                        let recipe = if frame.input().key(Key::Shift) {
+                            21
+                        } else {
+                            20
+                        };
+                        self.send(&ClientPacket::Craft { recipe });
                     }
                 }
                 EngineEvent::Key {
@@ -1007,7 +1012,7 @@ impl App {
                 [1.0, 0.85, 0.3, 1.0],
             );
             frame.hud_text(
-                "5/6:axes 7/8:shovels 9:repair (Shift+1/2/4:swords, 6/8/9:hoes, B:bread)"
+                "5/6:axes 7/8:shovels 9:repair (Shift+1/2/4:swords, 6/8/9:hoes, B:bread, Shift+B:bed)"
                     .to_string(),
                 x0 + 15.0,
                 y0 + 42.0,

@@ -201,6 +201,16 @@ Every implemented wiki feature gets a line here. Status legend:
 
 ## Player
 
+- `partial` — Beds craft from three wool and three planks (`Shift+B` in the
+  inventory). Right-clicking a bed at night skips time to dawn (`0.26`),
+  cancels eating/digging and sets the player's respawn point to the space
+  above it. Sleeping requires two clear blocks and no zombie within eight
+  blocks; daytime or obstructed attempts do nothing. The respawn point is
+  saved in player-save version 6 and old saves fall back to the world spawn.
+  Respawning ensures the destination column is loaded. Beds are a single
+  full placeholder block (no head/foot halves or orientation); sleeping has
+  no animation/screen, no "cannot sleep" message, and a removed bed still
+  leaves a saved respawn point.
 - `1:1` (values) — Player physics constants: 0.6×1.8 AABB, eye 1.62,
   walk 4.317 / sprint 5.612 / sneak 1.31 blocks/s, gravity 32 b/s², jump apex
   ≈1.27 blocks, terminal velocity 78.4.
@@ -278,7 +288,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 23
+  throwing snowballs and Silk Touch are missing. Protocol 24
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit

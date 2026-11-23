@@ -23,6 +23,7 @@ const PLAYER_MAGIC_V2: &[u8; 8] = b"SSCPLY02";
 const PLAYER_MAGIC_V3: &[u8; 8] = b"SSCPLY03";
 const PLAYER_MAGIC_V4: &[u8; 8] = b"SSCPLY04";
 const PLAYER_MAGIC_V5: &[u8; 8] = b"SSCPLY05";
+const PLAYER_MAGIC_V6: &[u8; 8] = b"SSCPLY06";
 const ITEMS_MAGIC: &[u8; 8] = b"SSCITM01";
 const ITEMS_MAGIC_V2: &[u8; 8] = b"SSCITM02";
 const MOBS_MAGIC: &[u8; 8] = b"SSCMOB01";
@@ -70,6 +71,8 @@ pub struct PlayerSave {
     pub selected_slot: u8,
     pub hunger_effect_ticks: u16,
     pub exhaustion: f32,
+    /// Bed/respawn point; `None` means use the world spawn.
+    pub respawn: Option<[f32; 3]>,
 }
 
 impl Default for PlayerSave {
@@ -85,6 +88,7 @@ impl Default for PlayerSave {
             selected_slot: 0,
             hunger_effect_ticks: 0,
             exhaustion: 0.0,
+            respawn: None,
         }
     }
 }
@@ -226,11 +230,13 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
     let v3_len = v2_len + 6;
     let v4_len = v3_len + crate::survival::INVENTORY_SIZE * 2;
     let v5_len = v4_len + 4;
+    let v6_len = v5_len + 13;
     if file_len != v1_len as u64
         && file_len != v2_len as u64
         && file_len != v3_len as u64
         && file_len != v4_len as u64
         && file_len != v5_len as u64
+        && file_len != v6_len as u64
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -250,7 +256,10 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
     let v3 = &bytes[..8] == PLAYER_MAGIC_V3;
     let v4 = &bytes[..8] == PLAYER_MAGIC_V4;
     let v5 = &bytes[..8] == PLAYER_MAGIC_V5;
-    if (!v2 && !v3 && !v4 && !v5 && &bytes[..8] != PLAYER_MAGIC) || &bytes[8..24] != player_id {
+    let v6 = &bytes[..8] == PLAYER_MAGIC_V6;
+    if (!v2 && !v3 && !v4 && !v5 && !v6 && &bytes[..8] != PLAYER_MAGIC)
+        || &bytes[8..24] != player_id
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "player save identity or format mismatch",
@@ -260,7 +269,8 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
         || (v3 && expected_len != v3_len)
         || (v4 && expected_len != v4_len)
         || (v5 && expected_len != v5_len)
-        || (!v2 && !v3 && !v4 && !v5 && expected_len != v1_len)
+        || (v6 && expected_len != v6_len)
+        || (!v2 && !v3 && !v4 && !v5 && !v6 && expected_len != v1_len)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -269,7 +279,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
     }
     let mut data = PlayerSave::default();
     data.inventory.clear();
-    let inventory_offset = if v2 || v3 || v4 || v5 {
+    let inventory_offset = if v2 || v3 || v4 || v5 || v6 {
         let position = [
             f32::from_le_bytes(bytes[24..28].try_into().expect("fixed save slice")),
             f32::from_le_bytes(bytes[28..32].try_into().expect("fixed save slice")),
@@ -300,7 +310,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
         data.hunger = hunger;
         data.air = air;
         data.selected_slot = selected_slot;
-        if v3 || v4 || v5 {
+        if v3 || v4 || v5 || v6 {
             data.hunger_effect_ticks =
                 u16::from_le_bytes(bytes[44..46].try_into().expect("fixed save slice"));
             data.exhaustion =
@@ -343,7 +353,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
         }
         data.inventory.push(Some((item, count)));
     }
-    if v4 || v5 {
+    if v4 || v5 || v6 {
         let wear_end = inventory_end + crate::survival::INVENTORY_SIZE * 2;
         for (i, slot) in bytes[inventory_end..wear_end].chunks_exact(2).enumerate() {
             let wear = u16::from_le_bytes([slot[0], slot[1]]);
@@ -362,7 +372,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
             *wear = slot.map_or(0, |(item, _)| crate::survival::max_durability(item));
         }
     }
-    if v5 {
+    if v5 || v6 {
         data.saturation =
             f32::from_le_bytes(bytes[v4_len..v5_len].try_into().expect("fixed save slice"));
         if !data.saturation.is_finite() || !(0.0..=data.hunger as f32).contains(&data.saturation) {
@@ -376,7 +386,50 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
         // than granting a new buffer on migration.
         data.saturation = 0.0;
     }
+    if v6 {
+        let flag = bytes[v5_len];
+        if flag > 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid respawn flag",
+            ));
+        }
+        if flag == 1 {
+            let respawn = [
+                f32::from_le_bytes(
+                    bytes[v5_len + 1..v5_len + 5]
+                        .try_into()
+                        .expect("fixed save slice"),
+                ),
+                f32::from_le_bytes(
+                    bytes[v5_len + 5..v5_len + 9]
+                        .try_into()
+                        .expect("fixed save slice"),
+                ),
+                f32::from_le_bytes(
+                    bytes[v5_len + 9..v5_len + 13]
+                        .try_into()
+                        .expect("fixed save slice"),
+                ),
+            ];
+            if !valid_respawn(respawn) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid respawn position",
+                ));
+            }
+            data.respawn = Some(respawn);
+        }
+    }
     Ok(Some(data))
+}
+
+fn valid_respawn(position: [f32; 3]) -> bool {
+    position.iter().all(|v| v.is_finite())
+        && position[0].abs() <= 30_000_000.0
+        && position[2].abs() <= 30_000_000.0
+        && position[1] >= ssc_world::MIN_Y as f32
+        && position[1] < ssc_world::MAX_Y as f32 - ssc_math::PLAYER_HEIGHT
 }
 
 /// Atomically write a player's inventory.
@@ -429,6 +482,12 @@ pub fn save_player(path: &Path, player_id: &[u8; 16], data: &PlayerSave) -> io::
             "invalid player position",
         ));
     }
+    if data.respawn.is_some_and(|respawn| !valid_respawn(respawn)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid respawn position",
+        ));
+    }
     if !data.health.is_finite()
         || !(0.0..=crate::survival::MAX_HEALTH).contains(&data.health)
         || data.hunger > crate::survival::MAX_HUNGER
@@ -450,7 +509,7 @@ pub fn save_player(path: &Path, player_id: &[u8; 16], data: &PlayerSave) -> io::
     }
     let temp_path = path.with_extension("tmp");
     let mut file = File::create(&temp_path)?;
-    file.write_all(PLAYER_MAGIC_V5)?;
+    file.write_all(PLAYER_MAGIC_V6)?;
     file.write_all(player_id)?;
     for coordinate in position {
         file.write_all(&coordinate.to_le_bytes())?;
@@ -476,6 +535,18 @@ pub fn save_player(path: &Path, player_id: &[u8; 16], data: &PlayerSave) -> io::
         file.write_all(&value.to_le_bytes())?;
     }
     file.write_all(&data.saturation.to_le_bytes())?;
+    match data.respawn {
+        Some(respawn) => {
+            file.write_all(&[1])?;
+            for coordinate in respawn {
+                file.write_all(&coordinate.to_le_bytes())?;
+            }
+        }
+        None => {
+            file.write_all(&[0])?;
+            file.write_all(&[0; 12])?;
+        }
+    }
     file.sync_all()?;
     fs::rename(temp_path, path)?;
     Ok(())
@@ -1086,7 +1157,7 @@ mod tests {
         let mut inventory = vec![None; crate::survival::INVENTORY_SIZE];
         inventory[0] = Some((ssc_world::APPLE, 12));
         inventory[35] = Some((ssc_world::BRICKS, 64));
-        let data = PlayerSave {
+        let mut data = PlayerSave {
             inventory,
             durability: vec![0; crate::survival::INVENTORY_SIZE],
             position: Some([12.5, 70.0, -9.25]),
@@ -1097,10 +1168,23 @@ mod tests {
             selected_slot: 4,
             hunger_effect_ticks: 321,
             exhaustion: 2.25,
+            respawn: Some([1.5, 64.0, 2.5]),
         };
 
         save_player(&path, &player_id, &data).unwrap();
         assert_eq!(load_player(&path, &player_id).unwrap().unwrap(), data);
+        data.respawn = Some([f32::NAN, 64.0, 2.5]);
+        assert_eq!(
+            save_player(&path, &player_id, &data).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        data.respawn = Some([1.5, 64.0, 2.5]);
+        data.exhaustion = 11.0;
+        assert_eq!(
+            save_player(&path, &player_id, &data).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        data.exhaustion = 2.25;
         assert_eq!(
             load_player(&path, &[0x55; 16]).unwrap_err().kind(),
             io::ErrorKind::InvalidData
@@ -1206,7 +1290,13 @@ mod tests {
         data.saturation = 2.5;
         save_player(&path, &id, &data).unwrap();
         let mut v4 = fs::read(&path).unwrap();
-        v4.truncate(v4.len() - 4);
+        let v4_len = 8
+            + 16
+            + 20
+            + crate::survival::INVENTORY_SIZE * 3
+            + 6
+            + crate::survival::INVENTORY_SIZE * 2;
+        v4.truncate(v4_len);
         v4[..8].copy_from_slice(PLAYER_MAGIC_V4);
         fs::write(&path, &v4).unwrap();
         let loaded = load_player(&path, &id).unwrap().unwrap();
@@ -1291,10 +1381,15 @@ mod tests {
         data.saturation = 2.0;
         save_player(&path, &id, &data).unwrap();
         let valid = fs::read(&path).unwrap();
+        let v4_len = 8
+            + 16
+            + 20
+            + crate::survival::INVENTORY_SIZE * 3
+            + 6
+            + crate::survival::INVENTORY_SIZE * 2;
         for saturation in [f32::NAN, f32::INFINITY, -1.0, 4.1] {
             let mut invalid = valid.clone();
-            let end = invalid.len();
-            invalid[end - 4..].copy_from_slice(&saturation.to_le_bytes());
+            invalid[v4_len..v4_len + 4].copy_from_slice(&saturation.to_le_bytes());
             fs::write(&path, &invalid).unwrap();
             assert_eq!(
                 load_player(&path, &id).unwrap_err().kind(),

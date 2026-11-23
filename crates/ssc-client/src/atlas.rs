@@ -179,6 +179,26 @@ fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgba {
                 [0, 0, 0, 0]
             }
         }
+        ssc_world::TILE_BED_TOP => {
+            if y <= 3 && (2..=13).contains(&x) {
+                mix([238, 238, 232], 0.96 + noise2(x, y, 41) * 0.04, 255)
+            } else if x == 0 || x == 15 || y == 0 || y == 15 || y == 4 {
+                mix([126, 34, 40], 0.85, 255)
+            } else {
+                mix([178, 48, 56], 0.86 + noise2(x, y, 42) * 0.14, 255)
+            }
+        }
+        ssc_world::TILE_BED_SIDE => {
+            if y < 5 {
+                mix([238, 238, 232], 0.95 + noise2(x, y, 43) * 0.05, 255)
+            } else if y < 12 {
+                mix([178, 48, 56], 0.84 + noise2(x, y, 42) * 0.14, 255)
+            } else if x % 5 == 1 {
+                mix([120, 88, 52], 0.9, 255)
+            } else {
+                mix([160, 158, 150], 0.9 + noise2(x, y, 44) * 0.1, 255)
+            }
+        }
         ssc_world::TILE_WOOL => {
             let weave = (x + y) % 4 == 0;
             mix(

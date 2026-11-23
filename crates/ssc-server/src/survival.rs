@@ -582,6 +582,10 @@ pub fn craft(inv: &mut [Slot], recipe: u8) -> bool {
             (ssc_world::IRON_HOE, 1),
         ),
         20 => (&[(ssc_world::WHEAT, 3)][..], (ssc_world::BREAD, 1)),
+        21 => (
+            &[(ssc_world::WOOL, 3), (ssc_world::OAK_PLANKS, 3)][..],
+            (ssc_world::BED, 1),
+        ),
         _ => return false,
     };
     let mut next = inv.to_vec();
