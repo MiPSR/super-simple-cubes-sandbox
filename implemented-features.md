@@ -238,6 +238,12 @@ Every implemented wiki feature gets a line here. Status legend:
   the HUD and persist in player-save version 8. Death with an inventory drop
   resets level and progress to zero. No XP orb entities, enchanting,
   anvil/repair costs, partial death loss or vanilla level formula yet.
+- `partial` — Leather armor crafts from cow leather (`Ctrl+Shift+1/2/3/4`:
+  helmet 5, chestplate 8, leggings 7, boots 4). Points are 1/3/2/1 (7
+  total) and durability 55/80/75/65; it uses the same equipment, damage
+  reduction, wear, HUD and save format as iron. Mixed material sets sum
+  their points per piece. No leather horse armor, dyeing or armor
+  enchantments yet.
 - `partial` — Iron armor crafts from ingots (`Ctrl+1/2/3/4` in the
   inventory: helmet 5, chestplate 8, leggings 7, boots 4). Right-clicking a
   piece equips it into one of four server-owned slots; survival swaps the
@@ -337,7 +343,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 31
+  throwing snowballs and Silk Touch are missing. Protocol 32
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit

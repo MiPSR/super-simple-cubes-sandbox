@@ -105,8 +105,9 @@ runnable through Nix.
 - Killing mobs and collecting smelted furnace output grants experience.
   Your level and progress appear on the HUD; dying resets experience.
 - `Ctrl+1` through `Ctrl+4` craft an iron helmet, chestplate, leggings, and
-  boots. Right-click a piece to equip it; the HUD shows your armor points,
-  and armor reduces zombie and player melee damage as it wears out.
+  boots; `Ctrl+Shift+1` through `Ctrl+Shift+4` make leather versions from
+  cow leather. Right-click a piece to equip it; the HUD shows your armor
+  points, and armor reduces zombie and player melee damage as it wears out.
 - `Shift+B` in the inventory crafts a bed from three wool and three planks.
   Place it and right-click at night to skip to dawn and set your respawn
   point (no zombies within eight blocks, and two clear blocks above).

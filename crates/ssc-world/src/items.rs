@@ -67,21 +67,28 @@ pub const RAW_BEEF: ItemId = 140;
 pub const STEAK: ItemId = 141;
 pub const LEATHER: ItemId = 142;
 pub const MILK_BUCKET: ItemId = 143;
+pub const LEATHER_HELMET: ItemId = 144;
+pub const LEATHER_CHESTPLATE: ItemId = 145;
+pub const LEATHER_LEGGINGS: ItemId = 146;
+pub const LEATHER_BOOTS: ItemId = 147;
 
 /// Armor slot order: helmet, chestplate, leggings, boots.
 pub fn armor_slot(item: ItemId) -> Option<usize> {
     match item {
-        IRON_HELMET => Some(0),
-        IRON_CHESTPLATE => Some(1),
-        IRON_LEGGINGS => Some(2),
-        IRON_BOOTS => Some(3),
+        LEATHER_HELMET | IRON_HELMET => Some(0),
+        LEATHER_CHESTPLATE | IRON_CHESTPLATE => Some(1),
+        LEATHER_LEGGINGS | IRON_LEGGINGS => Some(2),
+        LEATHER_BOOTS | IRON_BOOTS => Some(3),
         _ => None,
     }
 }
 
-/// Bedrock iron armor points (2/6/5/2, 15 total).
+/// Bedrock armor points. Leather is 1/3/2/1 (7 total); iron 2/6/5/2 (15).
 pub fn armor_points(item: ItemId) -> u8 {
     match item {
+        LEATHER_HELMET | LEATHER_BOOTS => 1,
+        LEATHER_CHESTPLATE => 3,
+        LEATHER_LEGGINGS => 2,
         IRON_HELMET | IRON_BOOTS => 2,
         IRON_CHESTPLATE => 6,
         IRON_LEGGINGS => 5,
@@ -227,6 +234,17 @@ pub fn item_info(id: ItemId) -> ItemInfo {
                 IRON_CHESTPLATE => "iron_chestplate",
                 IRON_LEGGINGS => "iron_leggings",
                 _ => "iron_boots",
+            },
+            max_stack: 1,
+            places: None,
+            food: None,
+        },
+        LEATHER_HELMET | LEATHER_CHESTPLATE | LEATHER_LEGGINGS | LEATHER_BOOTS => ItemInfo {
+            name: match id {
+                LEATHER_HELMET => "leather_helmet",
+                LEATHER_CHESTPLATE => "leather_chestplate",
+                LEATHER_LEGGINGS => "leather_leggings",
+                _ => "leather_boots",
             },
             max_stack: 1,
             places: None,
@@ -446,6 +464,10 @@ pub fn valid_item_id(id: ItemId) -> bool {
             | STEAK
             | LEATHER
             | MILK_BUCKET
+            | LEATHER_HELMET
+            | LEATHER_CHESTPLATE
+            | LEATHER_LEGGINGS
+            | LEATHER_BOOTS
     );
     id == EMPTY_ITEM || block_items || free_items
 }

@@ -50,6 +50,10 @@ pub fn max_durability(item: ItemId) -> u16 {
         ssc_world::IRON_CHESTPLATE => 240,
         ssc_world::IRON_LEGGINGS => 225,
         ssc_world::IRON_BOOTS => 195,
+        ssc_world::LEATHER_HELMET => 55,
+        ssc_world::LEATHER_CHESTPLATE => 80,
+        ssc_world::LEATHER_LEGGINGS => 75,
+        ssc_world::LEATHER_BOOTS => 65,
         ssc_world::SHEARS => 238,
         _ => 0,
     }
@@ -649,6 +653,22 @@ pub fn craft(inv: &mut [Slot], recipe: u8) -> bool {
         27 => (&[(ssc_world::IRON_INGOT, 2)][..], (ssc_world::SHEARS, 1)),
         28 => (&[(ssc_world::STICK, 7)][..], (ssc_world::LADDER, 3)),
         29 => (&[(ssc_world::OAK_PLANKS, 6)][..], (ssc_world::DOOR, 3)),
+        30 => (
+            &[(ssc_world::LEATHER, 5)][..],
+            (ssc_world::LEATHER_HELMET, 1),
+        ),
+        31 => (
+            &[(ssc_world::LEATHER, 8)][..],
+            (ssc_world::LEATHER_CHESTPLATE, 1),
+        ),
+        32 => (
+            &[(ssc_world::LEATHER, 7)][..],
+            (ssc_world::LEATHER_LEGGINGS, 1),
+        ),
+        33 => (
+            &[(ssc_world::LEATHER, 4)][..],
+            (ssc_world::LEATHER_BOOTS, 1),
+        ),
         _ => return false,
     };
     let mut next = inv.to_vec();
@@ -804,6 +824,31 @@ mod tests {
         inv[0] = Some((ssc_world::OAK_PLANKS, 6));
         assert!(craft(&mut inv, 29));
         assert_eq!(inv[0], Some((ssc_world::DOOR, 3)));
+    }
+
+    #[test]
+    fn leather_armor_crafts_with_lower_bedrock_points() {
+        for (recipe, leather, item, durability, points) in [
+            (30, 5, ssc_world::LEATHER_HELMET, 55, 1),
+            (31, 8, ssc_world::LEATHER_CHESTPLATE, 80, 3),
+            (32, 7, ssc_world::LEATHER_LEGGINGS, 75, 2),
+            (33, 4, ssc_world::LEATHER_BOOTS, 65, 1),
+        ] {
+            let mut inv = vec![None; INVENTORY_SIZE];
+            inv[0] = Some((ssc_world::LEATHER, leather));
+            assert!(craft(&mut inv, recipe));
+            assert_eq!(inv[0], Some((item, 1)));
+            assert_eq!(max_durability(item), durability);
+            assert_eq!(ssc_world::items::armor_points(item), points);
+        }
+        let full = [
+            Some((ssc_world::LEATHER_HELMET, 1)),
+            Some((ssc_world::LEATHER_CHESTPLATE, 1)),
+            Some((ssc_world::LEATHER_LEGGINGS, 1)),
+            Some((ssc_world::LEATHER_BOOTS, 1)),
+        ];
+        assert_eq!(armor_points(&full), 7);
+        assert!((armor_reduction(7) - 0.28).abs() < 0.0001);
     }
 
     #[test]

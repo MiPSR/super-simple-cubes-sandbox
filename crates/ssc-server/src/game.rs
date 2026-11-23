@@ -5734,6 +5734,34 @@ mod tests {
     }
 
     #[test]
+    fn leather_armor_equips_and_reduces_damage_by_seven_points() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] =
+            Some((ssc_world::LEATHER_HELMET, 1));
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.sessions[&1].armor[0],
+            Some((ssc_world::LEATHER_HELMET, 1))
+        );
+        assert_eq!(rig.server.sessions[&1].armor_durability[0], 55);
+
+        rig.server.time_of_day = 0.8;
+        rig.server.sessions.get_mut(&1).unwrap().armor = [
+            Some((ssc_world::LEATHER_HELMET, 1)),
+            Some((ssc_world::LEATHER_CHESTPLATE, 1)),
+            Some((ssc_world::LEATHER_LEGGINGS, 1)),
+            Some((ssc_world::LEATHER_BOOTS, 1)),
+        ];
+        rig.server.mobs.insert(
+            FIRST_MOB_ID,
+            crate::mobs::Mob::new(crate::mobs::MobKind::Zombie, Vec3::new(8.5, 55.02, 9.5)),
+        );
+        rig.server.tick();
+        let damage = 20.0 - rig.server.sessions[&1].survival.health;
+        assert!((damage - 3.0 * 0.72).abs() < 0.001, "{damage}");
+    }
+
+    #[test]
     fn armor_reduces_zombie_damage_and_wears_per_hit() {
         for (armor, expected, remaining) in [([None; 4], 3.0, 0), (full_iron_armor(), 1.2, 164)] {
             let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
