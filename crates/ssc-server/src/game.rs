@@ -1264,11 +1264,14 @@ impl Server {
             }
             item.age += 1;
             item.pickup_delay = item.pickup_delay.saturating_sub(1);
-            if item.age >= ITEM_LIFETIME_TICKS || item.pos.y <= ssc_world::MIN_Y as f32 {
+            if item.age >= ITEM_LIFETIME_TICKS || item.pos.y < crate::physics::ITEM_VOID_Y {
                 expired.push(*id);
                 continue;
             }
             crate::physics::move_item(&self.world, &mut item.pos, &mut item.vel, dt);
+            if item.pos.y < crate::physics::ITEM_VOID_Y {
+                expired.push(*id);
+            }
         }
 
         expired.sort_unstable();
@@ -4942,6 +4945,47 @@ mod tests {
             .inventory
             .iter()
             .all(Option::is_none));
+    }
+
+    #[test]
+    fn items_fall_below_build_limit_and_despawn_only_at_item_void_depth() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().player.pos.y = -100.0;
+        rig.server
+            .spawn_item_entity(ssc_world::APPLE, 1, Vec3::new(12.5, -65.0, 8.5));
+        let id = *rig.server.items.keys().next().unwrap();
+        rig.server.tick_items(0.05);
+        assert!(
+            rig.server.items.contains_key(&id),
+            "build minimum is not the item void depth"
+        );
+        rig.server.items.get_mut(&id).unwrap().pos.y = -127.9;
+        rig.server.items.get_mut(&id).unwrap().vel.y = -10.0;
+        rig.server.tick_items(0.05);
+        assert!(
+            !rig.server.items.contains_key(&id),
+            "crossing Y=-128 removes loot before pickup/save"
+        );
+        assert!(rig.drain(0).iter().any(
+            |packet| matches!(packet, ServerPacket::EntityRemove { id: removed } if *removed == id)
+        ));
+    }
+
+    #[test]
+    fn loot_in_the_void_can_save_reload_and_pause_offline() {
+        let world_path =
+            std::env::temp_dir().join(format!("ssc-item-void-save-{}.bin", std::process::id()));
+        let mut cfg = ServerConfig::default();
+        cfg.world_path = Some(world_path.clone());
+        let mut server = Server::empty(cfg.clone());
+        server.spawn_item_entity(ssc_world::APPLE, 2, Vec3::new(8.5, -90.0, 8.5));
+        server.items.values_mut().next().unwrap().vel.y = -3.0;
+        server.save_item_entities();
+        let mut restored = Server::empty(cfg);
+        assert_eq!(restored.items.values().next().unwrap().pos.y, -90.0);
+        restored.tick_items(0.05);
+        assert_eq!(restored.items.values().next().unwrap().pos.y, -90.0);
+        std::fs::remove_file(crate::persistence::item_save_path(&world_path)).unwrap();
     }
 
     #[test]

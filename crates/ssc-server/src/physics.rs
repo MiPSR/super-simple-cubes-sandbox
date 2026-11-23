@@ -10,6 +10,8 @@ use ssc_world::{is_solid, World, MIN_Y, WATER};
 
 /// Small collision epsilon to avoid floating-point re-penetration.
 const EPS: f32 = 1e-4;
+/// Overworld item entities disappear below build minimum minus 64 blocks.
+pub const ITEM_VOID_Y: f32 = (MIN_Y - 64) as f32;
 
 /// Result of one physics step.
 #[derive(Debug, Clone, Copy, Default)]
@@ -52,14 +54,16 @@ pub fn item_in_pickup_range(player: Vec3, item: Vec3) -> bool {
 /// Integrate one tick of player movement: applies `vel * dt` to `pos` with
 /// block collision. `vel` is zeroed on the axes that get blocked.
 pub fn move_player(world: &World, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> MoveResult {
-    move_entity(
+    let mut result = move_entity(
         world,
         pos,
         vel,
         dt,
         ssc_math::PLAYER_HALF_WIDTH,
         ssc_math::PLAYER_HEIGHT,
-    )
+    );
+    apply_player_void_floor(pos, vel, &mut result);
+    result
 }
 
 /// Dropped stacks use a quarter-block body. Approximate buoyancy balances
@@ -95,7 +99,7 @@ pub fn move_item(world: &World, pos: &mut Vec3, vel: &mut Vec3, dt: f32) {
 /// Grounded sneaking keeps part of the player's footprint over support.
 /// Jumping, flying and swimming callers use normal movement instead.
 pub fn move_sneaking_player(world: &World, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> MoveResult {
-    move_entity_inner(
+    let mut result = move_entity_inner(
         world,
         pos,
         vel,
@@ -103,7 +107,18 @@ pub fn move_sneaking_player(world: &World, pos: &mut Vec3, vel: &mut Vec3, dt: f
         ssc_math::PLAYER_HALF_WIDTH,
         ssc_math::PLAYER_HEIGHT,
         true,
-    )
+    );
+    apply_player_void_floor(pos, vel, &mut result);
+    result
+}
+
+fn apply_player_void_floor(pos: &mut Vec3, vel: &mut Vec3, result: &mut MoveResult) {
+    // Bedrock's invisible Overworld floor is player-only, not item support.
+    if pos.y < (MIN_Y - 41) as f32 {
+        pos.y = (MIN_Y - 41) as f32;
+        vel.y = 0.0;
+        result.on_ground = true;
+    }
 }
 
 /// Generic entity movement with per-axis swept AABB collision and
@@ -163,15 +178,6 @@ fn move_entity_inner(
             vel.z = 0.0;
         }
         in_water |= entity_in_water(world, *pos, height);
-    }
-
-    // Bedrock has an invisible one-way floor at about Y=-105 in the
-    // Overworld. The build limit (-64) is not a floor: survival players must
-    // be able to enter the void and take damage.
-    if pos.y < (MIN_Y - 41) as f32 {
-        pos.y = (MIN_Y - 41) as f32;
-        vel.y = 0.0;
-        on_ground = true;
     }
 
     MoveResult {
@@ -319,6 +325,21 @@ fn sweep_axis(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invisible_void_floor_supports_players_but_not_items() {
+        let world = World::default();
+        let start = Vec3::new(0.5, -104.9, 0.5);
+        let mut item = start;
+        let mut item_vel = Vec3::new(0.0, -10.0, 0.0);
+        move_item(&world, &mut item, &mut item_vel, 0.05);
+        assert!(item.y < -105.0);
+        let mut player = start;
+        let mut player_vel = Vec3::new(0.0, -10.0, 0.0);
+        let result = move_sneaking_player(&world, &mut player, &mut player_vel, 0.05);
+        assert_eq!(player.y, -105.0);
+        assert!(result.on_ground);
+    }
 
     #[test]
     fn item_pickup_range_uses_body_height_and_asymmetric_boundary_rules() {

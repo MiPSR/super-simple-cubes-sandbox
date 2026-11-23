@@ -312,6 +312,10 @@ Every implemented wiki feature gets a line here. Status legend:
   Quarter-block collision prevents buoyancy from pushing loot through a
   solid or glass ceiling. This is an approximate fluid integrator, not
   exact Bedrock acceleration; currents, bubble columns and lava are absent.
+  Loot can fall below the build limit and despawns below Y=-128, not at
+  Y=-64. The invisible Y=-105 floor applies only to player movement.
+  Item saves accept surviving below-build-limit positions and preserve
+  them while their simulation is inactive.
   36-slot inventories (9 hotbar + 27 storage, stack 64) are server-owned
   and synced. Sticks, coal and raw iron are non-block items.
 - `partial` — Q drops one item from the selected survival hotbar stack as

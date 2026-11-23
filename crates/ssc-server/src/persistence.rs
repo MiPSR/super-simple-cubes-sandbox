@@ -543,7 +543,7 @@ pub fn load_items(path: &Path) -> io::Result<Option<Vec<SavedItem>>> {
             || floats.iter().any(|v| !v.is_finite())
             || floats[0].abs() > 30_000_000.0
             || floats[2].abs() > 30_000_000.0
-            || !(ssc_world::MIN_Y as f32 - 1.0..ssc_world::MAX_Y as f32 + 1.0).contains(&floats[1])
+            || !(crate::physics::ITEM_VOID_Y..ssc_world::MAX_Y as f32 + 1.0).contains(&floats[1])
             || age >= 6_000
             || (max == 0 && durability != 0)
             || (max > 0 && (durability == 0 || durability > max))
@@ -585,8 +585,7 @@ pub fn save_items(path: &Path, items: &[SavedItem]) -> io::Result<()> {
                 .any(|v| !v.is_finite())
             || entry.pos[0].abs() > 30_000_000.0
             || entry.pos[2].abs() > 30_000_000.0
-            || !(ssc_world::MIN_Y as f32 - 1.0..ssc_world::MAX_Y as f32 + 1.0)
-                .contains(&entry.pos[1])
+            || !(crate::physics::ITEM_VOID_Y..ssc_world::MAX_Y as f32 + 1.0).contains(&entry.pos[1])
             || entry.age >= 6_000
             || (crate::survival::max_durability(entry.item) == 0 && entry.durability != 0)
             || (crate::survival::max_durability(entry.item) > 0
