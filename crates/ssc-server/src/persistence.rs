@@ -30,6 +30,7 @@ const ITEMS_MAGIC: &[u8; 8] = b"SSCITM01";
 const ITEMS_MAGIC_V2: &[u8; 8] = b"SSCITM02";
 const MOBS_MAGIC: &[u8; 8] = b"SSCMOB01";
 const MOBS_MAGIC_V2: &[u8; 8] = b"SSCMOB02";
+const MOBS_MAGIC_V3: &[u8; 8] = b"SSCMOB03";
 const FURNACE_MAGIC: &[u8; 8] = b"SSCFUR01";
 const CHEST_MAGIC: &[u8; 8] = b"SSCCHS01";
 pub const CHEST_SLOTS: usize = 27;
@@ -60,6 +61,7 @@ pub struct SavedMob {
     pub burn_timer: u8,
     pub panic_timer: u8,
     pub on_ground: bool,
+    pub sheared: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -834,14 +836,15 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
     let mut header = [0u8; HEADER as usize];
     file.read_exact(&mut header)?;
     let v2 = &header[..8] == MOBS_MAGIC_V2;
-    if !v2 && &header[..8] != MOBS_MAGIC {
+    let v3 = &header[..8] == MOBS_MAGIC_V3;
+    if !v2 && !v3 && &header[..8] != MOBS_MAGIC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid mob save magic",
         ));
     }
     let count = u32::from_le_bytes(header[8..12].try_into().expect("fixed mob header"));
-    let record_len = if v2 { 52 } else { 51 };
+    let record_len = if v2 || v3 { 52 } else { 51 };
     if count > MAX_SAVED_MOBS || file_len != HEADER + count as u64 * record_len {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -862,7 +865,8 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
         let attack_cooldown =
             u32::from_le_bytes(record[46..50].try_into().expect("fixed mob cooldown"));
         let burn_timer = record[50];
-        let panic_timer = if v2 { record[51] } else { 0 };
+        let panic_timer = if v2 || v3 { record[51] } else { 0 };
+        let sheared = v3 && flags & 4 != 0;
         let max_health = match kind {
             1 => 10.0,
             2 => 20.0,
@@ -887,7 +891,9 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
             None
         };
         let on_ground = flags & 2 != 0;
-        if flags & !3 != 0
+        let allowed_flags = if v3 { !7 } else { !3 };
+        if flags & allowed_flags != 0
+            || (sheared && kind != 4)
             || pos.iter().chain(vel.iter()).any(|v| !v.is_finite())
             || !yaw.is_finite()
             || !health.is_finite()
@@ -920,6 +926,7 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
             burn_timer,
             panic_timer,
             on_ground,
+            sheared,
         });
     }
     Ok(Some(mobs))
@@ -952,6 +959,7 @@ pub fn save_mobs(path: &Path, mobs: &[SavedMob]) -> io::Result<()> {
             || mob
                 .wander_dir
                 .is_some_and(|d| d.iter().any(|v| !v.is_finite()))
+            || (mob.sheared && mob.kind != 4)
     }) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -963,10 +971,12 @@ pub fn save_mobs(path: &Path, mobs: &[SavedMob]) -> io::Result<()> {
     }
     let temp_path = path.with_extension("tmp");
     let mut file = File::create(&temp_path)?;
-    file.write_all(MOBS_MAGIC_V2)?;
+    file.write_all(MOBS_MAGIC_V3)?;
     file.write_all(&(mobs.len() as u32).to_le_bytes())?;
     for mob in mobs {
-        let flags = u8::from(mob.wander_dir.is_some()) | (u8::from(mob.on_ground) << 1);
+        let flags = u8::from(mob.wander_dir.is_some())
+            | (u8::from(mob.on_ground) << 1)
+            | (u8::from(mob.sheared) << 2);
         file.write_all(&[mob.kind, flags])?;
         for value in mob
             .pos
@@ -1340,6 +1350,7 @@ mod tests {
             burn_timer: 0,
             panic_timer: 23,
             on_ground: true,
+            sheared: true,
         };
         save_mobs(&path, &[mob]).unwrap();
         assert_eq!(load_mobs(&path).unwrap(), Some(vec![mob]));
@@ -1763,6 +1774,7 @@ mod tests {
             burn_timer: 8,
             panic_timer: 0,
             on_ground: true,
+            sheared: false,
         }];
         save_mobs(&path, &mobs).unwrap();
         assert_eq!(load_mobs(&path).unwrap().unwrap(), mobs);
@@ -1785,6 +1797,7 @@ mod tests {
             burn_timer: 0,
             panic_timer: 37,
             on_ground: true,
+            sheared: false,
         };
         save_mobs(&path, &[pig]).unwrap();
         assert_eq!(load_mobs(&path).unwrap().unwrap(), vec![pig]);
@@ -1825,6 +1838,7 @@ mod tests {
             burn_timer: 0,
             panic_timer: 0,
             on_ground: true,
+            sheared: false,
         };
         assert!(save_mobs(&path, &[mob]).is_err());
         assert_eq!(fs::read(&path).unwrap(), existing);

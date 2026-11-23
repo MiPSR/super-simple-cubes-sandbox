@@ -564,6 +564,7 @@ impl Server {
                 burn_timer: mob.burn_timer,
                 panic_timer: mob.panic_timer,
                 on_ground: mob.on_ground_hint,
+                sheared: mob.sheared,
             })
             .collect();
         let path = crate::persistence::mob_save_path(world_path);
@@ -1094,12 +1095,15 @@ impl Server {
 
             // Dead mobs: spawn loot entities, then remove the mob.
             for mob_id in dead_mobs {
-                let (kind, pos) = {
+                let (kind, pos, sheared) = {
                     let m = &self.mobs[&mob_id];
-                    (m.kind, m.pos)
+                    (m.kind, m.pos, m.sheared)
                 };
                 let drop_roll = hash_tick(self.tick, mob_id as i32, pos.x.floor() as i32);
                 for (item, count) in crate::mobs::drops_for(kind, drop_roll) {
+                    if sheared && item == ssc_world::WOOL {
+                        continue;
+                    }
                     self.spawn_item_entity(item, count, pos);
                 }
                 self.mobs.remove(&mob_id);
@@ -1123,6 +1127,41 @@ impl Server {
             for id in despawn {
                 self.mobs.remove(&id);
                 let _ = self.broadcast(&ServerPacket::EntityRemove { id });
+            }
+
+            // Sheared sheep regrow wool by grazing grass after one minute.
+            let mut grazed = Vec::new();
+            {
+                let world = &self.world;
+                for (id, mob) in self.mobs.iter_mut() {
+                    if mob.dead || mob.kind != crate::mobs::MobKind::Sheep || !mob.sheared {
+                        continue;
+                    }
+                    mob.regrow_timer = mob.regrow_timer.saturating_add(1);
+                    if mob.regrow_timer < 1200 {
+                        continue;
+                    }
+                    let (x, z) = (mob.pos.x.floor() as i32, mob.pos.z.floor() as i32);
+                    let y = mob.pos.y.floor() as i32 - 1;
+                    if world.block_or_air(x, y, z) == ssc_world::GRASS_BLOCK {
+                        grazed.push((*id, (x, y, z)));
+                    }
+                }
+            }
+            for (id, (x, y, z)) in grazed {
+                self.world.set_block(x, y, z, ssc_world::DIRT);
+                self.record_block_edit(x, y, z, ssc_world::DIRT);
+                let _ = self.broadcast(&ServerPacket::BlockUpdate {
+                    x,
+                    y,
+                    z,
+                    block: ssc_world::DIRT,
+                });
+                self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
+                if let Some(mob) = self.mobs.get_mut(&id) {
+                    mob.sheared = false;
+                    mob.regrow_timer = 0;
+                }
             }
         }
 
@@ -3576,6 +3615,54 @@ impl Server {
         }
     }
 
+    /// First mob hit by the player's crosshair, without dealing damage.
+    fn target_mob(&self, id: EntityId) -> Option<EntityId> {
+        let (yaw, pitch) = self.look_of(id);
+        let eye = self.eye_of(id);
+        let dir = look_dir(yaw, pitch);
+        let mut best: Option<(EntityId, f32)> = None;
+        for (mid, mob) in &self.mobs {
+            if mob.dead {
+                continue;
+            }
+            let (hw, height) = mob.kind.dims();
+            if let Some(t) = ray_aabb(eye, dir, &entity_aabb(mob.pos, hw, height)) {
+                if t <= MELEE_REACH && best.map(|(_, bt)| t < bt).unwrap_or(true) {
+                    best = Some((*mid, t));
+                }
+            }
+        }
+        let (mid, t) = best?;
+        if crate::raycast::raycast_solids(&self.world, eye, dir, (t - 0.0001).max(0.0)).is_some() {
+            return None;
+        }
+        Some(mid)
+    }
+
+    fn use_shears(&mut self, id: EntityId) {
+        let Some(target) = self.target_mob(id) else {
+            return;
+        };
+        let sheared = {
+            let Some(mob) = self.mobs.get_mut(&target) else {
+                return;
+            };
+            if mob.kind != crate::mobs::MobKind::Sheep || mob.sheared {
+                return;
+            }
+            mob.sheared = true;
+            mob.regrow_timer = 0;
+            mob.pos
+        };
+        let count = 1 + (hash_tick(self.tick, target as i32, sheared.x.floor() as i32) % 3) as u8;
+        self.spawn_item_entity(ssc_world::WOOL, count, sheared);
+        if self.cfg.game_mode == GameMode::Survival {
+            if let Some(session) = self.sessions.get_mut(&id) {
+                damage_held_tool(session, 1);
+            }
+        }
+    }
+
     fn equip_armor(&mut self, id: EntityId, item: ssc_world::ItemId) {
         let Some(slot) = ssc_world::items::armor_slot(item) else {
             return;
@@ -3751,6 +3838,10 @@ impl Server {
         }
         if ssc_world::items::is_hoe(item) {
             self.use_hoe(id);
+            return;
+        }
+        if item == ssc_world::SHEARS {
+            self.use_shears(id);
             return;
         }
         if ssc_world::items::armor_slot(item).is_some() {
@@ -4543,6 +4634,93 @@ mod tests {
             })
             .count();
         assert_eq!(removals, 1, "sheep is removed exactly once");
+    }
+
+    #[test]
+    fn shears_shear_wool_once_and_wear_out() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((ssc_world::SHEARS, 1));
+            session.durability[0] = 238;
+        }
+        rig.server.mobs.insert(
+            FIRST_MOB_ID,
+            crate::mobs::Mob::new(crate::mobs::MobKind::Sheep, Vec3::new(10.5, 55.02, 8.5)),
+        );
+        rig.server.sessions.get_mut(&1).unwrap().player.pitch = -0.4;
+        rig.server.handle_use(1);
+        assert!(rig.server.mobs[&FIRST_MOB_ID].sheared);
+        assert_eq!(rig.server.sessions[&1].durability[0], 237);
+        let wool = rig
+            .server
+            .items
+            .values()
+            .filter(|item| item.item == ssc_world::WOOL)
+            .map(|item| item.count)
+            .sum::<u8>();
+        assert!((1..=3).contains(&wool));
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server
+                .items
+                .values()
+                .filter(|item| item.item == ssc_world::WOOL)
+                .map(|item| item.count)
+                .sum::<u8>(),
+            wool
+        );
+        assert_eq!(rig.server.sessions[&1].durability[0], 237);
+    }
+
+    #[test]
+    fn sheared_sheep_drop_only_mutton_and_regrow_by_eating_grass() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        let mut sheep =
+            crate::mobs::Mob::new(crate::mobs::MobKind::Sheep, Vec3::new(10.5, 55.02, 8.5));
+        sheep.sheared = true;
+        assert!(sheep.hurt(10.0, Vec3::new(8.5, 55.0, 8.5)));
+        rig.server.mobs.insert(FIRST_MOB_ID, sheep);
+        rig.server.tick();
+        assert!(!rig.server.mobs.contains_key(&FIRST_MOB_ID));
+        assert!(rig
+            .server
+            .items
+            .values()
+            .any(|item| item.item == ssc_world::MUTTON));
+        assert!(rig
+            .server
+            .items
+            .values()
+            .all(|item| item.item != ssc_world::WOOL));
+
+        rig.server.items.clear();
+        rig.server
+            .world
+            .set_block(10, 54, 8, ssc_world::GRASS_BLOCK);
+        let mut sheep =
+            crate::mobs::Mob::new(crate::mobs::MobKind::Sheep, Vec3::new(10.5, 55.0, 8.5));
+        sheep.sheared = true;
+        sheep.regrow_timer = 1199;
+        sheep.wander_timer = 60;
+        sheep.wander_dir = None;
+        rig.server.mobs.insert(FIRST_MOB_ID, sheep);
+        rig.server.tick();
+        assert!(!rig.server.mobs[&FIRST_MOB_ID].sheared);
+        assert_eq!(rig.server.world.block_or_air(10, 54, 8), ssc_world::DIRT);
+        assert_eq!(
+            rig.server.block_edits[&(0, 0)][&(10, 54, 8)],
+            ssc_world::DIRT
+        );
+        assert!(rig.drain(0).iter().any(|packet| matches!(
+            packet,
+            ServerPacket::BlockUpdate {
+                x: 10,
+                y: 54,
+                z: 8,
+                block: ssc_world::DIRT
+            }
+        )));
     }
 
     #[test]

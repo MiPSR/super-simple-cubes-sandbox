@@ -90,6 +90,8 @@ runnable through Nix.
   Ctrl+Q drops the entire stack.
 - Sheep roam the grass by day and drop white wool and raw mutton. Cook
   mutton in a furnace for a stronger meal, or use wool as a building block.
+  `Ctrl+6` crafts shears (two iron ingots); right-click an unsheared sheep
+  for wool. Sheared sheep regrow wool after grazing grass for a minute.
 - `Ctrl+5` crafts a chest from eight planks. Place it and right-click to
   open 27 shared storage slots; drag items between the chest grid and your
   inventory. Tools keep their wear, and breaking a chest drops its contents.

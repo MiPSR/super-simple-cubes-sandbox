@@ -210,6 +210,13 @@ Every implemented wiki feature gets a line here. Status legend:
   its contents once and closes viewers, and range loss or death closes the
   UI. No double chests, lid animation, hoppers or chest-to-chest
   rearrangement yet.
+- `partial` — Shears craft from two iron ingots (`Ctrl+6`) with 238 uses.
+  Right-clicking an unsheared sheep within reach drops 1–3 white wool,
+  marks it sheared, and costs one use; repeat uses do nothing. Sheared
+  sheep drop only mutton when killed and regrow wool after 60 seconds while
+  standing on grass, converting that grass block to dirt. Sheared state
+  persists in mob-save version 3; older saves load unsheared. No leaf/vine
+  shearing, dispenser support or colored wool yet.
 - `partial` — Experience: killing a zombie awards 5 points and pigs/sheep
   1–3, while collecting each smelted furnace output awards 1 point. Levels
   use a simplified `7 + 2×level` curve, show as `Lv N progress/needed` on
@@ -315,7 +322,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 27
+  throwing snowballs and Silk Touch are missing. Protocol 28
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit
@@ -402,8 +409,7 @@ Every implemented wiki feature gets a line here. Status legend:
   spawn singly on sand at night. Solid walls prevent zombie melee hits.
   Entity-kind packets and placeholder client meshes (white sheep box).
   Spawn/despawn rules and AI are simplified; no pathfinding, fire visuals,
-  breeding, shearing, sheep grazing/wool regrowth, or full Bedrock mob
-  roster. Pigs drop 1–3 raw porkchops, sheep drop one wool and 1–2 mutton,
+  breeding, or full Bedrock mob roster. Pigs drop 1–3 raw porkchops, sheep drop one wool and 1–2 mutton,
   zombies 0–2 rotten flesh; drops use the basic item-entity system. Raw and
   cooked mutton restore 2/6 hunger with 1.2/9.6 saturation and cook in a
   furnace. White wool is a placeable building block.

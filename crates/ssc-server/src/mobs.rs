@@ -119,8 +119,12 @@ pub struct Mob {
     pub attack_cooldown: u32,
     /// Daylight burn interval counter.
     pub burn_timer: u8,
-    /// Short flee response after a pig takes melee damage.
+    /// Short flee response after a passive mob takes melee damage.
     pub panic_timer: u8,
+    /// Sheep wool has been sheared and is regrowing.
+    pub sheared: bool,
+    /// Ticks spent regrowing wool.
+    pub regrow_timer: u16,
     /// Marked for removal (death or despawn).
     pub dead: bool,
     /// Set by the physics step, read by the AI next tick.
@@ -141,6 +145,8 @@ impl Mob {
             attack_cooldown: 0,
             burn_timer: 0,
             panic_timer: 0,
+            sheared: false,
+            regrow_timer: 0,
             dead: false,
             on_ground_hint: false,
             combat_immunity: crate::survival::DamageImmunity::default(),

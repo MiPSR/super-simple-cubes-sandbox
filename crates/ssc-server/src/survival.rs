@@ -50,6 +50,7 @@ pub fn max_durability(item: ItemId) -> u16 {
         ssc_world::IRON_CHESTPLATE => 240,
         ssc_world::IRON_LEGGINGS => 225,
         ssc_world::IRON_BOOTS => 195,
+        ssc_world::SHEARS => 238,
         _ => 0,
     }
 }
@@ -645,6 +646,7 @@ pub fn craft(inv: &mut [Slot], recipe: u8) -> bool {
             (ssc_world::IRON_BOOTS, 1),
         ),
         26 => (&[(ssc_world::OAK_PLANKS, 8)][..], (ssc_world::CHEST, 1)),
+        27 => (&[(ssc_world::IRON_INGOT, 2)][..], (ssc_world::SHEARS, 1)),
         _ => return false,
     };
     let mut next = inv.to_vec();
@@ -794,6 +796,16 @@ pub fn drop_count(block: BlockId, rng: f32) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shears_craft_from_two_ingots_with_bedrock_durability() {
+        let mut inv = vec![None; INVENTORY_SIZE];
+        inv[0] = Some((ssc_world::IRON_INGOT, 2));
+        assert!(craft(&mut inv, 27));
+        assert_eq!(inv[0], Some((ssc_world::SHEARS, 1)));
+        assert_eq!(max_durability(ssc_world::SHEARS), 238);
+        assert_eq!(attack_damage(Some(ssc_world::SHEARS)), 1.0);
+    }
+
     #[test]
     fn chest_crafts_from_eight_planks() {
         let mut inv = vec![None; INVENTORY_SIZE];

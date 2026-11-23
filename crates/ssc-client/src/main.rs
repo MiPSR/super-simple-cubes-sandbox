@@ -598,7 +598,7 @@ impl App {
                         continue;
                     }
                     if self.picker_open && self.mode == 0 && (1..=9).contains(&n) {
-                        let recipe = if frame.input().key(Key::Ctrl) && (1..=5).contains(&n) {
+                        let recipe = if frame.input().key(Key::Ctrl) && (1..=6).contains(&n) {
                             21 + n
                         } else if frame.input().key(Key::Shift) {
                             match n {
@@ -1097,7 +1097,7 @@ impl App {
                 [1.0, 0.85, 0.3, 1.0],
             );
             frame.hud_text(
-                "5/6:axes 7/8:shovels 9:repair (Shift+1/2/4:swords, 6/8/9:hoes, B:bread, Shift+B:bed, Ctrl+1-5:armor/chest)"
+                "5/6:axes 7/8:shovels 9:repair (Shift+1/2/4:swords, 6/8/9:hoes, B:bread, Shift+B:bed, Ctrl+1-6:armor/chest/shears)"
                     .to_string(),
                 x0 + 15.0,
                 y0 + 42.0,
