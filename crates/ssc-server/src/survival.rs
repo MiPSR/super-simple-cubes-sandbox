@@ -70,6 +70,28 @@ pub fn armor_reduction(points: u8) -> f32 {
     (points as f32 * 0.04).min(0.8)
 }
 
+pub const MAX_XP_LEVEL: u8 = 100;
+
+/// Simplified level curve: each level costs 7 + 2×level points.
+pub fn xp_needed(level: u8) -> u16 {
+    7 + level as u16 * 2
+}
+
+/// Add experience points, rolling over into levels. XP orbs are not
+/// simulated; callers award points directly.
+pub fn add_xp(level: &mut u8, progress: &mut u16, points: u32) {
+    let mut remaining = *progress as u32 + points;
+    while *level < MAX_XP_LEVEL && remaining >= xp_needed(*level) as u32 {
+        remaining -= xp_needed(*level) as u32;
+        *level += 1;
+    }
+    *progress = if *level >= MAX_XP_LEVEL {
+        remaining.min(xp_needed(*level).saturating_sub(1) as u32) as u16
+    } else {
+        remaining.min(u16::MAX as u32) as u16
+    };
+}
+
 /// Old saves and server-created tools without metadata start at full durability.
 pub fn effective_durability(item: ItemId, remaining: u16) -> u16 {
     if remaining == 0 {
@@ -771,6 +793,26 @@ pub fn drop_count(block: BlockId, rng: f32) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn experience_rolls_over_levels_and_caps_at_the_maximum() {
+        let mut level = 0u8;
+        let mut progress = 0u16;
+        add_xp(&mut level, &mut progress, 6);
+        assert_eq!((level, progress), (0, 6));
+        add_xp(&mut level, &mut progress, 1);
+        assert_eq!((level, progress), (1, 0));
+        add_xp(&mut level, &mut progress, 100);
+        assert_eq!((level, progress), (7, 16));
+        assert!(progress < xp_needed(level));
+        level = MAX_XP_LEVEL;
+        progress = 0;
+        add_xp(&mut level, &mut progress, 1_000_000);
+        assert_eq!(level, MAX_XP_LEVEL);
+        assert!(progress < xp_needed(level));
+        assert_eq!(xp_needed(0), 7);
+        assert_eq!(xp_needed(10), 27);
+    }
+
     #[test]
     fn iron_armor_recipes_have_bedrock_points_durability_and_reduction() {
         for (recipe, ingots, item, durability, points) in [

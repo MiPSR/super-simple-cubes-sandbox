@@ -45,6 +45,16 @@ pub fn fuel_ticks(item: ItemId) -> u16 {
     }
 }
 
+/// Experience granted when a player takes this smelted output. Vanilla uses
+/// fractional orbs; this rounds to one point per item.
+pub fn xp_for(item: ItemId) -> u32 {
+    if RECIPES.iter().any(|(_, output)| *output == item) {
+        1
+    } else {
+        0
+    }
+}
+
 pub fn accepts(slot: usize, item: ItemId) -> bool {
     match slot {
         INPUT => recipe(item).is_some(),

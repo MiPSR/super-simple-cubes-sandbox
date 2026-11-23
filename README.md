@@ -90,6 +90,8 @@ runnable through Nix.
   Ctrl+Q drops the entire stack.
 - Sheep roam the grass by day and drop white wool and raw mutton. Cook
   mutton in a furnace for a stronger meal, or use wool as a building block.
+- Killing mobs and collecting smelted furnace output grants experience.
+  Your level and progress appear on the HUD; dying resets experience.
 - `Ctrl+1` through `Ctrl+4` craft an iron helmet, chestplate, leggings, and
   boots. Right-click a piece to equip it; the HUD shows your armor points,
   and armor reduces zombie and player melee damage as it wears out.

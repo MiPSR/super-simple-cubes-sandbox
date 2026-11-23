@@ -174,6 +174,9 @@ struct App {
     hunger: u8,
     air: u16,
     hunger_effect_ticks: u16,
+    xp_level: u8,
+    xp_progress: u16,
+    xp_needed: u16,
     eating_remaining: u8,
     /// Dig progress broadcast ((x,y,z), percent) + expiry.
     dig_progress: Option<((i32, i32, i32), u8, Instant)>,
@@ -307,6 +310,9 @@ impl App {
             hunger: 20,
             air: 300,
             hunger_effect_ticks: 0,
+            xp_level: 0,
+            xp_progress: 0,
+            xp_needed: 7,
             eating_remaining: 0,
             dig_progress: None,
             inv_pick: None,
@@ -908,6 +914,18 @@ impl App {
                     [0.8, 0.85, 0.95, 0.9],
                 );
             }
+            frame.hud_text(
+                format!(
+                    "Lv {}  {}/{} xp",
+                    self.xp_level,
+                    self.xp_progress,
+                    self.xp_needed.max(1)
+                ),
+                560.0,
+                bars_y,
+                16.0,
+                [0.95, 0.85, 0.35, 0.9],
+            );
             if self.air < 300 {
                 frame.hud_text(
                     format!("Air {}", self.air / 20),
@@ -1549,11 +1567,17 @@ impl App {
                 hunger,
                 air,
                 hunger_effect_ticks,
+                xp_level,
+                xp_progress,
+                xp_needed,
             } => {
                 self.health = health;
                 self.hunger = hunger;
                 self.air = air;
                 self.hunger_effect_ticks = hunger_effect_ticks;
+                self.xp_level = xp_level;
+                self.xp_progress = xp_progress;
+                self.xp_needed = xp_needed;
             }
             ServerPacket::DigProgress { x, y, z, progress } => {
                 if progress <= 100 {

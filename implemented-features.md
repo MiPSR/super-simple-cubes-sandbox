@@ -201,6 +201,12 @@ Every implemented wiki feature gets a line here. Status legend:
 
 ## Player
 
+- `partial` — Experience: killing a zombie awards 5 points and pigs/sheep
+  1–3, while collecting each smelted furnace output awards 1 point. Levels
+  use a simplified `7 + 2×level` curve, show as `Lv N progress/needed` on
+  the HUD and persist in player-save version 8. Death with an inventory drop
+  resets level and progress to zero. No XP orb entities, enchanting,
+  anvil/repair costs, partial death loss or vanilla level formula yet.
 - `partial` — Iron armor crafts from ingots (`Ctrl+1/2/3/4` in the
   inventory: helmet 5, chestplate 8, leggings 7, boots 4). Right-clicking a
   piece equips it into one of four server-owned slots; survival swaps the
@@ -300,7 +306,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 25
+  throwing snowballs and Silk Touch are missing. Protocol 26
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit

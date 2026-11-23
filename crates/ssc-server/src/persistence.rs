@@ -25,6 +25,7 @@ const PLAYER_MAGIC_V4: &[u8; 8] = b"SSCPLY04";
 const PLAYER_MAGIC_V5: &[u8; 8] = b"SSCPLY05";
 const PLAYER_MAGIC_V6: &[u8; 8] = b"SSCPLY06";
 const PLAYER_MAGIC_V7: &[u8; 8] = b"SSCPLY07";
+const PLAYER_MAGIC_V8: &[u8; 8] = b"SSCPLY08";
 const ITEMS_MAGIC: &[u8; 8] = b"SSCITM01";
 const ITEMS_MAGIC_V2: &[u8; 8] = b"SSCITM02";
 const MOBS_MAGIC: &[u8; 8] = b"SSCMOB01";
@@ -77,6 +78,8 @@ pub struct PlayerSave {
     /// Helmet, chestplate, leggings, boots.
     pub armor: Vec<crate::survival::Slot>,
     pub armor_durability: Vec<u16>,
+    pub xp_level: u8,
+    pub xp_progress: u16,
 }
 
 impl Default for PlayerSave {
@@ -95,6 +98,8 @@ impl Default for PlayerSave {
             respawn: None,
             armor: vec![None; crate::survival::ARMOR_SIZE],
             armor_durability: vec![0; crate::survival::ARMOR_SIZE],
+            xp_level: 0,
+            xp_progress: 0,
         }
     }
 }
@@ -238,6 +243,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
     let v5_len = v4_len + 4;
     let v6_len = v5_len + 13;
     let v7_len = v6_len + crate::survival::ARMOR_SIZE * 3 + crate::survival::ARMOR_SIZE * 2;
+    let v8_len = v7_len + 3;
     if file_len != v1_len as u64
         && file_len != v2_len as u64
         && file_len != v3_len as u64
@@ -245,6 +251,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
         && file_len != v5_len as u64
         && file_len != v6_len as u64
         && file_len != v7_len as u64
+        && file_len != v8_len as u64
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -266,7 +273,8 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
     let v5 = &bytes[..8] == PLAYER_MAGIC_V5;
     let v6 = &bytes[..8] == PLAYER_MAGIC_V6;
     let v7 = &bytes[..8] == PLAYER_MAGIC_V7;
-    if (!v2 && !v3 && !v4 && !v5 && !v6 && !v7 && &bytes[..8] != PLAYER_MAGIC)
+    let v8 = &bytes[..8] == PLAYER_MAGIC_V8;
+    if (!v2 && !v3 && !v4 && !v5 && !v6 && !v7 && !v8 && &bytes[..8] != PLAYER_MAGIC)
         || &bytes[8..24] != player_id
     {
         return Err(io::Error::new(
@@ -280,7 +288,8 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
         || (v5 && expected_len != v5_len)
         || (v6 && expected_len != v6_len)
         || (v7 && expected_len != v7_len)
-        || (!v2 && !v3 && !v4 && !v5 && !v6 && !v7 && expected_len != v1_len)
+        || (v8 && expected_len != v8_len)
+        || (!v2 && !v3 && !v4 && !v5 && !v6 && !v7 && !v8 && expected_len != v1_len)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -289,7 +298,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
     }
     let mut data = PlayerSave::default();
     data.inventory.clear();
-    let inventory_offset = if v2 || v3 || v4 || v5 || v6 || v7 {
+    let inventory_offset = if v2 || v3 || v4 || v5 || v6 || v7 || v8 {
         let position = [
             f32::from_le_bytes(bytes[24..28].try_into().expect("fixed save slice")),
             f32::from_le_bytes(bytes[28..32].try_into().expect("fixed save slice")),
@@ -320,7 +329,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
         data.hunger = hunger;
         data.air = air;
         data.selected_slot = selected_slot;
-        if v3 || v4 || v5 || v6 || v7 {
+        if v3 || v4 || v5 || v6 || v7 || v8 {
             data.hunger_effect_ticks =
                 u16::from_le_bytes(bytes[44..46].try_into().expect("fixed save slice"));
             data.exhaustion =
@@ -363,7 +372,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
         }
         data.inventory.push(Some((item, count)));
     }
-    if v4 || v5 || v6 || v7 {
+    if v4 || v5 || v6 || v7 || v8 {
         let wear_end = inventory_end + crate::survival::INVENTORY_SIZE * 2;
         for (i, slot) in bytes[inventory_end..wear_end].chunks_exact(2).enumerate() {
             let wear = u16::from_le_bytes([slot[0], slot[1]]);
@@ -382,7 +391,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
             *wear = slot.map_or(0, |(item, _)| crate::survival::max_durability(item));
         }
     }
-    if v5 || v6 || v7 {
+    if v5 || v6 || v7 || v8 {
         data.saturation =
             f32::from_le_bytes(bytes[v4_len..v5_len].try_into().expect("fixed save slice"));
         if !data.saturation.is_finite() || !(0.0..=data.hunger as f32).contains(&data.saturation) {
@@ -396,7 +405,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
         // than granting a new buffer on migration.
         data.saturation = 0.0;
     }
-    if v6 || v7 {
+    if v6 || v7 || v8 {
         let flag = bytes[v5_len];
         if flag > 1 {
             return Err(io::Error::new(
@@ -431,7 +440,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
             data.respawn = Some(respawn);
         }
     }
-    if v7 {
+    if v7 || v8 {
         let armor_offset = v6_len;
         for (index, slot) in bytes[armor_offset..armor_offset + crate::survival::ARMOR_SIZE * 3]
             .chunks_exact(3)
@@ -469,6 +478,18 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
                 ));
             }
             data.armor_durability[index] = wear;
+        }
+    }
+    if v8 {
+        data.xp_level = bytes[v7_len];
+        data.xp_progress = u16::from_le_bytes([bytes[v7_len + 1], bytes[v7_len + 2]]);
+        if data.xp_level > crate::survival::MAX_XP_LEVEL
+            || data.xp_progress >= crate::survival::xp_needed(data.xp_level)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid experience state",
+            ));
         }
     }
     Ok(Some(data))
@@ -530,6 +551,14 @@ pub fn save_player(path: &Path, player_id: &[u8; 16], data: &PlayerSave) -> io::
             "invalid armor equipment",
         ));
     }
+    if data.xp_level > crate::survival::MAX_XP_LEVEL
+        || data.xp_progress >= crate::survival::xp_needed(data.xp_level)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid experience state",
+        ));
+    }
     if data.inventory.iter().flatten().any(|(item, count)| {
         !ssc_world::valid_item_id(*item)
             || *count == 0
@@ -584,7 +613,7 @@ pub fn save_player(path: &Path, player_id: &[u8; 16], data: &PlayerSave) -> io::
     }
     let temp_path = path.with_extension("tmp");
     let mut file = File::create(&temp_path)?;
-    file.write_all(PLAYER_MAGIC_V7)?;
+    file.write_all(PLAYER_MAGIC_V8)?;
     file.write_all(player_id)?;
     for coordinate in position {
         file.write_all(&coordinate.to_le_bytes())?;
@@ -636,6 +665,8 @@ pub fn save_player(path: &Path, player_id: &[u8; 16], data: &PlayerSave) -> io::
         });
         file.write_all(&value.to_le_bytes())?;
     }
+    file.write_all(&[data.xp_level])?;
+    file.write_all(&data.xp_progress.to_le_bytes())?;
     file.sync_all()?;
     fs::rename(temp_path, path)?;
     Ok(())
@@ -1265,6 +1296,8 @@ mod tests {
                 Some((ssc_world::IRON_BOOTS, 1)),
             ],
             armor_durability: vec![100, 0, 0, 150],
+            xp_level: 5,
+            xp_progress: 3,
         };
 
         save_player(&path, &player_id, &data).unwrap();
@@ -1281,6 +1314,19 @@ mod tests {
             io::ErrorKind::InvalidInput
         );
         data.exhaustion = 2.25;
+        data.xp_level = 101;
+        assert_eq!(
+            save_player(&path, &player_id, &data).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        data.xp_level = 0;
+        data.xp_progress = 7;
+        assert_eq!(
+            save_player(&path, &player_id, &data).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        data.xp_level = 5;
+        data.xp_progress = 3;
         assert_eq!(
             load_player(&path, &[0x55; 16]).unwrap_err().kind(),
             io::ErrorKind::InvalidData

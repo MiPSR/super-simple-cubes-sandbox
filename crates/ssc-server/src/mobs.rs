@@ -96,6 +96,14 @@ pub fn drops_for(kind: MobKind, roll: u64) -> Vec<(ssc_world::ItemId, u8)> {
     }
 }
 
+/// Experience awarded to the player who kills this mob.
+pub fn xp_for(kind: MobKind, roll: u64) -> u32 {
+    match kind {
+        MobKind::Zombie => 5,
+        MobKind::Pig | MobKind::Sheep => 1 + (roll % 3) as u32,
+    }
+}
+
 /// One mob.
 pub struct Mob {
     pub kind: MobKind,

@@ -152,6 +152,8 @@ struct Session {
     armor: [crate::survival::Slot; crate::survival::ARMOR_SIZE],
     armor_durability: [u16; crate::survival::ARMOR_SIZE],
     armor_dirty: bool,
+    xp_level: u8,
+    xp_progress: u16,
     /// Survival-mode state (ignored in creative).
     survival: crate::survival::SurvivalState,
     /// In-progress use is transient, never restored from a player save.
@@ -227,6 +229,8 @@ impl Session {
             armor: [None; crate::survival::ARMOR_SIZE],
             armor_durability: [0; crate::survival::ARMOR_SIZE],
             armor_dirty: true,
+            xp_level: 0,
+            xp_progress: 0,
             survival: crate::survival::SurvivalState::default(),
             eating: None,
             last_eating_sync: 0,
@@ -603,6 +607,8 @@ impl Server {
             respawn: Some([session.spawn.x, session.spawn.y, session.spawn.z]),
             armor: session.armor.to_vec(),
             armor_durability: session.armor_durability.to_vec(),
+            xp_level: session.xp_level,
+            xp_progress: session.xp_progress,
         };
         if let Err(err) = crate::persistence::save_player(&path, player_id, &data) {
             eprintln!("[server] could not save anonymous player data: {err}");
@@ -1077,6 +1083,9 @@ impl Server {
                 .map(|(id, session)| {
                     session.inventory_dropped_on_death = true;
                     session.inv_dirty = true;
+                    session.xp_level = 0;
+                    session.xp_progress = 0;
+                    session.status_dirty = true;
                     let drops = session
                         .inventory
                         .iter_mut()
@@ -1160,6 +1169,9 @@ impl Server {
                         hunger: session.survival.hunger,
                         air: session.survival.air,
                         hunger_effect_ticks: session.survival.hunger_effect_ticks,
+                        xp_level: session.xp_level,
+                        xp_progress: session.xp_progress,
+                        xp_needed: crate::survival::xp_needed(session.xp_level),
                     })
                 } else {
                     None
@@ -1624,6 +1636,7 @@ impl Server {
         if !from_furnace && !crate::furnace::accepts(slot, item) {
             return Ok(());
         }
+        let mut moved_count = 0u8;
         let (next_source, next_dest) = match destination {
             Some((target, target_count)) if target == item => {
                 let moved = count.min(
@@ -1634,6 +1647,7 @@ impl Server {
                 if moved == 0 {
                     return Ok(());
                 }
+                moved_count = moved;
                 (
                     if moved == count {
                         None
@@ -1649,6 +1663,7 @@ impl Server {
                 {
                     return Ok(());
                 }
+                moved_count = count;
                 (destination, source)
             }
         };
@@ -1674,6 +1689,9 @@ impl Server {
             furnace.cook_ticks = 0;
         }
         self.sync_furnace(pos);
+        if from_furnace && slot == crate::furnace::OUTPUT {
+            self.award_xp(id, moved_count as u32 * crate::furnace::xp_for(item));
+        }
         Ok(())
     }
 
@@ -1967,13 +1985,17 @@ impl Server {
         if is_mob {
             // Bedrock tool damage; knockback remains server-owned.
             let from = self.sessions[&id].player.pos;
+            let mut killed = None;
             if let Some(mob) = self.mobs.get_mut(&target) {
                 let before = mob.health;
-                mob.hurt(damage, from);
+                let died = mob.hurt(damage, from);
                 if mob.health >= before {
                     // This still intercepted the attack ray: don't start
                     // digging terrain behind an immune mob.
                     return true;
+                }
+                if died {
+                    killed = Some(mob.kind);
                 }
             }
             let pos = self.mobs.get(&target).map(|m| m.pos);
@@ -2000,6 +2022,13 @@ impl Server {
                         },
                     );
                 }
+            }
+            if let Some(kind) = killed {
+                let xp = crate::mobs::xp_for(
+                    kind,
+                    hash_tick(self.tick, target as i32, from.x.floor() as i32),
+                );
+                self.award_xp(id, xp);
             }
             true
         } else {
@@ -2848,6 +2877,8 @@ impl Server {
                     data.armor_durability.get(index).copied().unwrap_or(0);
             }
             session.armor_dirty = true;
+            session.xp_level = data.xp_level;
+            session.xp_progress = data.xp_progress;
             session.player.selected_slot = data.selected_slot;
         }
         session.player_id = Some(player_id);
@@ -3290,6 +3321,28 @@ impl Server {
         }
         for column in dirty {
             self.refresh_lod_for(column);
+        }
+    }
+
+    /// Award experience directly (no orb entities yet).
+    fn award_xp(&mut self, id: EntityId, points: u32) {
+        if points == 0 || self.cfg.game_mode != GameMode::Survival {
+            return;
+        }
+        let leveled_at = {
+            let Some(session) = self.sessions.get_mut(&id) else {
+                return;
+            };
+            if !session.player.joined || session.survival.dead {
+                return;
+            }
+            let before = session.xp_level;
+            crate::survival::add_xp(&mut session.xp_level, &mut session.xp_progress, points);
+            session.status_dirty = true;
+            (session.xp_level != before).then_some(session.player.pos)
+        };
+        if let Some(pos) = leveled_at {
+            self.send_sound(SoundId::Eat, pos.x as i32, pos.y as i32, pos.z as i32);
         }
     }
 
@@ -4733,6 +4786,84 @@ mod tests {
         assert_eq!(rig.server.sessions[&1].armor[0], None);
         assert!(rig.drain(0).iter().any(|packet| matches!(packet,
             ServerPacket::Armor { slots } if slots[0] == (0, 0, 0))));
+    }
+
+    #[test]
+    fn mob_kills_award_experience_levels_and_status_sync() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        for id in [FIRST_MOB_ID, FIRST_MOB_ID + 1] {
+            let mut zombie =
+                crate::mobs::Mob::new(crate::mobs::MobKind::Zombie, Vec3::new(10.5, 55.02, 8.5));
+            zombie.health = 1.0;
+            rig.server.mobs.insert(id, zombie);
+            rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
+            rig.server.tick(); // loot/death processing and status sync
+        }
+        assert_eq!(rig.server.sessions[&1].xp_level, 1);
+        assert_eq!(rig.server.sessions[&1].xp_progress, 3);
+        assert!(rig.drain(0).iter().any(|packet| matches!(
+            packet,
+            ServerPacket::Status {
+                xp_level: 1,
+                xp_progress: 3,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn furnace_output_collection_awards_experience_once() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        let pos = (8, 54, 8);
+        rig.server.world.set_block(8, 54, 8, ssc_world::FURNACE);
+        rig.server.handle_use(1);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::RAW_IRON, 1));
+        rig.server.sessions.get_mut(&1).unwrap().inventory[1] = Some((ssc_world::COAL, 1));
+        rig.server.transfer_furnace(1, 0, 0, false).unwrap();
+        rig.server.transfer_furnace(1, 1, 1, false).unwrap();
+        for _ in 0..201 {
+            rig.server.tick_furnaces();
+        }
+        assert_eq!(
+            rig.server.furnaces[&pos].slots[2],
+            Some((ssc_world::IRON_INGOT, 1))
+        );
+        assert_eq!(
+            rig.server.sessions[&1].xp_progress, 0,
+            "XP waits for collection"
+        );
+        rig.server.transfer_furnace(1, 0, 2, true).unwrap();
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::IRON_INGOT, 1))
+        );
+        assert_eq!(rig.server.sessions[&1].xp_progress, 1);
+        rig.server.transfer_furnace(1, 0, 2, true).unwrap();
+        assert_eq!(
+            rig.server.sessions[&1].xp_progress, 1,
+            "empty output grants nothing"
+        );
+    }
+
+    #[test]
+    fn death_resets_experience_with_the_inventory_drop() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.xp_level = 4;
+            session.xp_progress = 5;
+        }
+        let mut fx = crate::survival::TickEffects::default();
+        rig.server
+            .sessions
+            .get_mut(&1)
+            .unwrap()
+            .survival
+            .apply_combat_damage(20.0, &mut fx);
+        assert!(fx.hurt);
+        rig.server.tick();
+        assert_eq!(rig.server.sessions[&1].xp_level, 0);
+        assert_eq!(rig.server.sessions[&1].xp_progress, 0);
     }
 
     #[test]
@@ -6848,6 +6979,8 @@ mod tests {
             respawn: Some([-20.5, 72.0, 30.5]),
             armor: vec![None; crate::survival::ARMOR_SIZE],
             armor_durability: vec![0; crate::survival::ARMOR_SIZE],
+            xp_level: 7,
+            xp_progress: 4,
         };
         crate::persistence::save_player(&player_path, &player_id, &data).unwrap();
 
@@ -7042,6 +7175,8 @@ mod tests {
                 respawn: Some([3.5, 66.0, 4.5]),
                 armor: vec![None; crate::survival::ARMOR_SIZE],
                 armor_durability: vec![0; crate::survival::ARMOR_SIZE],
+                xp_level: 0,
+                xp_progress: 0,
             },
         )
         .unwrap();

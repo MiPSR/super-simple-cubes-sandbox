@@ -350,6 +350,9 @@ pub enum ServerPacket {
         hunger: u8,
         air: u16,
         hunger_effect_ticks: u16,
+        xp_level: u8,
+        xp_progress: u16,
+        xp_needed: u16,
     },
     /// Dig progress broadcast (0..100; 101 = cancelled).
     DigProgress {
@@ -517,12 +520,18 @@ impl ServerPacket {
                 hunger,
                 air,
                 hunger_effect_ticks,
+                xp_level,
+                xp_progress,
+                xp_needed,
             } => {
                 w.put_u8(15);
                 w.put_f32(*health);
                 w.put_u8(*hunger);
                 w.put_u16(*air);
                 w.put_u16(*hunger_effect_ticks);
+                w.put_u8(*xp_level);
+                w.put_u16(*xp_progress);
+                w.put_u16(*xp_needed);
             }
             ServerPacket::DigProgress { x, y, z, progress } => {
                 w.put_u8(16);
@@ -691,6 +700,9 @@ impl ServerPacket {
                 hunger: r.get_u8()?,
                 air: r.get_u16()?,
                 hunger_effect_ticks: r.get_u16()?,
+                xp_level: r.get_u8()?,
+                xp_progress: r.get_u16()?,
+                xp_needed: r.get_u16()?,
             },
             16 => ServerPacket::DigProgress {
                 x: r.get_i32()?,
@@ -899,6 +911,9 @@ mod tests {
             hunger: 14,
             air: 300,
             hunger_effect_ticks: 417,
+            xp_level: 12,
+            xp_progress: 9,
+            xp_needed: 31,
         };
         assert_eq!(ServerPacket::decode(&packet.encode()).unwrap(), packet);
     }
