@@ -148,6 +148,10 @@ struct Session {
     inventory: Vec<crate::survival::Slot>,
     /// Remaining tool uses per inventory slot; zero for other items.
     durability: Vec<u16>,
+    /// Helmet, chestplate, leggings, boots.
+    armor: [crate::survival::Slot; crate::survival::ARMOR_SIZE],
+    armor_durability: [u16; crate::survival::ARMOR_SIZE],
+    armor_dirty: bool,
     /// Survival-mode state (ignored in creative).
     survival: crate::survival::SurvivalState,
     /// In-progress use is transient, never restored from a player save.
@@ -220,6 +224,9 @@ impl Session {
             },
             inventory,
             durability: vec![0; crate::survival::INVENTORY_SIZE],
+            armor: [None; crate::survival::ARMOR_SIZE],
+            armor_durability: [0; crate::survival::ARMOR_SIZE],
+            armor_dirty: true,
             survival: crate::survival::SurvivalState::default(),
             eating: None,
             last_eating_sync: 0,
@@ -594,6 +601,8 @@ impl Server {
                 session.survival.exhaustion
             },
             respawn: Some([session.spawn.x, session.spawn.y, session.spawn.z]),
+            armor: session.armor.to_vec(),
+            armor_durability: session.armor_durability.to_vec(),
         };
         if let Err(err) = crate::persistence::save_player(&path, player_id, &data) {
             eprintln!("[server] could not save anonymous player data: {err}");
@@ -1001,9 +1010,12 @@ impl Server {
                 let from = self.mobs[&mob_id].pos;
                 let mut fx = crate::survival::TickEffects::default();
                 let session = self.sessions.get_mut(player_id).unwrap();
+                let points = crate::survival::armor_points(&session.armor);
+                let damage = damage * (1.0 - crate::survival::armor_reduction(points));
                 session.survival.apply_combat_damage(damage, &mut fx);
                 if fx.hurt {
                     session.survival.exhaustion += 0.1;
+                    damage_armor(session, 1);
                 }
                 if !fx.hurt {
                     continue;
@@ -1092,11 +1104,11 @@ impl Server {
         let dirty: Vec<EntityId> = self
             .sessions
             .iter()
-            .filter(|(_, s)| s.player.joined && (s.inv_dirty || s.status_dirty))
+            .filter(|(_, s)| s.player.joined && (s.inv_dirty || s.status_dirty || s.armor_dirty))
             .map(|(id, _)| *id)
             .collect();
         for id in dirty {
-            let (inv_pkt, wear_pkt, status_pkt) = {
+            let (inv_pkt, wear_pkt, armor_pkt, status_pkt) = {
                 let session = self.sessions.get_mut(&id).unwrap();
                 let inv_pkt = if session.inv_dirty {
                     session.inv_dirty = false;
@@ -1122,6 +1134,25 @@ impl Server {
                         })
                         .collect(),
                 });
+                let armor_pkt = if session.armor_dirty {
+                    session.armor_dirty = false;
+                    Some(ServerPacket::Armor {
+                        slots: std::array::from_fn(|index| {
+                            session.armor[index].map_or((0, 0, 0), |(item, count)| {
+                                (
+                                    item,
+                                    count,
+                                    crate::survival::effective_durability(
+                                        item,
+                                        session.armor_durability[index],
+                                    ),
+                                )
+                            })
+                        }),
+                    })
+                } else {
+                    None
+                };
                 let status_pkt = if session.status_dirty {
                     session.status_dirty = false;
                     Some(ServerPacket::Status {
@@ -1133,12 +1164,15 @@ impl Server {
                 } else {
                     None
                 };
-                (inv_pkt, wear_pkt, status_pkt)
+                (inv_pkt, wear_pkt, armor_pkt, status_pkt)
             };
             if let Some(pkt) = inv_pkt {
                 let _ = self.direct(id, &pkt);
             }
             if let Some(pkt) = wear_pkt {
+                let _ = self.direct(id, &pkt);
+            }
+            if let Some(pkt) = armor_pkt {
                 let _ = self.direct(id, &pkt);
             }
             if let Some(pkt) = status_pkt {
@@ -1974,14 +2008,15 @@ impl Server {
             let session = self.sessions.get_mut(&target).unwrap();
             if self.cfg.game_mode == GameMode::Survival {
                 let mut fx = crate::survival::TickEffects::default();
+                let points = crate::survival::armor_points(&session.armor);
+                let damage = damage * (1.0 - crate::survival::armor_reduction(points));
                 session.survival.apply_combat_damage(damage, &mut fx);
                 if !fx.hurt {
                     return true;
                 }
                 knock_player_back(&mut session.player, from);
-                if fx.hurt {
-                    session.survival.exhaustion += 0.1;
-                }
+                session.survival.exhaustion += 0.1;
+                damage_armor(session, 1);
                 session.status_dirty = true;
             }
             let p = self.sessions[&target].player.pos;
@@ -2026,6 +2061,31 @@ fn damage_held_tool(session: &mut Session, uses: u16) {
         session.durability[slot] = remaining - uses;
     }
     session.inv_dirty = true;
+}
+
+/// One durability point per equipped piece on a damaging hit. Bedrock's
+/// exact damage-to-durability formula is simplified.
+fn damage_armor(session: &mut Session, usage: u16) -> bool {
+    let mut changed = false;
+    for index in 0..crate::survival::ARMOR_SIZE {
+        let Some((item, _)) = session.armor[index] else {
+            continue;
+        };
+        let remaining =
+            crate::survival::effective_durability(item, session.armor_durability[index]);
+        changed = true;
+        if remaining <= usage {
+            session.armor[index] = None;
+            session.armor_durability[index] = 0;
+        } else {
+            session.armor_durability[index] = remaining - usage;
+        }
+    }
+    if changed {
+        session.armor_dirty = true;
+        session.inv_dirty = true;
+    }
+    changed
 }
 
 // ---------------------------------------------------------------------------
@@ -2782,6 +2842,12 @@ impl Server {
                 session.survival.hunger_effect_ticks = data.hunger_effect_ticks;
                 session.survival.exhaustion = data.exhaustion;
             }
+            for index in 0..crate::survival::ARMOR_SIZE {
+                session.armor[index] = data.armor.get(index).copied().flatten();
+                session.armor_durability[index] =
+                    data.armor_durability.get(index).copied().unwrap_or(0);
+            }
+            session.armor_dirty = true;
             session.player.selected_slot = data.selected_slot;
         }
         session.player_id = Some(player_id);
@@ -3227,6 +3293,50 @@ impl Server {
         }
     }
 
+    fn equip_armor(&mut self, id: EntityId, item: ssc_world::ItemId) {
+        let Some(slot) = ssc_world::items::armor_slot(item) else {
+            return;
+        };
+        let Some(session) = self.sessions.get_mut(&id) else {
+            return;
+        };
+        if !session.player.joined || session.survival.dead {
+            return;
+        }
+        let hotbar = session.player.selected_slot as usize % 9;
+        let Some((held, count)) = session.inventory[hotbar] else {
+            return;
+        };
+        if held != item || count != 1 {
+            return;
+        }
+        let new_wear = crate::survival::effective_durability(item, session.durability[hotbar]);
+        if self.cfg.game_mode == GameMode::Creative {
+            // Creative keeps its palette item and replaces worn gear freely.
+            session.armor[slot] = Some((item, 1));
+            session.armor_durability[slot] = new_wear;
+        } else {
+            let old = session.armor[slot].replace((item, 1));
+            let old_wear = session.armor_durability[slot];
+            session.armor_durability[slot] = new_wear;
+            match old {
+                Some((old_item, old_count)) => {
+                    session.inventory[hotbar] = Some((old_item, old_count));
+                    session.durability[hotbar] =
+                        crate::survival::effective_durability(old_item, old_wear);
+                }
+                None => {
+                    session.inventory[hotbar] = None;
+                    session.durability[hotbar] = 0;
+                }
+            }
+        }
+        session.inv_dirty = true;
+        session.armor_dirty = true;
+        session.eating = None;
+        session.survival.digging = None;
+    }
+
     /// Sleep in a bed at night: skip to dawn and set the respawn point.
     /// Only zombies count as nearby monsters for now.
     fn use_bed(&mut self, id: EntityId, pos: (i32, i32, i32)) -> bool {
@@ -3343,6 +3453,10 @@ impl Server {
         }
         if ssc_world::items::is_hoe(item) {
             self.use_hoe(id);
+            return;
+        }
+        if ssc_world::items::armor_slot(item).is_some() {
+            self.equip_armor(id, item);
             return;
         }
         let item_info = ssc_world::item_info(item);
@@ -4525,6 +4639,117 @@ mod tests {
             .iter()
             .flatten()
             .any(|(item, _)| *item == ssc_world::COBBLESTONE));
+    }
+
+    #[test]
+    fn iron_armor_equips_swaps_and_syncs_with_durability() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] =
+            Some((ssc_world::IRON_CHESTPLATE, 1));
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.sessions[&1].armor[1],
+            Some((ssc_world::IRON_CHESTPLATE, 1))
+        );
+        assert_eq!(rig.server.sessions[&1].armor_durability[1], 240);
+        assert_eq!(rig.server.sessions[&1].inventory[0], None);
+        rig.server.tick();
+        assert!(rig.drain(0).iter().any(|packet| matches!(packet,
+            ServerPacket::Armor { slots } if slots[1] == (ssc_world::IRON_CHESTPLATE, 1, 240))));
+
+        // Equipping a second pair of boots returns the old pair to the hand
+        // with its wear intact.
+        {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.armor[3] = Some((ssc_world::IRON_BOOTS, 1));
+            session.armor_durability[3] = 120;
+            session.inventory[0] = Some((ssc_world::IRON_BOOTS, 1));
+            session.durability[0] = 77;
+        }
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.sessions[&1].armor_durability[3], 77);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::IRON_BOOTS, 1))
+        );
+        assert_eq!(rig.server.sessions[&1].durability[0], 120);
+
+        // Creative keeps its palette item.
+        let mut creative = Rig::new_mode(1, 0.0, GameMode::Creative);
+        creative.server.sessions.get_mut(&1).unwrap().inventory[0] =
+            Some((ssc_world::IRON_HELMET, 1));
+        creative.server.handle_use(1);
+        assert_eq!(
+            creative.server.sessions[&1].armor[0],
+            Some((ssc_world::IRON_HELMET, 1))
+        );
+        assert_eq!(
+            creative.server.sessions[&1].inventory[0],
+            Some((ssc_world::IRON_HELMET, 1))
+        );
+    }
+
+    fn full_iron_armor() -> [crate::survival::Slot; crate::survival::ARMOR_SIZE] {
+        [
+            Some((ssc_world::IRON_HELMET, 1)),
+            Some((ssc_world::IRON_CHESTPLATE, 1)),
+            Some((ssc_world::IRON_LEGGINGS, 1)),
+            Some((ssc_world::IRON_BOOTS, 1)),
+        ]
+    }
+
+    #[test]
+    fn armor_reduces_zombie_damage_and_wears_per_hit() {
+        for (armor, expected, remaining) in [([None; 4], 3.0, 0), (full_iron_armor(), 1.2, 164)] {
+            let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+            rig.server.time_of_day = 0.8;
+            rig.server.mobs.insert(
+                FIRST_MOB_ID,
+                crate::mobs::Mob::new(crate::mobs::MobKind::Zombie, Vec3::new(8.5, 55.02, 9.5)),
+            );
+            rig.server.sessions.get_mut(&1).unwrap().armor = armor;
+            for index in 0..crate::survival::ARMOR_SIZE {
+                rig.server.sessions.get_mut(&1).unwrap().armor_durability[index] =
+                    if armor[index].is_some() { 165 } else { 0 };
+            }
+            rig.server.tick();
+            let damage = 20.0 - rig.server.sessions[&1].survival.health;
+            assert!((damage - expected).abs() < 0.001, "{damage}");
+            if remaining > 0 {
+                assert_eq!(rig.server.sessions[&1].armor_durability[0], remaining);
+            }
+        }
+
+        // A piece at its last use breaks after absorbing a hit.
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.time_of_day = 0.8;
+        rig.server.mobs.insert(
+            FIRST_MOB_ID,
+            crate::mobs::Mob::new(crate::mobs::MobKind::Zombie, Vec3::new(8.5, 55.02, 9.5)),
+        );
+        rig.server.sessions.get_mut(&1).unwrap().armor[0] = Some((ssc_world::IRON_HELMET, 1));
+        rig.server.sessions.get_mut(&1).unwrap().armor_durability[0] = 1;
+        rig.server.tick();
+        assert_eq!(rig.server.sessions[&1].armor[0], None);
+        assert!(rig.drain(0).iter().any(|packet| matches!(packet,
+            ServerPacket::Armor { slots } if slots[0] == (0, 0, 0))));
+    }
+
+    #[test]
+    fn armor_reduces_pvp_sword_damage() {
+        let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
+        let victim = rig.server.sessions[&1].player.pos;
+        rig.server.sessions.get_mut(&2).unwrap().player.pos = victim + Vec3::new(-1.0, 0.0, 0.0);
+        rig.server.sessions.get_mut(&2).unwrap().inventory[0] = Some((ssc_world::IRON_SWORD, 1));
+        rig.server.sessions.get_mut(&1).unwrap().armor = full_iron_armor();
+        for index in 0..crate::survival::ARMOR_SIZE {
+            rig.server.sessions.get_mut(&1).unwrap().armor_durability[index] = 165;
+        }
+        rig.server.handle_packet(2, ClientPacket::DigStart).unwrap();
+        let damage = 20.0 - rig.server.sessions[&1].survival.health;
+        assert!((damage - 2.8).abs() < 0.001, "{damage}");
+        assert_eq!(rig.server.sessions[&1].armor_durability[1], 164);
+        assert_eq!(rig.server.sessions[&1].armor_durability[0], 164);
     }
 
     #[test]
@@ -6621,6 +6846,8 @@ mod tests {
             hunger_effect_ticks: 410,
             exhaustion: 2.5,
             respawn: Some([-20.5, 72.0, 30.5]),
+            armor: vec![None; crate::survival::ARMOR_SIZE],
+            armor_durability: vec![0; crate::survival::ARMOR_SIZE],
         };
         crate::persistence::save_player(&player_path, &player_id, &data).unwrap();
 
@@ -6813,6 +7040,8 @@ mod tests {
                 hunger_effect_ticks: 0,
                 exhaustion: 0.0,
                 respawn: Some([3.5, 66.0, 4.5]),
+                armor: vec![None; crate::survival::ARMOR_SIZE],
+                armor_durability: vec![0; crate::survival::ARMOR_SIZE],
             },
         )
         .unwrap();

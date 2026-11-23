@@ -46,8 +46,28 @@ pub fn max_durability(item: ItemId) -> u16 {
         | ssc_world::IRON_SHOVEL
         | ssc_world::IRON_SWORD
         | ssc_world::IRON_HOE => 251,
+        ssc_world::IRON_HELMET => 165,
+        ssc_world::IRON_CHESTPLATE => 240,
+        ssc_world::IRON_LEGGINGS => 225,
+        ssc_world::IRON_BOOTS => 195,
         _ => 0,
     }
+}
+
+/// Four armor equipment slots (helmet, chestplate, leggings, boots).
+pub const ARMOR_SIZE: usize = 4;
+
+pub fn armor_points(armor: &[Slot]) -> u8 {
+    armor
+        .iter()
+        .flatten()
+        .map(|(item, _)| ssc_world::items::armor_points(*item))
+        .sum()
+}
+
+/// Bedrock-style armor reduction: 4% per point, capped at 80%.
+pub fn armor_reduction(points: u8) -> f32 {
+    (points as f32 * 0.04).min(0.8)
 }
 
 /// Old saves and server-created tools without metadata start at full durability.
@@ -586,6 +606,22 @@ pub fn craft(inv: &mut [Slot], recipe: u8) -> bool {
             &[(ssc_world::WOOL, 3), (ssc_world::OAK_PLANKS, 3)][..],
             (ssc_world::BED, 1),
         ),
+        22 => (
+            &[(ssc_world::IRON_INGOT, 5)][..],
+            (ssc_world::IRON_HELMET, 1),
+        ),
+        23 => (
+            &[(ssc_world::IRON_INGOT, 8)][..],
+            (ssc_world::IRON_CHESTPLATE, 1),
+        ),
+        24 => (
+            &[(ssc_world::IRON_INGOT, 7)][..],
+            (ssc_world::IRON_LEGGINGS, 1),
+        ),
+        25 => (
+            &[(ssc_world::IRON_INGOT, 4)][..],
+            (ssc_world::IRON_BOOTS, 1),
+        ),
         _ => return false,
     };
     let mut next = inv.to_vec();
@@ -735,6 +771,42 @@ pub fn drop_count(block: BlockId, rng: f32) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn iron_armor_recipes_have_bedrock_points_durability_and_reduction() {
+        for (recipe, ingots, item, durability, points) in [
+            (22, 5, ssc_world::IRON_HELMET, 165, 2),
+            (23, 8, ssc_world::IRON_CHESTPLATE, 240, 6),
+            (24, 7, ssc_world::IRON_LEGGINGS, 225, 5),
+            (25, 4, ssc_world::IRON_BOOTS, 195, 2),
+        ] {
+            let mut inv = vec![None; INVENTORY_SIZE];
+            inv[0] = Some((ssc_world::IRON_INGOT, ingots));
+            assert!(craft(&mut inv, recipe));
+            assert_eq!(inv[0], Some((item, 1)));
+            assert_eq!(max_durability(item), durability);
+            assert_eq!(ssc_world::items::armor_points(item), points);
+            assert_eq!(
+                ssc_world::items::armor_slot(item),
+                Some(match recipe {
+                    22 => 0,
+                    23 => 1,
+                    24 => 2,
+                    _ => 3,
+                })
+            );
+        }
+        let full = [
+            Some((ssc_world::IRON_HELMET, 1)),
+            Some((ssc_world::IRON_CHESTPLATE, 1)),
+            Some((ssc_world::IRON_LEGGINGS, 1)),
+            Some((ssc_world::IRON_BOOTS, 1)),
+        ];
+        assert_eq!(armor_points(&full), 15);
+        assert!((armor_reduction(15) - 0.6).abs() < 0.0001);
+        assert!((armor_reduction(20) - 0.8).abs() < 0.0001);
+        assert_eq!(armor_reduction(0), 0.0);
+    }
+
     #[test]
     fn hoes_craft_bread_is_food_and_wheat_drops_follow_growth_age() {
         for (recipe, material, hoe, durability) in [

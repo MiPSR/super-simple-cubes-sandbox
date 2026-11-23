@@ -58,6 +58,31 @@ pub const WHEAT: ItemId = 131;
 pub const BREAD: ItemId = 132;
 pub const MUTTON: ItemId = 133;
 pub const COOKED_MUTTON: ItemId = 134;
+pub const IRON_HELMET: ItemId = 135;
+pub const IRON_CHESTPLATE: ItemId = 136;
+pub const IRON_LEGGINGS: ItemId = 137;
+pub const IRON_BOOTS: ItemId = 138;
+
+/// Armor slot order: helmet, chestplate, leggings, boots.
+pub fn armor_slot(item: ItemId) -> Option<usize> {
+    match item {
+        IRON_HELMET => Some(0),
+        IRON_CHESTPLATE => Some(1),
+        IRON_LEGGINGS => Some(2),
+        IRON_BOOTS => Some(3),
+        _ => None,
+    }
+}
+
+/// Bedrock iron armor points (2/6/5/2, 15 total).
+pub fn armor_points(item: ItemId) -> u8 {
+    match item {
+        IRON_HELMET | IRON_BOOTS => 2,
+        IRON_CHESTPLATE => 6,
+        IRON_LEGGINGS => 5,
+        _ => 0,
+    }
+}
 
 pub fn is_hoe(item: ItemId) -> bool {
     matches!(item, WOODEN_HOE | STONE_HOE | IRON_HOE)
@@ -160,6 +185,17 @@ pub fn item_info(id: ItemId) -> ItemInfo {
             max_stack: 64,
             places: None,
             food: Some(6),
+        },
+        IRON_HELMET | IRON_CHESTPLATE | IRON_LEGGINGS | IRON_BOOTS => ItemInfo {
+            name: match id {
+                IRON_HELMET => "iron_helmet",
+                IRON_CHESTPLATE => "iron_chestplate",
+                IRON_LEGGINGS => "iron_leggings",
+                _ => "iron_boots",
+            },
+            max_stack: 1,
+            places: None,
+            food: None,
         },
         0 => ItemInfo {
             name: "empty",
@@ -363,6 +399,10 @@ pub fn valid_item_id(id: ItemId) -> bool {
             | BREAD
             | MUTTON
             | COOKED_MUTTON
+            | IRON_HELMET
+            | IRON_CHESTPLATE
+            | IRON_LEGGINGS
+            | IRON_BOOTS
     );
     id == EMPTY_ITEM || block_items || free_items
 }

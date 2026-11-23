@@ -201,6 +201,18 @@ Every implemented wiki feature gets a line here. Status legend:
 
 ## Player
 
+- `partial` — Iron armor crafts from ingots (`Ctrl+1/2/3/4` in the
+  inventory: helmet 5, chestplate 8, leggings 7, boots 4). Right-clicking a
+  piece equips it into one of four server-owned slots; survival swaps the
+  previous piece back into the hand with its wear, creative keeps its item.
+  Bedrock points are 2/6/5/2 (15 total) and reduce zombie/PvP melee damage
+  by 4% per point, capped at 80%. Each damaging hit wears every equipped
+  piece by one use; armor breaks and disappears at zero. Durability is
+  165/240/225/195, armor slots and wear persist in player-save version 7,
+  and the HUD shows total armor points. Armor does not reduce fall,
+  drowning, void or starvation damage; the exact Bedrock damage-to-wear
+  formula, visual armor models, enchantments and other armor materials are
+  pending.
 - `partial` — Beds craft from three wool and three planks (`Shift+B` in the
   inventory). Right-clicking a bed at night skips time to dawn (`0.26`),
   cancels eating/digging and sets the player's respawn point to the space
@@ -288,7 +300,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 24
+  throwing snowballs and Silk Touch are missing. Protocol 25
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit

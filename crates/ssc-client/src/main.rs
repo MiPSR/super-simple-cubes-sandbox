@@ -165,6 +165,7 @@ struct App {
     inventory: Vec<(u16, u8)>,
     /// Remaining tool uses from the server (zero for other items).
     tool_durability: Vec<u16>,
+    armor: [(u16, u8, u16); 4],
     furnace: Option<FurnaceView>,
     /// Game mode (0 survival / 1 creative).
     mode: u8,
@@ -299,6 +300,7 @@ impl App {
             hotbar: [0; 9],
             inventory: Vec::new(),
             tool_durability: Vec::new(),
+            armor: [(0, 0, 0); 4],
             furnace: None,
             mode: 0,
             health: 20.0,
@@ -547,7 +549,9 @@ impl App {
                         continue;
                     }
                     if self.picker_open && self.mode == 0 && (1..=9).contains(&n) {
-                        let recipe = if frame.input().key(Key::Shift) {
+                        let recipe = if frame.input().key(Key::Ctrl) && (1..=4).contains(&n) {
+                            21 + n
+                        } else if frame.input().key(Key::Shift) {
                             match n {
                                 1 => 13,
                                 2 => 14,
@@ -890,6 +894,20 @@ impl App {
                 16.0,
                 [0.6, 0.9, 0.3, 0.9],
             );
+            let armor_points: u8 = self
+                .armor
+                .iter()
+                .map(|(item, _, _)| ssc_world::items::armor_points(*item))
+                .sum();
+            if armor_points > 0 {
+                frame.hud_text(
+                    format!("Armor {armor_points}/20"),
+                    430.0,
+                    bars_y,
+                    16.0,
+                    [0.8, 0.85, 0.95, 0.9],
+                );
+            }
             if self.air < 300 {
                 frame.hud_text(
                     format!("Air {}", self.air / 20),
@@ -1012,7 +1030,7 @@ impl App {
                 [1.0, 0.85, 0.3, 1.0],
             );
             frame.hud_text(
-                "5/6:axes 7/8:shovels 9:repair (Shift+1/2/4:swords, 6/8/9:hoes, B:bread, Shift+B:bed)"
+                "5/6:axes 7/8:shovels 9:repair (Shift+1/2/4:swords, 6/8/9:hoes, B:bread, Shift+B:bed, Ctrl+1-4:armor)"
                     .to_string(),
                 x0 + 15.0,
                 y0 + 42.0,
@@ -1478,6 +1496,9 @@ impl App {
             }
             ServerPacket::ToolDurability { slots } => {
                 self.tool_durability = slots;
+            }
+            ServerPacket::Armor { slots } => {
+                self.armor = slots;
             }
             ServerPacket::EatingProgress { remaining } => {
                 self.eating_remaining = remaining;

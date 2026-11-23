@@ -90,6 +90,9 @@ runnable through Nix.
   Ctrl+Q drops the entire stack.
 - Sheep roam the grass by day and drop white wool and raw mutton. Cook
   mutton in a furnace for a stronger meal, or use wool as a building block.
+- `Ctrl+1` through `Ctrl+4` craft an iron helmet, chestplate, leggings, and
+  boots. Right-click a piece to equip it; the HUD shows your armor points,
+  and armor reduces zombie and player melee damage as it wears out.
 - `Shift+B` in the inventory crafts a bed from three wool and three planks.
   Place it and right-click at night to skip to dawn and set your respawn
   point (no zombies within eight blocks, and two clear blocks above).

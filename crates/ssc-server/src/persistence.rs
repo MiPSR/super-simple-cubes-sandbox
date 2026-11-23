@@ -24,6 +24,7 @@ const PLAYER_MAGIC_V3: &[u8; 8] = b"SSCPLY03";
 const PLAYER_MAGIC_V4: &[u8; 8] = b"SSCPLY04";
 const PLAYER_MAGIC_V5: &[u8; 8] = b"SSCPLY05";
 const PLAYER_MAGIC_V6: &[u8; 8] = b"SSCPLY06";
+const PLAYER_MAGIC_V7: &[u8; 8] = b"SSCPLY07";
 const ITEMS_MAGIC: &[u8; 8] = b"SSCITM01";
 const ITEMS_MAGIC_V2: &[u8; 8] = b"SSCITM02";
 const MOBS_MAGIC: &[u8; 8] = b"SSCMOB01";
@@ -73,6 +74,9 @@ pub struct PlayerSave {
     pub exhaustion: f32,
     /// Bed/respawn point; `None` means use the world spawn.
     pub respawn: Option<[f32; 3]>,
+    /// Helmet, chestplate, leggings, boots.
+    pub armor: Vec<crate::survival::Slot>,
+    pub armor_durability: Vec<u16>,
 }
 
 impl Default for PlayerSave {
@@ -89,6 +93,8 @@ impl Default for PlayerSave {
             hunger_effect_ticks: 0,
             exhaustion: 0.0,
             respawn: None,
+            armor: vec![None; crate::survival::ARMOR_SIZE],
+            armor_durability: vec![0; crate::survival::ARMOR_SIZE],
         }
     }
 }
@@ -231,12 +237,14 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
     let v4_len = v3_len + crate::survival::INVENTORY_SIZE * 2;
     let v5_len = v4_len + 4;
     let v6_len = v5_len + 13;
+    let v7_len = v6_len + crate::survival::ARMOR_SIZE * 3 + crate::survival::ARMOR_SIZE * 2;
     if file_len != v1_len as u64
         && file_len != v2_len as u64
         && file_len != v3_len as u64
         && file_len != v4_len as u64
         && file_len != v5_len as u64
         && file_len != v6_len as u64
+        && file_len != v7_len as u64
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -257,7 +265,8 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
     let v4 = &bytes[..8] == PLAYER_MAGIC_V4;
     let v5 = &bytes[..8] == PLAYER_MAGIC_V5;
     let v6 = &bytes[..8] == PLAYER_MAGIC_V6;
-    if (!v2 && !v3 && !v4 && !v5 && !v6 && &bytes[..8] != PLAYER_MAGIC)
+    let v7 = &bytes[..8] == PLAYER_MAGIC_V7;
+    if (!v2 && !v3 && !v4 && !v5 && !v6 && !v7 && &bytes[..8] != PLAYER_MAGIC)
         || &bytes[8..24] != player_id
     {
         return Err(io::Error::new(
@@ -270,7 +279,8 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
         || (v4 && expected_len != v4_len)
         || (v5 && expected_len != v5_len)
         || (v6 && expected_len != v6_len)
-        || (!v2 && !v3 && !v4 && !v5 && !v6 && expected_len != v1_len)
+        || (v7 && expected_len != v7_len)
+        || (!v2 && !v3 && !v4 && !v5 && !v6 && !v7 && expected_len != v1_len)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -279,7 +289,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
     }
     let mut data = PlayerSave::default();
     data.inventory.clear();
-    let inventory_offset = if v2 || v3 || v4 || v5 || v6 {
+    let inventory_offset = if v2 || v3 || v4 || v5 || v6 || v7 {
         let position = [
             f32::from_le_bytes(bytes[24..28].try_into().expect("fixed save slice")),
             f32::from_le_bytes(bytes[28..32].try_into().expect("fixed save slice")),
@@ -310,7 +320,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
         data.hunger = hunger;
         data.air = air;
         data.selected_slot = selected_slot;
-        if v3 || v4 || v5 || v6 {
+        if v3 || v4 || v5 || v6 || v7 {
             data.hunger_effect_ticks =
                 u16::from_le_bytes(bytes[44..46].try_into().expect("fixed save slice"));
             data.exhaustion =
@@ -353,7 +363,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
         }
         data.inventory.push(Some((item, count)));
     }
-    if v4 || v5 || v6 {
+    if v4 || v5 || v6 || v7 {
         let wear_end = inventory_end + crate::survival::INVENTORY_SIZE * 2;
         for (i, slot) in bytes[inventory_end..wear_end].chunks_exact(2).enumerate() {
             let wear = u16::from_le_bytes([slot[0], slot[1]]);
@@ -372,7 +382,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
             *wear = slot.map_or(0, |(item, _)| crate::survival::max_durability(item));
         }
     }
-    if v5 || v6 {
+    if v5 || v6 || v7 {
         data.saturation =
             f32::from_le_bytes(bytes[v4_len..v5_len].try_into().expect("fixed save slice"));
         if !data.saturation.is_finite() || !(0.0..=data.hunger as f32).contains(&data.saturation) {
@@ -386,7 +396,7 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
         // than granting a new buffer on migration.
         data.saturation = 0.0;
     }
-    if v6 {
+    if v6 || v7 {
         let flag = bytes[v5_len];
         if flag > 1 {
             return Err(io::Error::new(
@@ -421,6 +431,46 @@ pub fn load_player(path: &Path, player_id: &[u8; 16]) -> io::Result<Option<Playe
             data.respawn = Some(respawn);
         }
     }
+    if v7 {
+        let armor_offset = v6_len;
+        for (index, slot) in bytes[armor_offset..armor_offset + crate::survival::ARMOR_SIZE * 3]
+            .chunks_exact(3)
+            .enumerate()
+        {
+            let item = u16::from_le_bytes([slot[0], slot[1]]);
+            let count = slot[2];
+            if item == 0 && count == 0 {
+                data.armor[index] = None;
+                continue;
+            }
+            if count != 1
+                || !ssc_world::valid_item_id(item)
+                || ssc_world::items::armor_slot(item) != Some(index)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid armor slot",
+                ));
+            }
+            data.armor[index] = Some((item, count));
+        }
+        let wear_offset = armor_offset + crate::survival::ARMOR_SIZE * 3;
+        for (index, slot) in bytes[wear_offset..wear_offset + crate::survival::ARMOR_SIZE * 2]
+            .chunks_exact(2)
+            .enumerate()
+        {
+            let wear = u16::from_le_bytes([slot[0], slot[1]]);
+            let max =
+                data.armor[index].map_or(0, |(item, _)| crate::survival::max_durability(item));
+            if (max == 0 && wear != 0) || (max > 0 && (wear == 0 || wear > max)) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid armor durability",
+                ));
+            }
+            data.armor_durability[index] = wear;
+        }
+    }
     Ok(Some(data))
 }
 
@@ -453,6 +503,31 @@ pub fn save_player(path: &Path, player_id: &[u8; 16], data: &PlayerSave) -> io::
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "invalid player tool durability",
+        ));
+    }
+    if data.armor.len() != crate::survival::ARMOR_SIZE
+        || data.armor_durability.len() != crate::survival::ARMOR_SIZE
+        || data
+            .armor
+            .iter()
+            .enumerate()
+            .zip(&data.armor_durability)
+            .any(|((index, slot), &wear)| match slot {
+                Some((item, count)) => {
+                    *count != 1
+                        || !ssc_world::valid_item_id(*item)
+                        || ssc_world::items::armor_slot(*item) != Some(index)
+                        || {
+                            let max = crate::survival::max_durability(*item);
+                            max == 0 || wear > max
+                        }
+                }
+                None => wear != 0,
+            })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid armor equipment",
         ));
     }
     if data.inventory.iter().flatten().any(|(item, count)| {
@@ -509,7 +584,7 @@ pub fn save_player(path: &Path, player_id: &[u8; 16], data: &PlayerSave) -> io::
     }
     let temp_path = path.with_extension("tmp");
     let mut file = File::create(&temp_path)?;
-    file.write_all(PLAYER_MAGIC_V6)?;
+    file.write_all(PLAYER_MAGIC_V7)?;
     file.write_all(player_id)?;
     for coordinate in position {
         file.write_all(&coordinate.to_le_bytes())?;
@@ -546,6 +621,20 @@ pub fn save_player(path: &Path, player_id: &[u8; 16], data: &PlayerSave) -> io::
             file.write_all(&[0])?;
             file.write_all(&[0; 12])?;
         }
+    }
+    for slot in &data.armor {
+        if let Some((item, count)) = slot {
+            file.write_all(&item.to_le_bytes())?;
+            file.write_all(&[*count])?;
+        } else {
+            file.write_all(&[0, 0, 0])?;
+        }
+    }
+    for (slot, &wear) in data.armor.iter().zip(&data.armor_durability) {
+        let value = slot.map_or(0, |(item, _)| {
+            crate::survival::effective_durability(item, wear)
+        });
+        file.write_all(&value.to_le_bytes())?;
     }
     file.sync_all()?;
     fs::rename(temp_path, path)?;
@@ -1169,6 +1258,13 @@ mod tests {
             hunger_effect_ticks: 321,
             exhaustion: 2.25,
             respawn: Some([1.5, 64.0, 2.5]),
+            armor: vec![
+                Some((ssc_world::IRON_HELMET, 1)),
+                None,
+                None,
+                Some((ssc_world::IRON_BOOTS, 1)),
+            ],
+            armor_durability: vec![100, 0, 0, 150],
         };
 
         save_player(&path, &player_id, &data).unwrap();

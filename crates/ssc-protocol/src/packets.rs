@@ -386,6 +386,10 @@ pub enum ServerPacket {
         cook_ticks: u16,
     },
     ContainerClosed,
+    /// Four equipment slots: helmet, chestplate, leggings, boots.
+    Armor {
+        slots: [(u16, u8, u16); 4],
+    },
 }
 
 impl ServerPacket {
@@ -578,6 +582,14 @@ impl ServerPacket {
                 w.put_u16(*cook_ticks);
             }
             ServerPacket::ContainerClosed => w.put_u8(21),
+            ServerPacket::Armor { slots } => {
+                w.put_u8(22);
+                for (item, count, wear) in slots {
+                    w.put_u16(*item);
+                    w.put_u8(*count);
+                    w.put_u16(*wear);
+                }
+            }
         }
         w.into_bytes()
     }
@@ -744,6 +756,18 @@ impl ServerPacket {
                 }
             }
             21 => ServerPacket::ContainerClosed,
+            22 => {
+                let mut slots = [(0u16, 0u8, 0u16); 4];
+                for slot in &mut slots {
+                    *slot = (r.get_u16()?, r.get_u8()?, r.get_u16()?);
+                }
+                for (item, count, wear) in slots {
+                    if item == 0 && (count != 0 || wear != 0) {
+                        return Err(crate::codec::DecodeError("invalid empty armor slot".into()));
+                    }
+                }
+                ServerPacket::Armor { slots }
+            }
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad server packet tag {tag}"
@@ -776,6 +800,17 @@ mod tests {
     }
 
     #[test]
+    fn armor_packets_round_trip_and_reject_empty_slots_with_wear() {
+        let packet = ServerPacket::Armor {
+            slots: [(135, 1, 165), (0, 0, 0), (137, 1, 225), (0, 0, 0)],
+        };
+        assert_eq!(ServerPacket::decode(&packet.encode()).unwrap(), packet);
+        let invalid = ServerPacket::Armor {
+            slots: [(0, 0, 5), (0, 0, 0), (0, 0, 0), (0, 0, 0)],
+        };
+        assert!(ServerPacket::decode(&invalid.encode()).is_err());
+    }
+
     fn furnace_packets_round_trip_and_reject_invalid_timers() {
         for packet in [
             ClientPacket::FurnaceSwap {
