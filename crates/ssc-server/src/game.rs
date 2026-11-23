@@ -35,6 +35,10 @@ const MIN_MOB_SPAWN_DISTANCE: f32 = 24.0;
 /// Fixed simulation-distance-four spawning/despawning for now.
 const MAX_MOB_DISTANCE: f32 = 44.0;
 const ITEM_LIFETIME_TICKS: u32 = 6_000;
+const ARROW_DAMAGE: f32 = 4.0;
+const ARROW_SPEED: f32 = 30.0;
+const ARROW_LIFETIME_TICKS: u8 = 60;
+const BOW_COOLDOWN_TICKS: u8 = 10;
 
 /// Server tick rate (matches Minecraft's 20 TPS).
 pub const TICK_RATE: f32 = 20.0;
@@ -134,6 +138,8 @@ struct Player {
     on_ground: bool,
     in_water: bool,
     joined: bool,
+    /// Ticks until the player can fire the bow again.
+    bow_cooldown: u8,
 }
 
 /// A client connection: wire + player + its own streaming state.
@@ -194,6 +200,14 @@ struct ItemEntity {
     pickup_delay: u8,
 }
 
+/// A server-owned arrow projectile. Not persisted across restarts.
+struct ArrowEntity {
+    owner: EntityId,
+    pos: Vec3,
+    vel: Vec3,
+    age: u8,
+}
+
 impl Session {
     fn new(wire: Box<dyn Wire>, mode: GameMode) -> Self {
         // Creative starts with the default hotbar blocks (64× each);
@@ -224,6 +238,7 @@ impl Session {
                 on_ground: false,
                 in_water: false,
                 joined: false,
+                bow_cooldown: 0,
             },
             inventory,
             durability: vec![0; crate::survival::INVENTORY_SIZE],
@@ -268,6 +283,7 @@ pub struct Server {
     /// Mobs (ids from `FIRST_MOB_ID`).
     mobs: HashMap<EntityId, crate::mobs::Mob>,
     items: HashMap<EntityId, ItemEntity>,
+    arrows: HashMap<EntityId, ArrowEntity>,
     next_id: EntityId,
     next_mob_id: EntityId,
     next_item_id: EntityId,
@@ -419,6 +435,7 @@ impl Server {
             sessions: HashMap::new(),
             mobs: HashMap::new(),
             items: HashMap::new(),
+            arrows: HashMap::new(),
             next_id: 1,
             next_mob_id: FIRST_MOB_ID,
             next_item_id: FIRST_ITEM_ID,
@@ -823,6 +840,7 @@ impl Server {
             if !p.joined {
                 continue;
             }
+            p.bow_cooldown = p.bow_cooldown.saturating_sub(1);
             // Dead players lie still until respawn (auto, ~2 s).
             if session.survival.dead {
                 if session.survival.should_respawn() {
@@ -1165,6 +1183,8 @@ impl Server {
             }
         }
 
+        self.tick_arrows(dt);
+
         if self.cfg.game_mode == GameMode::Survival {
             let dead_players: Vec<(EntityId, Vec3, Vec<(ssc_world::ItemId, u8, u16)>)> = self
                 .sessions
@@ -1373,6 +1393,7 @@ impl Server {
             if !self.sessions.contains_key(&id)
                 && !self.mobs.contains_key(&id)
                 && !self.items.contains_key(&id)
+                && !self.arrows.contains_key(&id)
             {
                 return Some(id);
             }
@@ -1391,6 +1412,7 @@ impl Server {
             if !self.sessions.contains_key(&id)
                 && !self.mobs.contains_key(&id)
                 && !self.items.contains_key(&id)
+                && !self.arrows.contains_key(&id)
             {
                 return Some(id);
             }
@@ -2113,7 +2135,11 @@ impl Server {
                     continue;
                 }
                 let kind = if want_zombie {
-                    crate::mobs::MobKind::Zombie
+                    if hash_tick(self.tick, ax + 5, az + 13) % 5 == 0 {
+                        crate::mobs::MobKind::Spider
+                    } else {
+                        crate::mobs::MobKind::Zombie
+                    }
                 } else {
                     match hash_tick(self.tick, ax + 3, az + 11) % 6 {
                         0 => crate::mobs::MobKind::Sheep,
@@ -2531,6 +2557,21 @@ fn mob_state(id: EntityId, m: &crate::mobs::Mob) -> ServerPacket {
         yaw: m.yaw,
         pitch: 0.0,
         kind: m.kind.as_u8(),
+    }
+}
+
+fn arrow_state(id: EntityId, arrow: &ArrowEntity) -> ServerPacket {
+    ServerPacket::EntityState {
+        id,
+        x: arrow.pos.x,
+        y: arrow.pos.y,
+        z: arrow.pos.z,
+        yaw: arrow.vel.x.atan2(arrow.vel.z),
+        pitch: arrow
+            .vel
+            .y
+            .atan2((arrow.vel.x * arrow.vel.x + arrow.vel.z * arrow.vel.z).sqrt()),
+        kind: 7,
     }
 }
 
@@ -3634,6 +3675,164 @@ impl Server {
         }
     }
 
+    fn fire_bow(&mut self, id: EntityId) {
+        let (arrow_slot, pos, dir) = {
+            let Some(session) = self.sessions.get(&id) else {
+                return;
+            };
+            if !session.player.joined || session.survival.dead || session.player.bow_cooldown > 0 {
+                return;
+            }
+            let arrow_slot = session.inventory.iter().position(|slot| {
+                matches!(slot, Some((item, count)) if *item == ssc_world::ARROW && *count > 0)
+            });
+            if self.cfg.game_mode == GameMode::Survival && arrow_slot.is_none() {
+                return;
+            }
+            let dir = look_dir(session.player.yaw, session.player.pitch);
+            let pos = session.player.pos + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0) + dir * 0.4;
+            (arrow_slot, pos, dir)
+        };
+        let Some(arrow_id) = self.allocate_item_id() else {
+            return;
+        };
+        if self.cfg.game_mode == GameMode::Survival {
+            if let Some(slot) = arrow_slot {
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    if let Some((item, count)) = session.inventory[slot] {
+                        session.inventory[slot] = if count <= 1 {
+                            None
+                        } else {
+                            Some((item, count - 1))
+                        };
+                        session.inv_dirty = true;
+                    }
+                }
+            }
+        }
+        if let Some(session) = self.sessions.get_mut(&id) {
+            session.player.bow_cooldown = BOW_COOLDOWN_TICKS;
+            if self.cfg.game_mode == GameMode::Survival {
+                damage_held_tool(session, 1);
+            }
+        }
+        self.arrows.insert(
+            arrow_id,
+            ArrowEntity {
+                owner: id,
+                pos,
+                vel: dir * ARROW_SPEED,
+                age: 0,
+            },
+        );
+        let packet = arrow_state(arrow_id, &self.arrows[&arrow_id]);
+        let _ = self.broadcast(&packet);
+    }
+
+    /// Advance arrows, collide with blocks and entities, and resolve hits.
+    fn tick_arrows(&mut self, dt: f32) {
+        let mut removal = Vec::new();
+        let mut hits = Vec::new();
+        {
+            let world = &self.world;
+            let mobs = &self.mobs;
+            let sessions = &self.sessions;
+            for (id, arrow) in self.arrows.iter_mut() {
+                arrow.age = arrow.age.saturating_add(1);
+                if arrow.age > ARROW_LIFETIME_TICKS || arrow.pos.y < ssc_world::MIN_Y as f32 {
+                    removal.push(*id);
+                    continue;
+                }
+                arrow.vel.y -= ssc_math::GRAVITY * 0.35 * dt;
+                let step = arrow.vel * dt;
+                let len = step.length();
+                if len < 1e-5 {
+                    continue;
+                }
+                let dir = step / len;
+                if crate::raycast::raycast_solids(world, arrow.pos, dir, len).is_some() {
+                    removal.push(*id);
+                    continue;
+                }
+                let mut best: Option<(bool, EntityId, f32)> = None;
+                for (mid, mob) in mobs {
+                    if mob.dead {
+                        continue;
+                    }
+                    let (hw, height) = mob.kind.dims();
+                    if let Some(t) = ray_aabb(arrow.pos, dir, &entity_aabb(mob.pos, hw, height)) {
+                        if (0.0..=len).contains(&t) && best.map(|(_, _, bt)| t < bt).unwrap_or(true)
+                        {
+                            best = Some((true, *mid, t));
+                        }
+                    }
+                }
+                for (pid, session) in sessions {
+                    if *pid == arrow.owner || !session.player.joined || session.survival.dead {
+                        continue;
+                    }
+                    if let Some(t) = ray_aabb(arrow.pos, dir, &player_aabb(session.player.pos)) {
+                        if (0.0..=len).contains(&t) && best.map(|(_, _, bt)| t < bt).unwrap_or(true)
+                        {
+                            best = Some((false, *pid, t));
+                        }
+                    }
+                }
+                if let Some((is_mob, target, t)) = best {
+                    hits.push((arrow.owner, arrow.pos, is_mob, target, arrow.pos + dir * t));
+                    removal.push(*id);
+                    continue;
+                }
+                arrow.pos += step;
+            }
+        }
+        let states: Vec<_> = self
+            .arrows
+            .iter()
+            .filter(|(id, _)| !removal.contains(id))
+            .map(|(id, arrow)| arrow_state(*id, arrow))
+            .collect();
+        for packet in states {
+            let _ = self.broadcast(&packet);
+        }
+        for (owner, from, is_mob, target, at) in hits {
+            if is_mob {
+                let mut killed = None;
+                if let Some(mob) = self.mobs.get_mut(&target) {
+                    if mob.hurt(ARROW_DAMAGE, from) {
+                        killed = Some(mob.kind);
+                    }
+                }
+                if let Some(kind) = killed {
+                    let xp = crate::mobs::xp_for(
+                        kind,
+                        hash_tick(self.tick, target as i32, at.x.floor() as i32),
+                    );
+                    self.award_xp(owner, xp);
+                }
+            } else if self.cfg.game_mode == GameMode::Survival {
+                if let Some(session) = self.sessions.get_mut(&target) {
+                    let mut fx = crate::survival::TickEffects::default();
+                    let points = crate::survival::armor_points(&session.armor);
+                    session.survival.apply_combat_damage(
+                        ARROW_DAMAGE * (1.0 - crate::survival::armor_reduction(points)),
+                        &mut fx,
+                    );
+                    if fx.hurt {
+                        damage_armor(session, 1);
+                        session.status_dirty = true;
+                        knock_player_back(&mut session.player, from);
+                    }
+                }
+            }
+        }
+        for id in removal {
+            if self.arrows.remove(&id).is_some() {
+                let _ = self.broadcast(&ServerPacket::EntityRemove { id });
+            }
+        }
+    }
+
     /// Award experience directly (no orb entities yet).
     fn award_xp(&mut self, id: EntityId, points: u32) {
         if points == 0 || self.cfg.game_mode != GameMode::Survival {
@@ -3982,6 +4181,10 @@ impl Server {
         }
         if ssc_world::items::is_hoe(item) {
             self.use_hoe(id);
+            return;
+        }
+        if item == ssc_world::BOW {
+            self.fire_bow(id);
             return;
         }
         if item == ssc_world::SHEARS {
@@ -4757,21 +4960,70 @@ mod tests {
             assert!(rig.server.mobs.is_empty(), "desert sand cannot host pigs");
         }
         rig.server.time_of_day = 0.8;
-        let mut found_zombie = false;
+        let mut found_hostile = false;
         for tick in 1..=64 {
             rig.server.tick = tick;
             rig.server.spawn_mobs();
             assert!(
                 rig.server.mobs.len() <= 1,
-                "zombies remain singleton spawns"
+                "hostile mobs remain singleton spawns"
             );
             if let Some(mob) = rig.server.mobs.values().next() {
-                assert_eq!(mob.kind, crate::mobs::MobKind::Zombie);
-                found_zombie = true;
+                assert!(matches!(
+                    mob.kind,
+                    crate::mobs::MobKind::Zombie | crate::mobs::MobKind::Spider
+                ));
+                found_hostile = true;
                 break;
             }
         }
-        assert!(found_zombie, "sand remains valid ground for night zombies");
+        assert!(
+            found_hostile,
+            "sand remains valid ground for night hostiles"
+        );
+    }
+
+    #[test]
+    fn spiders_spawn_at_night_drop_string_and_chase() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        for x in -48..48 {
+            for z in -48..48 {
+                rig.server.world.set_block(x, 54, z, ssc_world::STONE);
+            }
+        }
+        rig.server.time_of_day = 0.8;
+        let mut found = None;
+        for tick in 1..=512 {
+            rig.server.mobs.clear();
+            rig.server.tick = tick;
+            rig.server.spawn_mobs();
+            if let Some(mob) = rig
+                .server
+                .mobs
+                .values()
+                .find(|mob| mob.kind == crate::mobs::MobKind::Spider)
+            {
+                found = Some(mob.pos);
+                break;
+            }
+        }
+        let pos = found.expect("spiders should join night spawns");
+        assert_eq!(crate::mobs::MobKind::Spider.attack_damage(), 2.0);
+        assert_eq!(crate::mobs::MobKind::Spider.max_health(), 16.0);
+
+        rig.server.mobs.clear();
+        let mut spider = crate::mobs::Mob::new(crate::mobs::MobKind::Spider, pos);
+        spider.health = 1.0;
+        assert!(spider.hurt(5.0, Vec3::new(8.5, 55.0, 8.5)));
+        rig.server.mobs.insert(FIRST_MOB_ID, spider);
+        rig.server.items.clear();
+        rig.server.tick();
+        assert!(!rig.server.mobs.contains_key(&FIRST_MOB_ID));
+        assert!(rig
+            .server
+            .items
+            .values()
+            .all(|item| item.item == ssc_world::STRING));
     }
 
     #[test]
@@ -5070,6 +5322,85 @@ mod tests {
             .items
             .values()
             .all(|item| item.item == ssc_world::RAW_BEEF || item.item == ssc_world::LEATHER));
+    }
+
+    #[test]
+    fn bows_fire_arrows_with_cooldown_and_damage_mobs() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((ssc_world::BOW, 1));
+            session.durability[0] = 384;
+            session.inventory[1] = Some((ssc_world::ARROW, 2));
+        }
+        rig.server.mobs.insert(
+            FIRST_MOB_ID,
+            crate::mobs::Mob::new(crate::mobs::MobKind::Zombie, Vec3::new(11.5, 55.02, 8.5)),
+        );
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.arrows.len(), 1);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[1],
+            Some((ssc_world::ARROW, 1))
+        );
+        assert_eq!(rig.server.sessions[&1].durability[0], 383);
+        assert!(rig.server.sessions[&1].player.bow_cooldown > 0);
+        // The cooldown prevents an immediate second shot.
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.arrows.len(), 1);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[1],
+            Some((ssc_world::ARROW, 1))
+        );
+        for _ in 0..6 {
+            rig.server.tick();
+        }
+        assert!(rig.server.arrows.is_empty());
+        assert_eq!(rig.server.mobs[&FIRST_MOB_ID].health, 16.0);
+        assert!(rig
+            .drain(0)
+            .iter()
+            .any(|packet| matches!(packet, ServerPacket::EntityState { kind: 7, .. })));
+    }
+
+    #[test]
+    fn arrow_kills_award_experience_and_missing_ammo_does_not_fire() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        {
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((ssc_world::BOW, 1));
+            session.inventory[1] = Some((ssc_world::ARROW, 1));
+        }
+        let mut zombie =
+            crate::mobs::Mob::new(crate::mobs::MobKind::Zombie, Vec3::new(11.5, 55.02, 8.5));
+        zombie.health = 1.0;
+        rig.server.mobs.insert(FIRST_MOB_ID, zombie);
+        rig.server.handle_use(1);
+        for _ in 0..5 {
+            rig.server.tick();
+        }
+        assert_eq!(rig.server.sessions[&1].xp_level, 0);
+        assert_eq!(rig.server.sessions[&1].xp_progress, 5);
+        assert_eq!(rig.server.sessions[&1].inventory[1], None);
+
+        rig.server.sessions.get_mut(&1).unwrap().inventory[1] = None;
+        rig.server.sessions.get_mut(&1).unwrap().player.bow_cooldown = 0;
+        let before = rig.server.arrows.len();
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.arrows.len(), before, "no arrows means no shot");
+
+        let mut creative = Rig::new_mode(1, 0.0, GameMode::Creative);
+        creative.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::BOW, 1));
+        creative.server.handle_use(1);
+        assert_eq!(
+            creative.server.arrows.len(),
+            1,
+            "creative fires without arrows"
+        );
+        assert_eq!(
+            creative.server.sessions[&1].inventory[0],
+            Some((ssc_world::BOW, 1))
+        );
     }
 
     #[test]

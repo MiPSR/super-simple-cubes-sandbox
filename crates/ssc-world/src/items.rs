@@ -71,6 +71,9 @@ pub const LEATHER_HELMET: ItemId = 144;
 pub const LEATHER_CHESTPLATE: ItemId = 145;
 pub const LEATHER_LEGGINGS: ItemId = 146;
 pub const LEATHER_BOOTS: ItemId = 147;
+pub const STRING: ItemId = 148;
+pub const BOW: ItemId = 149;
+pub const ARROW: ItemId = 150;
 
 /// Armor slot order: helmet, chestplate, leggings, boots.
 pub fn armor_slot(item: ItemId) -> Option<usize> {
@@ -201,6 +204,24 @@ pub fn item_info(id: ItemId) -> ItemInfo {
         SHEARS => ItemInfo {
             name: "shears",
             max_stack: 1,
+            places: None,
+            food: None,
+        },
+        STRING => ItemInfo {
+            name: "string",
+            max_stack: 64,
+            places: None,
+            food: None,
+        },
+        BOW => ItemInfo {
+            name: "bow",
+            max_stack: 1,
+            places: None,
+            food: None,
+        },
+        ARROW => ItemInfo {
+            name: "arrow",
+            max_stack: 64,
             places: None,
             food: None,
         },
@@ -468,6 +489,9 @@ pub fn valid_item_id(id: ItemId) -> bool {
             | LEATHER_CHESTPLATE
             | LEATHER_LEGGINGS
             | LEATHER_BOOTS
+            | STRING
+            | BOW
+            | ARROW
     );
     id == EMPTY_ITEM || block_items || free_items
 }

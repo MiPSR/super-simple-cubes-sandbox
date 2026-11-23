@@ -55,6 +55,7 @@ pub fn max_durability(item: ItemId) -> u16 {
         ssc_world::LEATHER_LEGGINGS => 75,
         ssc_world::LEATHER_BOOTS => 65,
         ssc_world::SHEARS => 238,
+        ssc_world::BOW => 384,
         _ => 0,
     }
 }
@@ -669,6 +670,14 @@ pub fn craft(inv: &mut [Slot], recipe: u8) -> bool {
             &[(ssc_world::LEATHER, 4)][..],
             (ssc_world::LEATHER_BOOTS, 1),
         ),
+        34 => (
+            &[(ssc_world::STICK, 3), (ssc_world::STRING, 3)][..],
+            (ssc_world::BOW, 1),
+        ),
+        35 => (
+            &[(ssc_world::FLINT, 1), (ssc_world::STICK, 1)][..],
+            (ssc_world::ARROW, 4),
+        ),
         _ => return false,
     };
     let mut next = inv.to_vec();
@@ -824,6 +833,23 @@ mod tests {
         inv[0] = Some((ssc_world::OAK_PLANKS, 6));
         assert!(craft(&mut inv, 29));
         assert_eq!(inv[0], Some((ssc_world::DOOR, 3)));
+    }
+
+    #[test]
+    fn bows_and_arrows_craft_with_bedrock_durability() {
+        let mut inv = vec![None; INVENTORY_SIZE];
+        inv[0] = Some((ssc_world::STICK, 3));
+        inv[1] = Some((ssc_world::STRING, 3));
+        assert!(craft(&mut inv, 34));
+        assert_eq!(inv[0], Some((ssc_world::BOW, 1)));
+        assert_eq!(inv[1], None);
+        assert_eq!(max_durability(ssc_world::BOW), 384);
+        let mut inv = vec![None; INVENTORY_SIZE];
+        inv[0] = Some((ssc_world::FLINT, 1));
+        inv[1] = Some((ssc_world::STICK, 1));
+        assert!(craft(&mut inv, 35));
+        assert_eq!(inv[0], Some((ssc_world::ARROW, 4)));
+        assert_eq!(inv[1], None);
     }
 
     #[test]

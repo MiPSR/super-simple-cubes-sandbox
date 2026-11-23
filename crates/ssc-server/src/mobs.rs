@@ -19,6 +19,7 @@ pub enum MobKind {
     Zombie,
     Sheep,
     Cow,
+    Spider,
 }
 
 impl MobKind {
@@ -29,6 +30,7 @@ impl MobKind {
             MobKind::Zombie => 2,
             MobKind::Sheep => 4,
             MobKind::Cow => 5,
+            MobKind::Spider => 6,
         }
     }
 
@@ -38,6 +40,7 @@ impl MobKind {
             2 => Some(MobKind::Zombie),
             4 => Some(MobKind::Sheep),
             5 => Some(MobKind::Cow),
+            6 => Some(MobKind::Spider),
             _ => None,
         }
     }
@@ -48,6 +51,7 @@ impl MobKind {
             MobKind::Zombie => 20.0,
             MobKind::Sheep => 8.0,
             MobKind::Cow => 10.0,
+            MobKind::Spider => 16.0,
         }
     }
 
@@ -56,13 +60,15 @@ impl MobKind {
         match self {
             MobKind::Pig | MobKind::Sheep | MobKind::Cow => 1.2,
             MobKind::Zombie => 2.3,
+            MobKind::Spider => 2.1,
         }
     }
 
-    /// Attack damage (zombies only; other current mobs are passive).
+    /// Attack damage (hostile mobs only).
     pub fn attack_damage(self) -> f32 {
         match self {
             MobKind::Zombie => 3.0,
+            MobKind::Spider => 2.0,
             MobKind::Pig | MobKind::Sheep | MobKind::Cow => 0.0,
         }
     }
@@ -74,7 +80,12 @@ impl MobKind {
             MobKind::Zombie => (0.3, 1.9),
             MobKind::Sheep => (0.45, 1.3),
             MobKind::Cow => (0.45, 1.4),
+            MobKind::Spider => (0.7, 0.9),
         }
+    }
+
+    pub fn is_hostile(self) -> bool {
+        matches!(self, MobKind::Zombie | MobKind::Spider)
     }
 
     pub fn is_passive(self) -> bool {
@@ -106,13 +117,20 @@ pub fn drops_for(kind: MobKind, roll: u64) -> Vec<(ssc_world::ItemId, u8)> {
                 .into_iter()
                 .collect()
         }
+        MobKind::Spider => {
+            let count = (roll % 3) as u8;
+            (count > 0)
+                .then_some((ssc_world::STRING, count))
+                .into_iter()
+                .collect()
+        }
     }
 }
 
 /// Experience awarded to the player who kills this mob.
 pub fn xp_for(kind: MobKind, roll: u64) -> u32 {
     match kind {
-        MobKind::Zombie => 5,
+        MobKind::Zombie | MobKind::Spider => 5,
         MobKind::Pig | MobKind::Sheep | MobKind::Cow => 1 + (roll % 3) as u32,
     }
 }
@@ -206,7 +224,7 @@ impl Mob {
         let (hw, height) = self.kind.dims();
 
         // --- AI ---------------------------------------------------------
-        if self.kind == MobKind::Zombie {
+        if self.kind.is_hostile() {
             // Chase the nearest player within 16 blocks.
             let nearest = players
                 .iter()
@@ -550,6 +568,10 @@ mod tests {
                 .all(|(item, count)| *item == ssc_world::LEATHER && *count > 0));
             if let Some((item, count)) = drops_for(MobKind::Zombie, roll).first().copied() {
                 assert_eq!(item, ssc_world::ROTTEN_FLESH);
+                assert!((1..=2).contains(&count));
+            }
+            if let Some((item, count)) = drops_for(MobKind::Spider, roll).first().copied() {
+                assert_eq!(item, ssc_world::STRING);
                 assert!((1..=2).contains(&count));
             }
         }

@@ -524,6 +524,18 @@ pub fn build_avatar(kind: u8) -> (Vec<Vertex>, Vec<u32>) {
             max: [0.5, 1.0, 0.5],
             tiles: [ssc_world::TILE_COBBLESTONE; 6],
         }],
+        // arrow: tiny elongated box
+        7 => vec![BoxDef {
+            min: [-0.04, -0.15, -0.04],
+            max: [0.04, 0.45, 0.04],
+            tiles: [ssc_world::TILE_PLANKS; 6],
+        }],
+        // spider: low dark body box
+        6 => vec![BoxDef {
+            min: [-0.7, 0.0, -0.45],
+            max: [0.7, 0.8, 0.45],
+            tiles: [ssc_world::TILE_DEEPSLATE; 6],
+        }],
         // cow: brown body with a light head placeholder
         5 => vec![
             BoxDef {

@@ -102,6 +102,9 @@ runnable through Nix.
 - `Ctrl+5` crafts a chest from eight planks. Place it and right-click to
   open 27 shared storage slots; drag items between the chest grid and your
   inventory. Tools keep their wear, and breaking a chest drops its contents.
+- `Ctrl+Shift+5` crafts a bow from sticks and string; `Ctrl+Shift+6` crafts
+  four arrows from flint and a stick. Hold the bow and right-click to fire.
+  Spiders at night drop string for the bow.
 - Killing mobs and collecting smelted furnace output grants experience.
   Your level and progress appear on the HUD; dying resets experience.
 - `Ctrl+1` through `Ctrl+4` craft an iron helmet, chestplate, leggings, and

@@ -298,7 +298,7 @@ impl App {
             pos_prev: Vec3::new(8.5, 128.0, 8.5),
             pos_cur: Vec3::new(8.5, 128.0, 8.5),
             state_time: now,
-            avatar_cache: [0u8, 1u8, 2u8, 3u8, 4u8, 5u8]
+            avatar_cache: [0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8]
                 .iter()
                 .map(|&k| (k, mesh::build_avatar(k)))
                 .collect(),
@@ -600,7 +600,7 @@ impl App {
                     if self.picker_open && self.mode == 0 && (1..=9).contains(&n) {
                         let recipe = if frame.input().key(Key::Ctrl)
                             && frame.input().key(Key::Shift)
-                            && (1..=4).contains(&n)
+                            && (1..=6).contains(&n)
                         {
                             29 + n
                         } else if frame.input().key(Key::Ctrl) && (1..=8).contains(&n) {
@@ -1102,7 +1102,7 @@ impl App {
                 [1.0, 0.85, 0.3, 1.0],
             );
             frame.hud_text(
-                "5/6:axes 7/8:shovels 9:repair (Shift+1/2/4:swords, 6/8/9:hoes, B:bread, Shift+B:bed, Ctrl+1-8:iron gear/chest/ladder/door, Ctrl+Shift+1-4:leather armor)"
+                "5/6:axes 7/8:shovels 9:repair (Shift+1/2/4:swords, 6/8/9:hoes, B:bread, Shift+B:bed, Ctrl+1-8:iron gear/chest/ladder/door, Ctrl+Shift+1-6:leather gear/bow/arrows)"
                     .to_string(),
                 x0 + 15.0,
                 y0 + 42.0,
@@ -1266,6 +1266,10 @@ impl App {
                 (0.45, 1.3)
             } else if e.kind == 5 {
                 (0.45, 1.4)
+            } else if e.kind == 6 {
+                (0.7, 0.9)
+            } else if e.kind == 7 {
+                (0.08, 0.3)
             } else {
                 (0.45, 1.9)
             };

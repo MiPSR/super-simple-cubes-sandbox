@@ -872,6 +872,7 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
             2 => 20.0,
             4 => 8.0,
             5 => 10.0,
+            6 => 16.0,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -943,6 +944,7 @@ pub fn save_mobs(path: &Path, mobs: &[SavedMob]) -> io::Result<()> {
             2 => 20.0,
             4 => 8.0,
             5 => 10.0,
+            6 => 16.0,
             _ => return true,
         };
         mob.pos.iter().chain(mob.vel.iter()).any(|v| !v.is_finite())
