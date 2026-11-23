@@ -160,6 +160,7 @@ struct Session {
     eating: Option<EatingState>,
     last_eating_sync: u8,
     open_furnace: Option<(i32, i32, i32)>,
+    open_chest: Option<(i32, i32, i32)>,
     /// Whether this death already emitted inventory drops.
     inventory_dropped_on_death: bool,
     /// Respawn point (set at join).
@@ -235,6 +236,7 @@ impl Session {
             eating: None,
             last_eating_sync: 0,
             open_furnace: None,
+            open_chest: None,
             inventory_dropped_on_death: false,
             spawn: Vec3::new(8.5, 128.0, 8.5),
             inv_dirty: true,
@@ -260,6 +262,8 @@ pub struct Server {
     mob_persistence_ready: bool,
     furnace_persistence_ready: bool,
     furnaces: crate::persistence::FurnaceSaves,
+    chest_persistence_ready: bool,
+    chests: crate::persistence::ChestSaves,
     sessions: HashMap<EntityId, Session>,
     /// Mobs (ids from `FIRST_MOB_ID`).
     mobs: HashMap<EntityId, crate::mobs::Mob>,
@@ -367,6 +371,38 @@ impl Server {
             },
             None => (HashMap::new(), false),
         };
+        let (chests, chest_persistence_ready) = match cfg.world_path.as_deref() {
+            Some(path) => {
+                match crate::persistence::load_chests(&crate::persistence::chest_save_path(path)) {
+                    Ok(data) => {
+                        let data = data.unwrap_or_default();
+                        let consistent = data.keys().all(|&(x, y, z)| {
+                            block_edits
+                                .get(&(x.div_euclid(16), z.div_euclid(16)))
+                                .and_then(|edits| {
+                                    edits.get(&(x.rem_euclid(16), y, z.rem_euclid(16)))
+                                })
+                                == Some(&ssc_world::CHEST)
+                        });
+                        if consistent {
+                            (data, true)
+                        } else {
+                            eprintln!(
+                                "[server] chest save does not match world edits; preserving it"
+                            );
+                            (HashMap::new(), false)
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "[server] chest save could not be loaded: {error}; preserving it"
+                        );
+                        (HashMap::new(), false)
+                    }
+                }
+            }
+            None => (HashMap::new(), false),
+        };
         let mut server = Self {
             gen: WorldGen::new(seed),
             world: World::default(),
@@ -377,6 +413,8 @@ impl Server {
             mob_persistence_ready,
             furnace_persistence_ready,
             furnaces,
+            chest_persistence_ready,
+            chests,
             cfg,
             sessions: HashMap::new(),
             mobs: HashMap::new(),
@@ -636,6 +674,21 @@ impl Server {
         }
     }
 
+    fn save_chests(&self) {
+        if !self.chest_persistence_ready {
+            return;
+        }
+        let Some(path) = self.cfg.world_path.as_deref() else {
+            return;
+        };
+        if let Err(error) = crate::persistence::save_chests(
+            &crate::persistence::chest_save_path(path),
+            &self.chests,
+        ) {
+            eprintln!("[server] chest save failed: {error}");
+        }
+    }
+
     fn record_block_edit(&mut self, x: i32, y: i32, z: i32, block: BlockId) {
         let key = (x.div_euclid(16), z.div_euclid(16));
         let local = (x.rem_euclid(16), y, z.rem_euclid(16));
@@ -720,6 +773,7 @@ impl Server {
         self.save_item_entities();
         self.save_mobs();
         self.save_furnaces();
+        self.save_chests();
         self.save_world();
         let _ = self.broadcast(&ServerPacket::Goodbye {
             reason: "server closed".into(),
@@ -731,6 +785,7 @@ impl Server {
         let dt = 1.0 / TICK_RATE;
         self.tick_eating();
         self.tick_furnaces();
+        self.tick_chests();
 
         // --- Movement + survival simulation + dig progress, per session.
         // Effects are collected first, then applied (broadcasts need &mut
@@ -1225,6 +1280,7 @@ impl Server {
             self.save_item_entities();
             self.save_mobs();
             self.save_furnaces();
+            self.save_chests();
             self.save_world();
         }
     }
@@ -1531,6 +1587,147 @@ impl Server {
             .collect();
         for id in viewers {
             let _ = self.direct(id, &packet);
+        }
+    }
+
+    fn can_access_chest(&self, id: EntityId, pos: (i32, i32, i32)) -> bool {
+        let Some(session) = self.sessions.get(&id) else {
+            return false;
+        };
+        let (x, y, z) = pos;
+        if !session.player.joined
+            || session.survival.dead
+            || self.world.block_or_air(x, y, z) != ssc_world::CHEST
+        {
+            return false;
+        }
+        let eye = session.player.pos + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0);
+        let min = Vec3::new(x as f32, y as f32, z as f32);
+        (eye - eye.clamp(min, min + Vec3::ONE)).length() <= REACH
+    }
+
+    fn chest_packet(&self, pos: (i32, i32, i32), open: bool) -> Option<ServerPacket> {
+        let chest = self.chests.get(&pos)?;
+        Some(ServerPacket::Chest {
+            open,
+            x: pos.0,
+            y: pos.1,
+            z: pos.2,
+            slots: chest
+                .slots
+                .iter()
+                .map(|slot| slot.unwrap_or((0, 0)))
+                .collect(),
+        })
+    }
+
+    fn sync_chest(&mut self, pos: (i32, i32, i32)) {
+        let Some(packet) = self.chest_packet(pos, false) else {
+            return;
+        };
+        let viewers: Vec<_> = self
+            .sessions
+            .iter()
+            .filter_map(|(id, session)| (session.open_chest == Some(pos)).then_some(*id))
+            .collect();
+        for id in viewers {
+            let _ = self.direct(id, &packet);
+        }
+    }
+
+    fn transfer_chest(
+        &mut self,
+        id: EntityId,
+        inventory_slot: u8,
+        chest_slot: u8,
+        from_chest: bool,
+    ) -> Result<(), String> {
+        let inv = inventory_slot as usize;
+        let slot = chest_slot as usize;
+        if inv >= crate::survival::INVENTORY_SIZE || slot >= crate::persistence::CHEST_SLOTS {
+            return Err("chest slot out of range".into());
+        }
+        let Some(pos) = self.sessions.get(&id).and_then(|s| s.open_chest) else {
+            return Ok(());
+        };
+        if !self.can_access_chest(id, pos) {
+            return Ok(());
+        }
+        let chest = self.chests.entry(pos).or_default();
+        let session = self.sessions.get_mut(&id).unwrap();
+        let own = session.inventory[inv];
+        let own_wear = session.durability[inv];
+        let stored = chest.slots[slot];
+        let stored_wear = chest.durability[slot];
+        let (source, destination) = if from_chest {
+            (stored, own)
+        } else {
+            (own, stored)
+        };
+        let Some((item, count)) = source else {
+            return Ok(());
+        };
+        let (next_source, next_dest) = match destination {
+            Some((target, target_count)) if target == item => {
+                let moved = count.min(
+                    ssc_world::item_info(item)
+                        .max_stack
+                        .saturating_sub(target_count),
+                );
+                if moved == 0 {
+                    return Ok(());
+                }
+                (
+                    if moved == count {
+                        None
+                    } else {
+                        Some((item, count - moved))
+                    },
+                    Some((item, target_count + moved)),
+                )
+            }
+            _ => (destination, source),
+        };
+        if from_chest {
+            chest.slots[slot] = next_source;
+            chest.durability[slot] = if next_source.is_some() {
+                stored_wear
+            } else {
+                0
+            };
+            session.inventory[inv] = next_dest;
+            session.durability[inv] = stored_wear;
+        } else {
+            session.inventory[inv] = next_source;
+            session.durability[inv] = if next_source.is_some() { own_wear } else { 0 };
+            chest.slots[slot] = next_dest;
+            chest.durability[slot] = own_wear;
+        }
+        session.inv_dirty = true;
+        if inv == session.player.selected_slot as usize {
+            session.survival.digging = None;
+            session.eating = None;
+        }
+        self.sync_chest(pos);
+        Ok(())
+    }
+
+    fn tick_chests(&mut self) {
+        let invalid: Vec<_> = self
+            .sessions
+            .iter()
+            .filter_map(|(id, session)| {
+                session
+                    .open_chest
+                    .filter(|pos| !self.can_access_chest(*id, *pos))
+                    .map(|_| *id)
+            })
+            .collect();
+        for id in invalid {
+            if let Some(session) = self.sessions.get_mut(&id) {
+                session.open_chest = None;
+            }
+            let _ = self.direct(id, &ServerPacket::ContainerClosed);
         }
     }
 
@@ -2786,9 +2983,17 @@ impl Server {
             } => {
                 self.transfer_furnace(id, inventory_slot, furnace_slot, from_furnace)?;
             }
+            ClientPacket::ChestSwap {
+                inventory_slot,
+                chest_slot,
+                from_chest,
+            } => {
+                self.transfer_chest(id, inventory_slot, chest_slot, from_chest)?;
+            }
             ClientPacket::CloseContainer => {
                 if let Some(session) = self.sessions.get_mut(&id) {
                     session.open_furnace = None;
+                    session.open_chest = None;
                 }
             }
             ClientPacket::Place => {
@@ -3059,6 +3264,31 @@ impl Server {
                     count,
                     Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5),
                 );
+            }
+        }
+        if let Some(chest) = self.chests.remove(&(x, y, z)) {
+            for (slot, &wear) in chest.slots.iter().zip(&chest.durability) {
+                if let Some((item, count)) = slot {
+                    self.spawn_item_entity_with_durability(
+                        *item,
+                        *count,
+                        Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5),
+                        crate::survival::effective_durability(*item, wear),
+                    );
+                }
+            }
+            let viewers: Vec<EntityId> = self
+                .sessions
+                .iter_mut()
+                .filter_map(|(session_id, session)| {
+                    (session.open_chest == Some((x, y, z))).then(|| {
+                        session.open_chest = None;
+                        *session_id
+                    })
+                })
+                .collect();
+            for viewer in viewers {
+                let _ = self.direct(viewer, &ServerPacket::ContainerClosed);
             }
         }
         let _ = self.broadcast(&ServerPacket::BlockUpdate {
@@ -3481,12 +3711,27 @@ impl Server {
                     if self.world.block_or_air(x, y, z) == ssc_world::BED && self.use_bed(id, pos) {
                         return;
                     }
+                    if self.world.block_or_air(x, y, z) == ssc_world::CHEST
+                        && self.can_access_chest(id, pos)
+                    {
+                        self.chests.entry(pos).or_default();
+                        let session = self.sessions.get_mut(&id).unwrap();
+                        session.open_chest = Some(pos);
+                        session.open_furnace = None;
+                        session.eating = None;
+                        session.survival.digging = None;
+                        if let Some(packet) = self.chest_packet(pos, true) {
+                            let _ = self.direct(id, &packet);
+                        }
+                        return;
+                    }
                     if ssc_world::is_furnace(self.world.block_or_air(x, y, z))
                         && self.can_access_furnace(id, pos)
                     {
                         self.furnaces.entry(pos).or_default();
                         let session = self.sessions.get_mut(&id).unwrap();
                         session.open_furnace = Some(pos);
+                        session.open_chest = None;
                         session.eating = None;
                         session.survival.digging = None;
                         if let Some(packet) = self.furnace_packet(pos, true) {
@@ -3609,6 +3854,9 @@ impl Server {
             self.record_block_edit(x, y, z, block);
             if ssc_world::is_furnace(block) {
                 self.furnaces.entry((x, y, z)).or_default();
+            }
+            if block == ssc_world::CHEST {
+                self.chests.entry((x, y, z)).or_default();
             }
             if block == ssc_world::WATER {
                 self.update_farmland_moisture(x, y, z);
@@ -4692,6 +4940,126 @@ mod tests {
             .iter()
             .flatten()
             .any(|(item, _)| *item == ssc_world::COBBLESTONE));
+    }
+
+    #[test]
+    fn chests_open_transfer_tool_wear_and_sync_contents() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        rig.server.world.set_block(8, 54, 8, ssc_world::CHEST);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::IRON_SWORD, 1));
+        rig.server.sessions.get_mut(&1).unwrap().durability[0] = 17;
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.sessions[&1].open_chest, Some((8, 54, 8)));
+        assert!(rig.drain(0).iter().any(|packet| matches!(
+            packet,
+            ServerPacket::Chest {
+                open: true,
+                x: 8,
+                y: 54,
+                z: 8,
+                ..
+            }
+        )));
+        rig.server.transfer_chest(1, 0, 0, false).unwrap();
+        {
+            let chest = &rig.server.chests[&(8, 54, 8)];
+            assert_eq!(chest.slots[0], Some((ssc_world::IRON_SWORD, 1)));
+            assert_eq!(chest.durability[0], 17);
+        }
+        assert_eq!(rig.server.sessions[&1].inventory[0], None);
+        assert!(rig.drain(0).iter().any(|packet| matches!(packet,
+            ServerPacket::Chest { slots, .. } if slots[0] == (ssc_world::IRON_SWORD, 1))));
+        rig.server.transfer_chest(1, 0, 0, true).unwrap();
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::IRON_SWORD, 1))
+        );
+        assert_eq!(rig.server.sessions[&1].durability[0], 17);
+        assert_eq!(rig.server.chests[&(8, 54, 8)].slots[0], None);
+
+        // Breaking the chest drops the chest and its stored items once.
+        rig.server.transfer_chest(1, 0, 0, false).unwrap();
+        rig.server.break_block(1, 8, 54, 8);
+        assert!(!rig.server.chests.contains_key(&(8, 54, 8)));
+        assert_eq!(rig.server.sessions[&1].open_chest, None);
+        assert!(rig
+            .server
+            .items
+            .values()
+            .any(|item| item.item == ssc_world::IRON_SWORD && item.durability == 17));
+        assert!(rig.server.sessions[&1]
+            .inventory
+            .iter()
+            .flatten()
+            .any(|(item, _)| *item == ssc_world::CHEST));
+    }
+
+    #[test]
+    fn chest_transfers_merge_stacks_and_close_out_of_range() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        rig.server.world.set_block(8, 54, 8, ssc_world::CHEST);
+        rig.server.handle_use(1);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::APPLE, 10));
+        rig.server.transfer_chest(1, 0, 0, false).unwrap();
+        rig.server.sessions.get_mut(&1).unwrap().inventory[1] = Some((ssc_world::APPLE, 5));
+        rig.server.transfer_chest(1, 1, 0, false).unwrap();
+        assert_eq!(
+            rig.server.chests[&(8, 54, 8)].slots[0],
+            Some((ssc_world::APPLE, 15))
+        );
+        assert_eq!(rig.server.sessions[&1].inventory[1], None);
+        rig.server.transfer_chest(1, 0, 0, true).unwrap();
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::APPLE, 15))
+        );
+        rig.server.transfer_chest(1, 0, 0, false).unwrap();
+        rig.server.sessions.get_mut(&1).unwrap().player.pos.x = 100.0;
+        rig.server.tick_chests();
+        assert_eq!(rig.server.sessions[&1].open_chest, None);
+        assert!(rig
+            .drain(0)
+            .iter()
+            .any(|packet| matches!(packet, ServerPacket::ContainerClosed)));
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::APPLE, 1));
+        rig.server.transfer_chest(1, 0, 0, false).unwrap();
+        assert_eq!(
+            rig.server.chests[&(8, 54, 8)].slots[0],
+            Some((ssc_world::APPLE, 15))
+        );
+    }
+
+    #[test]
+    fn chests_and_contents_persist_with_tool_wear_and_guard_corruption() {
+        let world_path =
+            std::env::temp_dir().join(format!("ssc-chest-world-{}.bin", std::process::id()));
+        let sidecar = crate::persistence::chest_save_path(&world_path);
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        rig.server.cfg.world_path = Some(world_path.clone());
+        rig.server.chest_persistence_ready = true;
+        rig.server.world.set_block(8, 54, 8, ssc_world::CHEST);
+        rig.server.record_block_edit(8, 54, 8, ssc_world::CHEST);
+        let chest = rig.server.chests.entry((8, 54, 8)).or_default();
+        chest.slots[0] = Some((ssc_world::IRON_PICKAXE, 1));
+        chest.durability[0] = 44;
+        chest.slots[5] = Some((ssc_world::APPLE, 12));
+        rig.server.save_world();
+        rig.server.save_chests();
+
+        let restored = Server::empty(rig.server.cfg.clone());
+        assert!(restored.chest_persistence_ready);
+        let chest = &restored.chests[&(8, 54, 8)];
+        assert_eq!(chest.slots[0], Some((ssc_world::IRON_PICKAXE, 1)));
+        assert_eq!(chest.durability[0], 44);
+        assert_eq!(chest.slots[5], Some((ssc_world::APPLE, 12)));
+
+        std::fs::write(&sidecar, b"corrupt chest save").unwrap();
+        let restored = Server::empty(rig.server.cfg.clone());
+        assert!(!restored.chest_persistence_ready);
+        restored.save_chests();
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"corrupt chest save");
+        std::fs::remove_file(&world_path).unwrap();
+        std::fs::remove_file(&sidecar).unwrap();
     }
 
     #[test]

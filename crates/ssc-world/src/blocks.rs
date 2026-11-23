@@ -54,6 +54,7 @@ pub const WHEAT_6: BlockId = 39;
 pub const WHEAT_7: BlockId = 40;
 pub const WOOL: BlockId = 41;
 pub const BED: BlockId = 42;
+pub const CHEST: BlockId = 43;
 
 // Atlas tile ids (16×16 tiles per row/column in the 256×256 atlas).
 pub const TILE_MISSING: u16 = 0;
@@ -96,6 +97,8 @@ pub const TILE_WHEAT_3: u16 = 36;
 pub const TILE_WOOL: u16 = 37;
 pub const TILE_BED_TOP: u16 = 38;
 pub const TILE_BED_SIDE: u16 = 39;
+pub const TILE_CHEST: u16 = 40;
+pub const TILE_CHEST_FRONT: u16 = 41;
 
 /// Face indices into [`BlockInfo::tiles`].
 pub const FACE_TOP: usize = 0;
@@ -362,6 +365,21 @@ pub const BLOCKS: &[BlockInfo] = &[
         0.2,
         false,
     ),
+    BlockInfo {
+        name: "chest",
+        solid: true,
+        opaque: true,
+        tiles: [
+            TILE_CHEST,
+            TILE_CHEST,
+            TILE_CHEST,
+            TILE_CHEST_FRONT,
+            TILE_CHEST,
+            TILE_CHEST,
+        ],
+        hardness: 2.5,
+        needs_tool: false,
+    },
 ];
 
 const fn plant(name: &'static str, tile: u16) -> BlockInfo {

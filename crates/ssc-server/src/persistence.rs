@@ -31,6 +31,8 @@ const ITEMS_MAGIC_V2: &[u8; 8] = b"SSCITM02";
 const MOBS_MAGIC: &[u8; 8] = b"SSCMOB01";
 const MOBS_MAGIC_V2: &[u8; 8] = b"SSCMOB02";
 const FURNACE_MAGIC: &[u8; 8] = b"SSCFUR01";
+const CHEST_MAGIC: &[u8; 8] = b"SSCCHS01";
+pub const CHEST_SLOTS: usize = 27;
 const MAX_SAVED_ITEMS: u32 = 1_000_000;
 const MAX_SAVED_MOBS: u32 = 4_096;
 
@@ -1051,6 +1053,165 @@ pub fn load_furnaces(path: &Path) -> io::Result<Option<FurnaceSaves>> {
         }
     }
     Ok(Some(furnaces))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChestState {
+    pub slots: Vec<crate::survival::Slot>,
+    pub durability: Vec<u16>,
+}
+
+impl Default for ChestState {
+    fn default() -> Self {
+        Self {
+            slots: vec![None; CHEST_SLOTS],
+            durability: vec![0; CHEST_SLOTS],
+        }
+    }
+}
+
+pub type ChestSaves = HashMap<(i32, i32, i32), ChestState>;
+
+pub fn chest_save_path(world_path: &Path) -> std::path::PathBuf {
+    world_path.with_extension("chests")
+}
+
+pub fn load_chests(path: &Path) -> io::Result<Option<ChestSaves>> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let length = file.metadata()?.len();
+    if length < 12 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated chest save",
+        ));
+    }
+    let mut header = [0u8; 12];
+    file.read_exact(&mut header)?;
+    let count = u32::from_le_bytes(header[8..12].try_into().expect("fixed header"));
+    let record = 12 + CHEST_SLOTS * 3 + CHEST_SLOTS * 2;
+    if &header[..8] != CHEST_MAGIC || count > 100_000 || length != 12 + count as u64 * record as u64
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid chest save",
+        ));
+    }
+    let mut chests = ChestSaves::new();
+    for _ in 0..count {
+        let mut bytes = vec![0u8; record];
+        file.read_exact(&mut bytes)?;
+        let i32_at = |at| i32::from_le_bytes(bytes[at..at + 4].try_into().expect("fixed position"));
+        let pos = (i32_at(0), i32_at(4), i32_at(8));
+        if !valid_furnace_position(pos) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid chest position",
+            ));
+        }
+        let mut chest = ChestState::default();
+        for (index, slot) in chest.slots.iter_mut().enumerate() {
+            let at = 12 + index * 3;
+            let item = u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+            let amount = bytes[at + 2];
+            if item == 0 && amount == 0 {
+                continue;
+            }
+            if !ssc_world::valid_item_id(item)
+                || item == 0
+                || amount == 0
+                || amount > ssc_world::item_info(item).max_stack
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid chest slot",
+                ));
+            }
+            *slot = Some((item, amount));
+        }
+        let wear_at = 12 + CHEST_SLOTS * 3;
+        for index in 0..CHEST_SLOTS {
+            let at = wear_at + index * 2;
+            let wear = u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+            let max =
+                chest.slots[index].map_or(0, |(item, _)| crate::survival::max_durability(item));
+            if (max == 0 && wear != 0) || (max > 0 && (wear == 0 || wear > max)) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid chest durability",
+                ));
+            }
+            chest.durability[index] = wear;
+        }
+        if chests.insert(pos, chest).is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "duplicate chest position",
+            ));
+        }
+    }
+    Ok(Some(chests))
+}
+
+pub fn save_chests(path: &Path, chests: &ChestSaves) -> io::Result<()> {
+    if chests.len() > 100_000
+        || chests.iter().any(|(pos, chest)| {
+            !valid_furnace_position(*pos)
+                || chest.slots.len() != CHEST_SLOTS
+                || chest.durability.len() != CHEST_SLOTS
+                || chest.slots.iter().flatten().any(|(item, count)| {
+                    !ssc_world::valid_item_id(*item)
+                        || *item == 0
+                        || *count == 0
+                        || *count > ssc_world::item_info(*item).max_stack
+                })
+                || chest
+                    .slots
+                    .iter()
+                    .zip(&chest.durability)
+                    .any(|(slot, &wear)| {
+                        let max = slot.map_or(0, |(item, _)| crate::survival::max_durability(item));
+                        (max == 0 && wear != 0) || (max > 0 && wear > max)
+                    })
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid chest state",
+        ));
+    }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("tmp");
+    let mut file = File::create(&temp)?;
+    file.write_all(CHEST_MAGIC)?;
+    file.write_all(&(chests.len() as u32).to_le_bytes())?;
+    let mut positions: Vec<_> = chests.keys().copied().collect();
+    positions.sort_unstable();
+    for (x, y, z) in positions {
+        for value in [x, y, z] {
+            file.write_all(&value.to_le_bytes())?;
+        }
+        let chest = &chests[&(x, y, z)];
+        for slot in &chest.slots {
+            let (item, count) = slot.unwrap_or((0, 0));
+            file.write_all(&item.to_le_bytes())?;
+            file.write_all(&[count])?;
+        }
+        for (slot, &wear) in chest.slots.iter().zip(&chest.durability) {
+            let value = slot.map_or(0, |(item, _)| {
+                crate::survival::effective_durability(item, wear)
+            });
+            file.write_all(&value.to_le_bytes())?;
+        }
+    }
+    file.sync_all()?;
+    fs::rename(temp, path)?;
+    Ok(())
 }
 
 pub fn save_furnaces(path: &Path, furnaces: &FurnaceSaves) -> io::Result<()> {

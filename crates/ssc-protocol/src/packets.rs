@@ -126,6 +126,12 @@ pub enum ClientPacket {
         furnace_slot: u8,
         from_furnace: bool,
     },
+    /// Transfer a stack between own inventory and the currently open chest.
+    ChestSwap {
+        inventory_slot: u8,
+        chest_slot: u8,
+        from_chest: bool,
+    },
     CloseContainer,
 }
 
@@ -183,6 +189,16 @@ impl ClientPacket {
                 w.put_u8(*furnace_slot);
                 w.put_u8(u8::from(*from_furnace));
             }
+            ClientPacket::ChestSwap {
+                inventory_slot,
+                chest_slot,
+                from_chest,
+            } => {
+                w.put_u8(15);
+                w.put_u8(*inventory_slot);
+                w.put_u8(*chest_slot);
+                w.put_u8(u8::from(*from_chest));
+            }
             ClientPacket::CloseContainer => w.put_u8(13),
         }
         w.into_bytes()
@@ -236,6 +252,21 @@ impl ClientPacket {
             }
             13 => ClientPacket::CloseContainer,
             14 => ClientPacket::DropStack,
+            15 => {
+                let inventory_slot = r.get_u8()?;
+                let chest_slot = r.get_u8()?;
+                let direction = r.get_u8()?;
+                if direction > 1 {
+                    return Err(crate::codec::DecodeError(
+                        "invalid chest transfer direction".into(),
+                    ));
+                }
+                ClientPacket::ChestSwap {
+                    inventory_slot,
+                    chest_slot,
+                    from_chest: direction == 1,
+                }
+            }
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad client packet tag {tag}"
@@ -392,6 +423,14 @@ pub enum ServerPacket {
     /// Four equipment slots: helmet, chestplate, leggings, boots.
     Armor {
         slots: [(u16, u8, u16); 4],
+    },
+    /// Open chest contents (27 slots).
+    Chest {
+        open: bool,
+        x: i32,
+        y: i32,
+        z: i32,
+        slots: Vec<(u16, u8)>,
     },
 }
 
@@ -599,6 +638,23 @@ impl ServerPacket {
                     w.put_u16(*wear);
                 }
             }
+            ServerPacket::Chest {
+                open,
+                x,
+                y,
+                z,
+                slots,
+            } => {
+                w.put_u8(23);
+                w.put_u8(u8::from(*open));
+                w.put_i32(*x);
+                w.put_i32(*y);
+                w.put_i32(*z);
+                for (item, count) in slots {
+                    w.put_u16(*item);
+                    w.put_u8(*count);
+                }
+            }
         }
         w.into_bytes()
     }
@@ -780,6 +836,29 @@ impl ServerPacket {
                 }
                 ServerPacket::Armor { slots }
             }
+            23 => {
+                let open = r.get_u8()?;
+                if open > 1 {
+                    return Err(crate::codec::DecodeError("invalid chest open flag".into()));
+                }
+                let (x, y, z) = (r.get_i32()?, r.get_i32()?, r.get_i32()?);
+                let mut slots = Vec::with_capacity(27);
+                for _ in 0..27 {
+                    let item = r.get_u16()?;
+                    let count = r.get_u8()?;
+                    if item == 0 && count != 0 {
+                        return Err(crate::codec::DecodeError("invalid empty chest slot".into()));
+                    }
+                    slots.push((item, count));
+                }
+                ServerPacket::Chest {
+                    open: open == 1,
+                    x,
+                    y,
+                    z,
+                    slots,
+                }
+            }
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad server packet tag {tag}"
@@ -812,6 +891,25 @@ mod tests {
     }
 
     #[test]
+    fn chest_packets_round_trip_with_27_slots() {
+        let swap = ClientPacket::ChestSwap {
+            inventory_slot: 5,
+            chest_slot: 26,
+            from_chest: true,
+        };
+        assert_eq!(ClientPacket::decode(&swap.encode()).unwrap(), swap);
+        let mut slots = vec![(0, 0); 27];
+        slots[3] = (100, 12);
+        let packet = ServerPacket::Chest {
+            open: true,
+            x: -32,
+            y: 64,
+            z: 8,
+            slots: slots.clone(),
+        };
+        assert_eq!(ServerPacket::decode(&packet.encode()).unwrap(), packet);
+    }
+
     fn armor_packets_round_trip_and_reject_empty_slots_with_wear() {
         let packet = ServerPacket::Armor {
             slots: [(135, 1, 165), (0, 0, 0), (137, 1, 225), (0, 0, 0)],

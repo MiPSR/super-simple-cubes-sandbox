@@ -124,6 +124,11 @@ struct EntityView {
     mesh: MeshId,
 }
 
+struct ChestView {
+    position: (i32, i32, i32),
+    slots: Vec<(u16, u8)>,
+}
+
 struct FurnaceView {
     position: (i32, i32, i32),
     slots: [(u16, u8); 3],
@@ -167,6 +172,7 @@ struct App {
     tool_durability: Vec<u16>,
     armor: [(u16, u8, u16); 4],
     furnace: Option<FurnaceView>,
+    chest: Option<ChestView>,
     /// Game mode (0 survival / 1 creative).
     mode: u8,
     /// Survival vitals.
@@ -305,6 +311,7 @@ impl App {
             tool_durability: Vec::new(),
             armor: [(0, 0, 0); 4],
             furnace: None,
+            chest: None,
             mode: 0,
             health: 20.0,
             hunger: 20,
@@ -392,15 +399,21 @@ impl App {
                         b: target,
                     });
                 } else if (source < 36) != (target < 36) {
-                    self.send(&ClientPacket::FurnaceSwap {
-                        inventory_slot: if source < 36 { source } else { target },
-                        furnace_slot: if source >= 36 {
-                            source - 36
-                        } else {
-                            target - 36
-                        },
-                        from_furnace: source >= 36,
-                    });
+                    let inventory_slot = if source < 36 { source } else { target };
+                    let container_slot = if source >= 36 { source } else { target } - 36;
+                    if self.furnace.is_some() {
+                        self.send(&ClientPacket::FurnaceSwap {
+                            inventory_slot,
+                            furnace_slot: container_slot,
+                            from_furnace: source >= 36,
+                        });
+                    } else if self.chest.is_some() {
+                        self.send(&ClientPacket::ChestSwap {
+                            inventory_slot,
+                            chest_slot: container_slot,
+                            from_chest: source >= 36,
+                        });
+                    }
                 }
             }
         }
@@ -410,8 +423,14 @@ impl App {
     fn inventory_slot(&self, slot: u8) -> Option<(u16, u8)> {
         if slot < 36 {
             self.inventory.get(slot as usize).copied()
-        } else {
+        } else if self.furnace.is_some() {
             self.furnace
+                .as_ref()?
+                .slots
+                .get((slot - 36) as usize)
+                .copied()
+        } else {
+            self.chest
                 .as_ref()?
                 .slots
                 .get((slot - 36) as usize)
@@ -419,29 +438,52 @@ impl App {
         }
     }
 
-    /// Inventory screen layout: 9 columns × 4 rows of slots.
+    /// Inventory screen layout: 9 columns × 4 rows, with chest slots added
+    /// above when a chest is open.
     fn inventory_layout(&self, w: f32, h: f32) -> (f32, f32, f32, f32) {
         const COL_W: f32 = 135.0;
         const ROW_H: f32 = 22.0;
         const COLS: f32 = 9.0;
         let panel_w = COL_W * COLS + 30.0;
-        let panel_h = 4.0 * ROW_H + if self.furnace.is_some() { 132.0 } else { 84.0 };
+        let chest_extra = if self.chest.is_some() {
+            3.0 * ROW_H + 12.0
+        } else {
+            0.0
+        };
+        let panel_h = 4.0 * ROW_H + chest_extra + if self.furnace.is_some() { 132.0 } else { 84.0 };
         let x0 = ((w - panel_w) / 2.0).max(10.0);
         let y0 = (h - panel_h) / 2.0;
         (x0, y0, COL_W, ROW_H)
     }
 
+    fn inventory_grid_y(&self, y0: f32) -> f32 {
+        y0 + if self.chest.is_some() {
+            60.0 + 3.0 * 22.0 + 12.0
+        } else {
+            60.0
+        }
+    }
+
     fn inventory_hit(&self, mx: f32, my: f32, w: f32, h: f32) -> Option<u8> {
         let (x0, y0, col_w, row_h) = self.inventory_layout(w, h);
+        if self.chest.is_some() && (y0 + 60.0..y0 + 60.0 + 3.0 * row_h).contains(&my) {
+            let col = ((mx - x0) / col_w).floor() as i32;
+            let row = ((my - y0 - 60.0) / row_h).floor() as i32;
+            if (0..9).contains(&col) && (0..3).contains(&row) {
+                return Some(36 + (row * 9 + col) as u8);
+            }
+            return None;
+        }
         if self.furnace.is_some() && (y0 + 174.0..y0 + 174.0 + row_h).contains(&my) {
             let col = ((mx - x0) / (col_w * 2.0)).floor() as i32;
             return (0..3).contains(&col).then_some(36 + col as u8);
         }
-        if mx < x0 || my < y0 + 60.0 {
+        let grid_y = self.inventory_grid_y(y0);
+        if mx < x0 || my < grid_y {
             return None;
         }
         let col = ((mx - x0) / col_w).floor() as i32;
-        let row = ((my - y0 - 60.0) / row_h).floor() as i32;
+        let row = ((my - grid_y) / row_h).floor() as i32;
         if !(0..9).contains(&col) || !(0..4).contains(&row) {
             return None;
         }
@@ -530,6 +572,7 @@ impl App {
                     if self.picker_open {
                         self.picker_open = false;
                         self.furnace = None;
+                        self.chest = None;
                         self.inv_drag = None;
                         self.inv_pick = None;
                         self.send(&ClientPacket::CloseContainer);
@@ -555,7 +598,7 @@ impl App {
                         continue;
                     }
                     if self.picker_open && self.mode == 0 && (1..=9).contains(&n) {
-                        let recipe = if frame.input().key(Key::Ctrl) && (1..=4).contains(&n) {
+                        let recipe = if frame.input().key(Key::Ctrl) && (1..=5).contains(&n) {
                             21 + n
                         } else if frame.input().key(Key::Shift) {
                             match n {
@@ -611,6 +654,7 @@ impl App {
                     self.picker_open = !self.picker_open;
                     if !self.picker_open {
                         self.furnace = None;
+                        self.chest = None;
                         self.send(&ClientPacket::CloseContainer);
                     }
                     if self.picker_open {
@@ -1030,10 +1074,15 @@ impl App {
         }
         // Survival inventory screen (E in survival): 36 slots, click two
         // slots to swap them (server validates).
-        if self.picker_open && (self.mode == 0 || self.furnace.is_some()) {
+        if self.picker_open && (self.mode == 0 || self.furnace.is_some() || self.chest.is_some()) {
             let (x0, y0, col_w, row_h) = self.inventory_layout(wf, hf);
+            let grid_y = self.inventory_grid_y(y0);
             frame.hud_text(
-                "inventory - drag slots (E close)".to_string(),
+                if self.chest.is_some() {
+                    "chest - drag between grids (E close)".to_string()
+                } else {
+                    "inventory - drag slots (E close)".to_string()
+                },
                 x0 + 15.0,
                 y0 + 7.0,
                 14.0,
@@ -1048,13 +1097,45 @@ impl App {
                 [1.0, 0.85, 0.3, 1.0],
             );
             frame.hud_text(
-                "5/6:axes 7/8:shovels 9:repair (Shift+1/2/4:swords, 6/8/9:hoes, B:bread, Shift+B:bed, Ctrl+1-4:armor)"
+                "5/6:axes 7/8:shovels 9:repair (Shift+1/2/4:swords, 6/8/9:hoes, B:bread, Shift+B:bed, Ctrl+1-5:armor/chest)"
                     .to_string(),
                 x0 + 15.0,
                 y0 + 42.0,
                 14.0,
                 [1.0, 0.85, 0.3, 1.0],
             );
+            if let Some(chest) = &self.chest {
+                for (index, (item, count)) in chest.slots.iter().enumerate() {
+                    let col = (index % 9) as f32;
+                    let row = (index / 9) as f32;
+                    let label = if *item == 0 {
+                        "-".to_string()
+                    } else if *count > 1 {
+                        format!("{} x{}", ssc_world::item_info(*item).name, count)
+                    } else {
+                        ssc_world::item_info(*item).name.to_string()
+                    };
+                    let picked = self.inv_pick == Some(36 + index as u8);
+                    frame.hud_text(
+                        label,
+                        x0 + 15.0 + col * col_w,
+                        y0 + 60.0 + row * row_h,
+                        15.0,
+                        if picked {
+                            [1.0, 0.55, 0.15, 1.0]
+                        } else {
+                            [0.9, 0.9, 0.8, 0.9]
+                        },
+                    );
+                }
+                frame.hud_text(
+                    format!("chest {:?}", chest.position),
+                    x0 + 15.0,
+                    y0 + 60.0 + 3.0 * row_h + 2.0,
+                    12.0,
+                    [1.0, 0.85, 0.3, 0.8],
+                );
+            }
             for i in 0..36usize {
                 let col = (i % 9) as f32;
                 let row = (i / 9) as f32;
@@ -1084,7 +1165,7 @@ impl App {
                 frame.hud_text(
                     label,
                     x0 + 15.0 + col * col_w,
-                    y0 + 60.0 + row * row_h,
+                    grid_y + row * row_h,
                     15.0,
                     color,
                 );
@@ -1546,6 +1627,35 @@ impl App {
                     });
                 }
                 if open {
+                    self.chest = None;
+                    self.picker_open = true;
+                    self.inv_drag = None;
+                    self.inv_pick = None;
+                    self.eating_remaining = 0;
+                    frame.set_mouse_locked(false);
+                    self.send(&ClientPacket::UseStop);
+                }
+            }
+            ServerPacket::Chest {
+                open,
+                x,
+                y,
+                z,
+                slots,
+            } => {
+                if open
+                    || self
+                        .chest
+                        .as_ref()
+                        .is_some_and(|view| view.position == (x, y, z))
+                {
+                    self.chest = Some(ChestView {
+                        position: (x, y, z),
+                        slots,
+                    });
+                }
+                if open {
+                    self.furnace = None;
                     self.picker_open = true;
                     self.inv_drag = None;
                     self.inv_pick = None;
@@ -1555,7 +1665,7 @@ impl App {
                 }
             }
             ServerPacket::ContainerClosed => {
-                if self.furnace.take().is_some() {
+                if self.furnace.take().is_some() | self.chest.take().is_some() {
                     self.picker_open = false;
                     self.inv_drag = None;
                     self.inv_pick = None;

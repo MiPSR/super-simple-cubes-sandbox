@@ -201,6 +201,15 @@ Every implemented wiki feature gets a line here. Status legend:
 
 ## Player
 
+- `partial` — Chests craft from eight planks (`Ctrl+5` in the inventory) and
+  provide 27 shared server-owned slots. Drag stacks between the chest grid
+  and the inventory; matching stacks merge up to their limit, and tool wear
+  is preserved in both directions. Every transfer syncs to all players
+  viewing the same chest. Contents persist in a validated `.chests` sidecar
+  with corrupt or world-mismatched saves preserved; breaking the chest drops
+  its contents once and closes viewers, and range loss or death closes the
+  UI. No double chests, lid animation, hoppers or chest-to-chest
+  rearrangement yet.
 - `partial` — Experience: killing a zombie awards 5 points and pigs/sheep
   1–3, while collecting each smelted furnace output awards 1 point. Levels
   use a simplified `7 + 2×level` curve, show as `Lv N progress/needed` on
@@ -306,7 +315,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 26
+  throwing snowballs and Silk Touch are missing. Protocol 27
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit
