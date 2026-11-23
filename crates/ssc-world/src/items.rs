@@ -56,6 +56,8 @@ pub const IRON_HOE: ItemId = 129;
 pub const WHEAT_SEEDS: ItemId = 130;
 pub const WHEAT: ItemId = 131;
 pub const BREAD: ItemId = 132;
+pub const MUTTON: ItemId = 133;
+pub const COOKED_MUTTON: ItemId = 134;
 
 pub fn is_hoe(item: ItemId) -> bool {
     matches!(item, WOODEN_HOE | STONE_HOE | IRON_HOE)
@@ -147,6 +149,18 @@ pub fn item_info(id: ItemId) -> ItemInfo {
             places: None,
             food: Some(5),
         },
+        MUTTON => ItemInfo {
+            name: "mutton",
+            max_stack: 64,
+            places: None,
+            food: Some(2),
+        },
+        COOKED_MUTTON => ItemInfo {
+            name: "cooked_mutton",
+            max_stack: 64,
+            places: None,
+            food: Some(6),
+        },
         0 => ItemInfo {
             name: "empty",
             max_stack: 0,
@@ -183,6 +197,7 @@ pub fn item_info(id: ItemId) -> ItemInfo {
         30 => block_item(super::SMOOTH_STONE, "smooth_stone"),
         31 | 32 => block_item(super::FARMLAND, "farmland"),
         33..=40 => block_item(super::WHEAT_0, "wheat"),
+        41 => block_item(super::WOOL, "white_wool"),
         APPLE => ItemInfo {
             name: "apple",
             max_stack: 64,
@@ -345,6 +360,8 @@ pub fn valid_item_id(id: ItemId) -> bool {
             | WHEAT_SEEDS
             | WHEAT
             | BREAD
+            | MUTTON
+            | COOKED_MUTTON
     );
     id == EMPTY_ITEM || block_items || free_items
 }
@@ -357,6 +374,8 @@ pub fn food_saturation(id: ItemId) -> f32 {
         ROTTEN_FLESH => 0.8,
         COOKED_PORKCHOP => 12.8,
         BREAD => 6.0,
+        MUTTON => 1.2,
+        COOKED_MUTTON => 9.6,
         _ => 0.0,
     }
 }

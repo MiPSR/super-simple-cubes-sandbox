@@ -288,7 +288,7 @@ impl App {
             pos_prev: Vec3::new(8.5, 128.0, 8.5),
             pos_cur: Vec3::new(8.5, 128.0, 8.5),
             state_time: now,
-            avatar_cache: [0u8, 1u8, 2u8, 3u8]
+            avatar_cache: [0u8, 1u8, 2u8, 3u8, 4u8]
                 .iter()
                 .map(|&k| (k, mesh::build_avatar(k)))
                 .collect(),
@@ -1135,6 +1135,8 @@ impl App {
             }
             let (half_width, height) = if e.kind == 3 {
                 (0.125, 0.25)
+            } else if e.kind == 4 {
+                (0.45, 1.3)
             } else {
                 (0.45, 1.9)
             };

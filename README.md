@@ -88,6 +88,8 @@ runnable through Nix.
   with a water bucket to place water beside it. Water is currently static.
 - Q drops one item from the selected survival hotbar stack into the world;
   Ctrl+Q drops the entire stack.
+- Sheep roam the grass by day and drop white wool and raw mutton. Cook
+  mutton in a furnace for a stronger meal, or use wool as a building block.
 - Farming: `Shift+6`, `Shift+8`, and `Shift+9` craft wooden, stone, and iron
   hoes. Right-click grass or dirt into farmland, then plant wheat seeds on
   top. Water within four blocks keeps farmland wet and speeds growth. Break

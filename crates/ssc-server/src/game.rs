@@ -1007,8 +1007,7 @@ impl Server {
                     (m.kind, m.pos)
                 };
                 let drop_roll = hash_tick(self.tick, mob_id as i32, pos.x.floor() as i32);
-                let drop = crate::mobs::drop_for(kind, drop_roll);
-                if let Some((item, count)) = drop {
+                for (item, count) in crate::mobs::drops_for(kind, drop_roll) {
                     self.spawn_item_entity(item, count, pos);
                 }
                 self.mobs.remove(&mob_id);
@@ -1808,12 +1807,14 @@ impl Server {
                 }
                 let kind = if want_zombie {
                     crate::mobs::MobKind::Zombie
+                } else if hash_tick(self.tick, ax + 3, az + 11) % 4 == 0 {
+                    crate::mobs::MobKind::Sheep
                 } else {
                     crate::mobs::MobKind::Pig
                 };
-                // Bedrock pigs spawn in groups of 1–3. Each member must
-                // independently have grass, clearance and player distance;
-                // never exceed the server's shared mob cap.
+                // Bedrock pigs and sheep spawn in grass groups of 1–3. Each
+                // member must independently have grass, clearance and player
+                // distance; never exceed the server's shared mob cap.
                 let group_size = if want_pig {
                     1 + (hash_tick(self.tick, ax, az) % 3) as usize
                 } else {
@@ -3932,7 +3933,10 @@ mod tests {
             let count = rig.server.mobs.len();
             assert!(count <= 3 && count <= MOB_CAP_PER_PLAYER);
             for mob in rig.server.mobs.values() {
-                assert_eq!(mob.kind, crate::mobs::MobKind::Pig);
+                assert!(matches!(
+                    mob.kind,
+                    crate::mobs::MobKind::Pig | crate::mobs::MobKind::Sheep
+                ));
                 let x = mob.pos.x.floor() as i32;
                 let z = mob.pos.z.floor() as i32;
                 assert_eq!(
@@ -3995,6 +3999,70 @@ mod tests {
             }
         }
         assert!(found_zombie, "sand remains valid ground for night zombies");
+    }
+
+    #[test]
+    fn sheep_spawn_on_grass_and_drop_wool_and_mutton_once() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        for x in -48..48 {
+            for z in -48..48 {
+                rig.server.world.set_block(x, 54, z, ssc_world::GRASS_BLOCK);
+            }
+        }
+        rig.server.time_of_day = 0.5;
+        let mut sheep = None;
+        for tick in 1..=512 {
+            rig.server.mobs.clear();
+            rig.server.tick = tick;
+            rig.server.spawn_mobs();
+            if let Some(mob) = rig
+                .server
+                .mobs
+                .values()
+                .find(|mob| mob.kind == crate::mobs::MobKind::Sheep)
+            {
+                assert_eq!(
+                    rig.server.world.block_or_air(
+                        mob.pos.x.floor() as i32,
+                        54,
+                        mob.pos.z.floor() as i32
+                    ),
+                    ssc_world::GRASS_BLOCK
+                );
+                let distance = (mob.pos - rig.server.sessions[&1].player.pos).length();
+                assert!((MIN_MOB_SPAWN_DISTANCE..=MAX_MOB_DISTANCE).contains(&distance));
+                sheep = Some((tick, mob.pos));
+                break;
+            }
+        }
+        let (tick, pos) = sheep.expect("sheep should join day grass spawns");
+        rig.server.tick = tick;
+        rig.server.mobs.clear();
+        let id = rig.server.allocate_mob_id().unwrap();
+        let mut mob = crate::mobs::Mob::new(crate::mobs::MobKind::Sheep, pos);
+        assert!(mob.hurt(10.0, pos - Vec3::new(1.0, 0.0, 0.0)));
+        rig.server.mobs.insert(id, mob);
+        rig.server.tick();
+        assert!(!rig.server.mobs.contains_key(&id));
+        let items: Vec<_> = rig
+            .server
+            .items
+            .values()
+            .map(|item| (item.item, item.count))
+            .collect();
+        assert!(items.contains(&(ssc_world::WOOL, 1)));
+        assert!(items
+            .iter()
+            .any(|(item, count)| *item == ssc_world::MUTTON && (1..=2).contains(count)));
+        let removals = rig
+            .drain(0)
+            .iter()
+            .filter(|packet| {
+                matches!(packet,
+            ServerPacket::EntityRemove { id: removed } if *removed == id)
+            })
+            .count();
+        assert_eq!(removals, 1, "sheep is removed exactly once");
     }
 
     #[test]

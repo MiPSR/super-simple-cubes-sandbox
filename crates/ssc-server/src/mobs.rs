@@ -1,9 +1,9 @@
 //! Mobs: server-authoritative entities with simple AI (`specs.md` §2 —
 //! all logic here, clients only render what the server broadcasts).
 //!
-//! Current mobs: **pig** (passive, wanders, drops porkchop) and **zombie**
-//! (spawns at night, chases and hits players, burns in daylight, drops rotten
-//! flesh).
+//! Current mobs: **pig** and **sheep** (passive, wander, drop porkchop or
+//! wool/mutton) and **zombie** (spawns at night, chases and hits players,
+//! burns in daylight, drops rotten flesh).
 //! Placeholder visuals on the client (colored boxes); the entity-state
 //! broadcast carries the kind.
 
@@ -17,6 +17,7 @@ use crate::physics::move_entity;
 pub enum MobKind {
     Pig,
     Zombie,
+    Sheep,
 }
 
 impl MobKind {
@@ -25,6 +26,7 @@ impl MobKind {
         match self {
             MobKind::Pig => 1,
             MobKind::Zombie => 2,
+            MobKind::Sheep => 4,
         }
     }
 
@@ -32,6 +34,7 @@ impl MobKind {
         match v {
             1 => Some(MobKind::Pig),
             2 => Some(MobKind::Zombie),
+            4 => Some(MobKind::Sheep),
             _ => None,
         }
     }
@@ -40,22 +43,23 @@ impl MobKind {
         match self {
             MobKind::Pig => 10.0,
             MobKind::Zombie => 20.0,
+            MobKind::Sheep => 8.0,
         }
     }
 
     /// Movement speed (blocks/s).
     pub fn speed(self) -> f32 {
         match self {
-            MobKind::Pig => 1.2,
+            MobKind::Pig | MobKind::Sheep => 1.2,
             MobKind::Zombie => 2.3,
         }
     }
 
-    /// Attack damage (zombies only; pigs are passive).
+    /// Attack damage (zombies only; pigs and sheep are passive).
     pub fn attack_damage(self) -> f32 {
         match self {
             MobKind::Zombie => 3.0,
-            MobKind::Pig => 0.0,
+            MobKind::Pig | MobKind::Sheep => 0.0,
         }
     }
 
@@ -64,18 +68,30 @@ impl MobKind {
         match self {
             MobKind::Pig => (0.45, 0.9),
             MobKind::Zombie => (0.3, 1.9),
+            MobKind::Sheep => (0.45, 1.3),
         }
+    }
+
+    pub fn is_passive(self) -> bool {
+        matches!(self, MobKind::Pig | MobKind::Sheep)
     }
 }
 
-/// Deterministic loot roll with vanilla-sized count ranges. The server
+/// Deterministic loot rolls with vanilla-sized count ranges. The server
 /// supplies a per-entity seed; gameplay does not depend on client state.
-pub fn drop_for(kind: MobKind, roll: u64) -> Option<(ssc_world::ItemId, u8)> {
+pub fn drops_for(kind: MobKind, roll: u64) -> Vec<(ssc_world::ItemId, u8)> {
     match kind {
-        MobKind::Pig => Some((ssc_world::PORKCHOP, 1 + (roll % 3) as u8)),
+        MobKind::Pig => vec![(ssc_world::PORKCHOP, 1 + (roll % 3) as u8)],
+        MobKind::Sheep => vec![
+            (ssc_world::WOOL, 1),
+            (ssc_world::MUTTON, 1 + (roll % 2) as u8),
+        ],
         MobKind::Zombie => {
             let count = (roll % 3) as u8;
-            (count > 0).then_some((ssc_world::ROTTEN_FLESH, count))
+            (count > 0)
+                .then_some((ssc_world::ROTTEN_FLESH, count))
+                .into_iter()
+                .collect()
         }
     }
 }
@@ -276,7 +292,7 @@ impl Mob {
         self.health = (self.health - damage).max(0.0);
         // Knockback away from the attacker.
         let delta = (self.pos - from).normalize_or_zero();
-        if self.kind == MobKind::Pig {
+        if self.kind.is_passive() {
             self.panic_timer = 60;
             let direction = Vec2::new(delta.x, delta.z).normalize_or_zero();
             self.wander_dir = Some(if direction == Vec2::ZERO {
@@ -491,15 +507,37 @@ mod tests {
     #[test]
     fn mob_loot_counts_match_documented_ranges() {
         for roll in 0..12 {
-            let (item, count) = drop_for(MobKind::Pig, roll).unwrap();
-            assert_eq!(item, ssc_world::PORKCHOP);
-            assert!((1..=3).contains(&count));
-            if let Some((item, count)) = drop_for(MobKind::Zombie, roll) {
+            let pig = drops_for(MobKind::Pig, roll);
+            assert_eq!(pig[0].0, ssc_world::PORKCHOP);
+            assert!((1..=3).contains(&pig[0].1));
+            let sheep = drops_for(MobKind::Sheep, roll);
+            assert_eq!(sheep[0], (ssc_world::WOOL, 1));
+            assert_eq!(sheep[1].0, ssc_world::MUTTON);
+            assert!((1..=2).contains(&sheep[1].1));
+            if let Some((item, count)) = drops_for(MobKind::Zombie, roll).first().copied() {
                 assert_eq!(item, ssc_world::ROTTEN_FLESH);
                 assert!((1..=2).contains(&count));
             }
         }
-        assert_eq!(drop_for(MobKind::Zombie, 0), None);
+        assert!(drops_for(MobKind::Zombie, 0).is_empty());
+    }
+
+    #[test]
+    fn sheep_are_passive_and_flee_after_damage() {
+        let world = flat_world();
+        let mut sheep = Mob::new(MobKind::Sheep, Vec3::new(8.5, 48.02, 8.5));
+        assert_eq!(sheep.health, 8.0);
+        assert_eq!(MobKind::Sheep.attack_damage(), 0.0);
+        for _ in 0..80 {
+            assert!(sheep
+                .tick(&world, &[Vec3::new(8.5, 48.0, 8.5)], 0.05, true)
+                .is_none());
+            assert_eq!(sheep.panic_timer, 0, "undamaged sheep never panic");
+        }
+        let pos = sheep.pos;
+        assert!(!sheep.hurt(2.0, pos - Vec3::new(1.0, 0.0, 0.0)));
+        assert!(sheep.panic_timer > 0);
+        assert_eq!(sheep.health, 6.0);
     }
 
     #[test]

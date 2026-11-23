@@ -278,7 +278,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 22
+  throwing snowballs and Silk Touch are missing. Protocol 23
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit
@@ -357,15 +357,19 @@ Every implemented wiki feature gets a line here. Status legend:
   LT places, Start = Escape; dead-zoned, works alongside keyboard/mouse.
   Button remapping/UI, haptics and analog movement (protocol is digital
   keys) pending.
-- `partial` — Mobs: server-authoritative pigs (passive wandering) and zombies
-  (night spawning, chase, melee damage, knockback, daylight burning when
-  exposed to sky but not while touching water); pigs spawn in grass-only groups of 1–3 with independent
-  clearance, separation and mob-cap checks, while zombies can spawn singly
-  on sand at night. Solid walls prevent zombie melee hits. Entity-kind
-  packets and placeholder client meshes.
+- `partial` — Mobs: server-authoritative pigs and sheep (passive wandering)
+  plus zombies (night spawning, chase, melee damage, knockback, daylight
+  burning when exposed to sky but not while touching water). Pigs and sheep
+  spawn in grass-only groups of 1–3 with independent clearance, separation
+  and mob-cap checks; a quarter of day groups become sheep. Zombies can
+  spawn singly on sand at night. Solid walls prevent zombie melee hits.
+  Entity-kind packets and placeholder client meshes (white sheep box).
   Spawn/despawn rules and AI are simplified; no pathfinding, fire visuals,
-  breeding, or full Bedrock mob roster. Pigs drop 1–3 raw porkchops,
-  zombies 0–2 rotten flesh; drops use the basic item-entity system.
+  breeding, shearing, sheep grazing/wool regrowth, or full Bedrock mob
+  roster. Pigs drop 1–3 raw porkchops, sheep drop one wool and 1–2 mutton,
+  zombies 0–2 rotten flesh; drops use the basic item-entity system. Raw and
+  cooked mutton restore 2/6 hunger with 1.2/9.6 saturation and cook in a
+  furnace. White wool is a placeable building block.
 - `partial` — Natural mob spawns use a spherical 24–44-block shell for a
   fixed simulation distance of four: every joined player's 24-block
   exclusion is respected, and a spawn must be within 44 blocks of at least
@@ -373,9 +377,10 @@ Every implemented wiki feature gets a line here. Status legend:
   beyond 44 blocks of every online player despawn; spawning frequency,
   caps, protected/named mobs and configurable simulation distance remain
   simplified or missing.
-- `partial` — Hurt pigs flee away from the attacker for a three-second
-  panic interval at twice their wander speed and can hop one-block obstacles;
-  they remain passive. Flee direction/timer persist in version-2 mob saves
+- `partial` — Hurt pigs and sheep flee away from the attacker for a
+  three-second panic interval at twice their wander speed and can hop
+  one-block obstacles; they remain passive. Flee direction/timer persist in
+  version-2 mob saves
   and pause while offline; version-1 mob saves migrate with no panic.
   The fixed interval, straight-line steering and speed are approximations
   of Bedrock panic AI; full pathfinding and other panic triggers are pending.

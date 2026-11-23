@@ -673,6 +673,7 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
         let max_health = match kind {
             1 => 10.0,
             2 => 20.0,
+            4 => 8.0,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -706,7 +707,7 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
             || attack_cooldown > 20
             || burn_timer >= 20
             || panic_timer > 60
-            || (panic_timer > 0 && (kind != 1 || wander_dir.is_none()))
+            || (panic_timer > 0 && (!matches!(kind, 1 | 4) || wander_dir.is_none()))
             || wander_dir.is_some_and(|d| d.iter().any(|v| !v.is_finite()))
         {
             return Err(io::Error::new(
@@ -739,6 +740,7 @@ pub fn save_mobs(path: &Path, mobs: &[SavedMob]) -> io::Result<()> {
         let max_health = match mob.kind {
             1 => 10.0,
             2 => 20.0,
+            4 => 8.0,
             _ => return true,
         };
         mob.pos.iter().chain(mob.vel.iter()).any(|v| !v.is_finite())
@@ -753,7 +755,7 @@ pub fn save_mobs(path: &Path, mobs: &[SavedMob]) -> io::Result<()> {
             || mob.attack_cooldown > 20
             || mob.burn_timer >= 20
             || mob.panic_timer > 60
-            || (mob.panic_timer > 0 && (mob.kind != 1 || mob.wander_dir.is_none()))
+            || (mob.panic_timer > 0 && (!matches!(mob.kind, 1 | 4) || mob.wander_dir.is_none()))
             || mob
                 .wander_dir
                 .is_some_and(|d| d.iter().any(|v| !v.is_finite()))
@@ -970,6 +972,31 @@ mod tests {
         assert!(save_player(&path, &id, &data).is_err());
         fs::remove_file(path).unwrap();
     }
+    #[test]
+    fn sheep_mob_state_and_flee_direction_round_trip() {
+        use super::*;
+        let path = std::env::temp_dir().join(format!("ssc-sheep-mobs-{}.bin", std::process::id()));
+        let mob = SavedMob {
+            kind: 4,
+            pos: [8.5, 55.0, 8.5],
+            vel: [0.1, -0.2, 0.3],
+            yaw: 1.25,
+            health: 6.0,
+            wander_timer: 17,
+            wander_dir: Some([0.6, 0.8]),
+            attack_cooldown: 0,
+            burn_timer: 0,
+            panic_timer: 23,
+            on_ground: true,
+        };
+        save_mobs(&path, &[mob]).unwrap();
+        assert_eq!(load_mobs(&path).unwrap(), Some(vec![mob]));
+        let mut bad = mob;
+        bad.health = 8.1;
+        assert!(save_mobs(&path, &[bad]).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn furnace_state_round_trips_and_corruption_is_rejected() {
         use super::*;

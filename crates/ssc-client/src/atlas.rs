@@ -179,6 +179,18 @@ fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgba {
                 [0, 0, 0, 0]
             }
         }
+        ssc_world::TILE_WOOL => {
+            let weave = (x + y) % 4 == 0;
+            mix(
+                [232, 232, 226],
+                if weave {
+                    0.92
+                } else {
+                    0.97 + noise2(x, y, 40) * 0.05
+                },
+                255,
+            )
+        }
         ssc_world::TILE_GLASS => {
             if x == 0 || x == 15 || y == 0 || y == 15 {
                 [180, 220, 230, 180]
