@@ -449,6 +449,7 @@ where
             KeyCode::KeyF => Key::F,
             KeyCode::KeyT => Key::T,
             KeyCode::KeyG => Key::G,
+            KeyCode::Digit0 => Key::Digit(0),
             KeyCode::Digit1 => Key::Digit(1),
             KeyCode::Digit2 => Key::Digit(2),
             KeyCode::Digit3 => Key::Digit(3),

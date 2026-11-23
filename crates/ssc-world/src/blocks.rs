@@ -37,6 +37,8 @@ pub const OAK_SAPLING: BlockId = 24;
 pub const OAK_SAPLING_READY: BlockId = 25;
 /// Natural leaves produced by saved tree growth, not persistent placements.
 pub const GROWN_OAK_LEAVES: BlockId = 26;
+pub const FURNACE: BlockId = 27;
+pub const LIT_FURNACE: BlockId = 28;
 
 // Atlas tile ids (16×16 tiles per row/column in the 256×256 atlas).
 pub const TILE_MISSING: u16 = 0;
@@ -66,6 +68,8 @@ pub const TILE_COPPER_ORE: u16 = 23;
 pub const TILE_DEEPSLATE_COPPER_ORE: u16 = 24;
 pub const TILE_STRIPPED_LOG_SIDE: u16 = 25;
 pub const TILE_OAK_SAPLING: u16 = 26;
+pub const TILE_FURNACE: u16 = 27;
+pub const TILE_LIT_FURNACE: u16 = 28;
 
 /// Face indices into [`BlockInfo::tiles`].
 pub const FACE_TOP: usize = 0;
@@ -290,6 +294,8 @@ pub const BLOCKS: &[BlockInfo] = &[
         needs_tool: false,
     },
     b("grown_oak_leaves", [TILE_LEAVES; 6], 0.2, false),
+    b("furnace", [TILE_FURNACE; 6], 3.5, true),
+    b("lit_furnace", [TILE_LIT_FURNACE; 6], 3.5, true),
 ];
 
 pub fn is_oak_leaves(block: BlockId) -> bool {
@@ -298,6 +304,10 @@ pub fn is_oak_leaves(block: BlockId) -> bool {
 
 pub fn is_oak_sapling(block: BlockId) -> bool {
     matches!(block, OAK_SAPLING | OAK_SAPLING_READY)
+}
+
+pub fn is_furnace(block: BlockId) -> bool {
+    matches!(block, FURNACE | LIT_FURNACE)
 }
 
 /// Number of registered blocks (valid ids are `0..BLOCK_COUNT`).

@@ -83,9 +83,15 @@ pub enum ClientPacket {
         name: String,
     },
     /// Player input snapshot at ~20 Hz: movement keys + look angles.
-    Input { keys: u16, yaw: f32, pitch: f32 },
+    Input {
+        keys: u16,
+        yaw: f32,
+        pitch: f32,
+    },
     /// Hotbar slot selection.
-    SelectSlot { slot: u8 },
+    SelectSlot {
+        slot: u8,
+    },
     /// Request to start digging (creative: instant break; survival:
     /// progress begins server-side).
     DigStart,
@@ -95,15 +101,30 @@ pub enum ClientPacket {
     /// (server raycasts and decides).
     Place,
     /// Creative: assign a block from the palette to a hotbar slot.
-    SetHotbarSlot { slot: u8, block: u16 },
+    SetHotbarSlot {
+        slot: u8,
+        block: u16,
+    },
     /// Move items within the own inventory (slot indices 0..36).
-    SwapSlots { a: u8, b: u8 },
+    SwapSlots {
+        a: u8,
+        b: u8,
+    },
     /// Craft one server-defined recipe from the own inventory.
-    Craft { recipe: u8 },
+    Craft {
+        recipe: u8,
+    },
     /// Drop one item from the selected survival hotbar stack (Q).
     DropSelected,
     /// Release use; cancels an in-progress food consumption.
     UseStop,
+    /// Transfer a stack between own inventory and the currently open furnace.
+    FurnaceSwap {
+        inventory_slot: u8,
+        furnace_slot: u8,
+        from_furnace: bool,
+    },
+    CloseContainer,
 }
 
 impl ClientPacket {
@@ -149,6 +170,17 @@ impl ClientPacket {
             }
             ClientPacket::DropSelected => w.put_u8(10),
             ClientPacket::UseStop => w.put_u8(11),
+            ClientPacket::FurnaceSwap {
+                inventory_slot,
+                furnace_slot,
+                from_furnace,
+            } => {
+                w.put_u8(12);
+                w.put_u8(*inventory_slot);
+                w.put_u8(*furnace_slot);
+                w.put_u8(u8::from(*from_furnace));
+            }
+            ClientPacket::CloseContainer => w.put_u8(13),
         }
         w.into_bytes()
     }
@@ -184,6 +216,22 @@ impl ClientPacket {
             },
             10 => ClientPacket::DropSelected,
             11 => ClientPacket::UseStop,
+            12 => {
+                let inventory_slot = r.get_u8()?;
+                let furnace_slot = r.get_u8()?;
+                let direction = r.get_u8()?;
+                if direction > 1 {
+                    return Err(crate::codec::DecodeError(
+                        "invalid furnace transfer direction".into(),
+                    ));
+                }
+                ClientPacket::FurnaceSwap {
+                    inventory_slot,
+                    furnace_slot,
+                    from_furnace: direction == 1,
+                }
+            }
+            13 => ClientPacket::CloseContainer,
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad client packet tag {tag}"
@@ -218,9 +266,15 @@ pub enum ServerPacket {
         blocks: Vec<u16>,
     },
     /// Marks a column as fully streamed; the client may mesh it now.
-    ColumnEnd { cx: i32, cz: i32 },
+    ColumnEnd {
+        cx: i32,
+        cz: i32,
+    },
     /// The server no longer tracks this column; drop its meshes.
-    UnloadColumn { cx: i32, cz: i32 },
+    UnloadColumn {
+        cx: i32,
+        cz: i32,
+    },
     /// LOD summary of a column (Distant Horizons-style far data,
     /// `specs.md` §3): 4×4 cells of (height, top tile), 4×4 blocks each.
     LodColumn {
@@ -230,7 +284,10 @@ pub enum ServerPacket {
         cells: [u16; 32],
     },
     /// Drop the LOD summary of a column.
-    UnloadLod { cx: i32, cz: i32 },
+    UnloadLod {
+        cx: i32,
+        cz: i32,
+    },
     /// Authoritative entity state (20 Hz, own id included; clients
     /// interpolate everything the same way). `kind`: 0 = player,
     /// 1 = pig, 2 = zombie.
@@ -244,22 +301,44 @@ pub enum ServerPacket {
         kind: u8,
     },
     /// An entity left the world.
-    EntityRemove { id: u16 },
+    EntityRemove {
+        id: u16,
+    },
     /// A single block changed.
-    BlockUpdate { x: i32, y: i32, z: i32, block: u16 },
+    BlockUpdate {
+        x: i32,
+        y: i32,
+        z: i32,
+        block: u16,
+    },
     /// Server-driven sound trigger at a world position.
-    Sound { sound: u16, x: f32, y: f32, z: f32 },
+    Sound {
+        sound: u16,
+        x: f32,
+        y: f32,
+        z: f32,
+    },
     /// Server is shutting down the session.
-    Goodbye { reason: String },
+    Goodbye {
+        reason: String,
+    },
     /// The creative block palette (what the picker may offer).
-    CreativeBlocks { ids: Vec<u16> },
+    CreativeBlocks {
+        ids: Vec<u16>,
+    },
     /// The player's hotbar contents (after a creative assignment).
-    Hotbar { slots: [u16; 9] },
+    Hotbar {
+        slots: [u16; 9],
+    },
     /// Time of day, 0..1 (0 = dawn). Minecraft pace: a full cycle is
     /// 24000 ticks (~20 minutes at 20 TPS).
-    TimeOfDay { t: f32 },
+    TimeOfDay {
+        t: f32,
+    },
     /// Full inventory sync (36 slots; hotbar = slots 0..9).
-    Inventory { slots: Vec<(u16, u8)> },
+    Inventory {
+        slots: Vec<(u16, u8)>,
+    },
     /// Survival status: health (0..20), hunger (0..20), air (0..300),
     /// remaining Hunger I duration in server ticks.
     Status {
@@ -285,9 +364,24 @@ pub enum ServerPacket {
         z: f32,
     },
     /// Remaining uses for 36 inventory slots; zero for non-tools.
-    ToolDurability { slots: Vec<u16> },
+    ToolDurability {
+        slots: Vec<u16>,
+    },
     /// Server-owned food use timer (0 = finished or canceled).
-    EatingProgress { remaining: u8 },
+    EatingProgress {
+        remaining: u8,
+    },
+    Furnace {
+        open: bool,
+        x: i32,
+        y: i32,
+        z: i32,
+        slots: [(u16, u8); 3],
+        burn_remaining: u16,
+        burn_total: u16,
+        cook_ticks: u16,
+    },
+    ContainerClosed,
 }
 
 impl ServerPacket {
@@ -456,6 +550,30 @@ impl ServerPacket {
                 w.put_u8(19);
                 w.put_u8(*remaining);
             }
+            ServerPacket::Furnace {
+                open,
+                x,
+                y,
+                z,
+                slots,
+                burn_remaining,
+                burn_total,
+                cook_ticks,
+            } => {
+                w.put_u8(20);
+                w.put_u8(u8::from(*open));
+                w.put_i32(*x);
+                w.put_i32(*y);
+                w.put_i32(*z);
+                for (item, count) in slots {
+                    w.put_u16(*item);
+                    w.put_u8(*count);
+                }
+                w.put_u16(*burn_remaining);
+                w.put_u16(*burn_total);
+                w.put_u16(*cook_ticks);
+            }
+            ServerPacket::ContainerClosed => w.put_u8(21),
         }
         w.into_bytes()
     }
@@ -592,6 +710,36 @@ impl ServerPacket {
                 }
                 ServerPacket::EatingProgress { remaining }
             }
+            20 => {
+                let open = r.get_u8()?;
+                if open > 1 {
+                    return Err(crate::codec::DecodeError(
+                        "invalid furnace open flag".into(),
+                    ));
+                }
+                let (x, y, z) = (r.get_i32()?, r.get_i32()?, r.get_i32()?);
+                let mut slots = [(0, 0); 3];
+                for slot in &mut slots {
+                    *slot = (r.get_u16()?, r.get_u8()?);
+                }
+                let burn_remaining = r.get_u16()?;
+                let burn_total = r.get_u16()?;
+                let cook_ticks = r.get_u16()?;
+                if burn_remaining > burn_total || burn_total > 1600 || cook_ticks >= 200 {
+                    return Err(crate::codec::DecodeError("invalid furnace timers".into()));
+                }
+                ServerPacket::Furnace {
+                    open: open == 1,
+                    x,
+                    y,
+                    z,
+                    slots,
+                    burn_remaining,
+                    burn_total,
+                    cook_ticks,
+                }
+            }
+            21 => ServerPacket::ContainerClosed,
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad server packet tag {tag}"
@@ -621,6 +769,39 @@ mod tests {
     fn craft_recipe_survives_wire_round_trip() {
         let packet = ClientPacket::Craft { recipe: 3 };
         assert_eq!(ClientPacket::decode(&packet.encode()).unwrap(), packet);
+    }
+
+    #[test]
+    fn furnace_packets_round_trip_and_reject_invalid_timers() {
+        for packet in [
+            ClientPacket::FurnaceSwap {
+                inventory_slot: 35,
+                furnace_slot: 2,
+                from_furnace: true,
+            },
+            ClientPacket::CloseContainer,
+        ] {
+            assert_eq!(ClientPacket::decode(&packet.encode()).unwrap(), packet);
+        }
+        let mut packet = ServerPacket::Furnace {
+            open: true,
+            x: -16,
+            y: 64,
+            z: 8,
+            slots: [(115, 2), (0, 0), (0, 0)],
+            burn_remaining: 100,
+            burn_total: 1600,
+            cook_ticks: 199,
+        };
+        assert_eq!(ServerPacket::decode(&packet.encode()).unwrap(), packet);
+        if let ServerPacket::Furnace { cook_ticks, .. } = &mut packet {
+            *cook_ticks = 200;
+        }
+        assert!(ServerPacket::decode(&packet.encode()).is_err());
+        assert_eq!(
+            ServerPacket::decode(&ServerPacket::ContainerClosed.encode()).unwrap(),
+            ServerPacket::ContainerClosed
+        );
     }
 
     #[test]

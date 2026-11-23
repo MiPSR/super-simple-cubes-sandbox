@@ -124,6 +124,14 @@ struct EntityView {
     mesh: MeshId,
 }
 
+struct FurnaceView {
+    position: (i32, i32, i32),
+    slots: [(u16, u8); 3],
+    burn_remaining: u16,
+    burn_total: u16,
+    cook_ticks: u16,
+}
+
 struct App {
     wire: Box<dyn Wire>,
     shared: Arc<RwLock<ClientWorld>>,
@@ -157,6 +165,7 @@ struct App {
     inventory: Vec<(u16, u8)>,
     /// Remaining tool uses from the server (zero for other items).
     tool_durability: Vec<u16>,
+    furnace: Option<FurnaceView>,
     /// Game mode (0 survival / 1 creative).
     mode: u8,
     /// Survival vitals.
@@ -290,6 +299,7 @@ impl App {
             hotbar: [0; 9],
             inventory: Vec::new(),
             tool_durability: Vec::new(),
+            furnace: None,
             mode: 0,
             health: 20.0,
             hunger: 20,
@@ -348,9 +358,8 @@ impl App {
             return;
         };
         if self
-            .inventory
-            .get(slot as usize)
-            .is_some_and(|(item, count)| *item != 0 && *count > 0)
+            .inventory_slot(slot)
+            .is_some_and(|(item, count)| item != 0 && count > 0)
         {
             self.inv_pick = Some(slot);
             self.inv_drag = Some(slot);
@@ -369,13 +378,37 @@ impl App {
         });
         if let Some(target) = target {
             if source != target {
-                self.send(&ClientPacket::SwapSlots {
-                    a: source,
-                    b: target,
-                });
+                if source < 36 && target < 36 {
+                    self.send(&ClientPacket::SwapSlots {
+                        a: source,
+                        b: target,
+                    });
+                } else if (source < 36) != (target < 36) {
+                    self.send(&ClientPacket::FurnaceSwap {
+                        inventory_slot: if source < 36 { source } else { target },
+                        furnace_slot: if source >= 36 {
+                            source - 36
+                        } else {
+                            target - 36
+                        },
+                        from_furnace: source >= 36,
+                    });
+                }
             }
         }
         self.inv_pick = None;
+    }
+
+    fn inventory_slot(&self, slot: u8) -> Option<(u16, u8)> {
+        if slot < 36 {
+            self.inventory.get(slot as usize).copied()
+        } else {
+            self.furnace
+                .as_ref()?
+                .slots
+                .get((slot - 36) as usize)
+                .copied()
+        }
     }
 
     /// Inventory screen layout: 9 columns × 4 rows of slots.
@@ -384,7 +417,7 @@ impl App {
         const ROW_H: f32 = 22.0;
         const COLS: f32 = 9.0;
         let panel_w = COL_W * COLS + 30.0;
-        let panel_h = 4.0 * ROW_H + 84.0;
+        let panel_h = 4.0 * ROW_H + if self.furnace.is_some() { 132.0 } else { 84.0 };
         let x0 = ((w - panel_w) / 2.0).max(10.0);
         let y0 = (h - panel_h) / 2.0;
         (x0, y0, COL_W, ROW_H)
@@ -392,6 +425,10 @@ impl App {
 
     fn inventory_hit(&self, mx: f32, my: f32, w: f32, h: f32) -> Option<u8> {
         let (x0, y0, col_w, row_h) = self.inventory_layout(w, h);
+        if self.furnace.is_some() && (y0 + 174.0..y0 + 174.0 + row_h).contains(&my) {
+            let col = ((mx - x0) / (col_w * 2.0)).floor() as i32;
+            return (0..3).contains(&col).then_some(36 + col as u8);
+        }
         if mx < x0 || my < y0 + 60.0 {
             return None;
         }
@@ -482,6 +519,15 @@ impl App {
                     key: Key::Escape,
                     state: KeyState::Pressed,
                 } => {
+                    if self.picker_open {
+                        self.picker_open = false;
+                        self.furnace = None;
+                        self.inv_drag = None;
+                        self.inv_pick = None;
+                        self.send(&ClientPacket::CloseContainer);
+                        frame.set_mouse_locked(true);
+                        continue;
+                    }
                     let locked = frame.mouse_locked();
                     if locked {
                         self.send(&ClientPacket::UseStop);
@@ -492,6 +538,12 @@ impl App {
                     key: Key::Digit(n),
                     state: KeyState::Pressed,
                 } => {
+                    if n == 0 {
+                        if self.picker_open && self.mode == 0 {
+                            self.send(&ClientPacket::Craft { recipe: 9 });
+                        }
+                        continue;
+                    }
                     if self.picker_open && self.mode == 0 && (1..=9).contains(&n) {
                         self.send(&ClientPacket::Craft { recipe: n - 1 });
                         continue;
@@ -529,6 +581,10 @@ impl App {
                     // E: inventory screen in survival, block picker in
                     // creative (both server-driven).
                     self.picker_open = !self.picker_open;
+                    if !self.picker_open {
+                        self.furnace = None;
+                        self.send(&ClientPacket::CloseContainer);
+                    }
                     if self.picker_open {
                         self.send(&ClientPacket::UseStop);
                     }
@@ -557,7 +613,7 @@ impl App {
                     state: KeyState::Pressed,
                 } => {
                     if self.picker_open {
-                        if self.mode == 1 {
+                        if self.mode == 1 && self.furnace.is_none() {
                             self.picker_click(frame);
                         } else {
                             self.inventory_press(frame);
@@ -575,7 +631,7 @@ impl App {
                     button: MouseButton::Left,
                     state: KeyState::Released,
                 } => {
-                    if self.picker_open && self.mode != 1 {
+                    if self.picker_open && (self.mode != 1 || self.furnace.is_some()) {
                         self.inventory_release(frame);
                     } else if !self.picker_open && frame.mouse_locked() {
                         // Release cancels the dig (survival progress).
@@ -879,7 +935,7 @@ impl App {
             }
         }
         // Creative block picker (E in creative): the palette is server-sent.
-        if self.picker_open && self.mode == 1 {
+        if self.picker_open && self.mode == 1 && self.furnace.is_none() {
             let (x0, y0, col_w, row_h, _pw, _ph) = self.picker_layout(wf, hf);
             frame.hud_text(
                 format!("creative blocks - slot {}", self.selected_slot + 1),
@@ -903,7 +959,7 @@ impl App {
         }
         // Survival inventory screen (E in survival): 36 slots, click two
         // slots to swap them (server validates).
-        if self.picker_open && self.mode == 0 {
+        if self.picker_open && (self.mode == 0 || self.furnace.is_some()) {
             let (x0, y0, col_w, row_h) = self.inventory_layout(wf, hf);
             frame.hud_text(
                 "inventory - drag slots (E close)".to_string(),
@@ -913,7 +969,7 @@ impl App {
                 [1.0, 0.85, 0.3, 1.0],
             );
             frame.hud_text(
-                "craft 1:planks 2:sticks 3:wood pick 4:stone pick".to_string(),
+                "craft 0:furnace 1:planks 2:sticks 3:wood pick 4:stone pick".to_string(),
                 x0 + 15.0,
                 y0 + 24.0,
                 14.0,
@@ -959,6 +1015,35 @@ impl App {
                     y0 + 60.0 + row * row_h,
                     15.0,
                     color,
+                );
+            }
+            if let Some(furnace) = &self.furnace {
+                for (slot, (item, count)) in furnace.slots.iter().enumerate() {
+                    let name = if *item == 0 {
+                        "-".to_string()
+                    } else {
+                        format!("{} x{}", ssc_world::item_info(*item).name, count)
+                    };
+                    frame.hud_text(
+                        format!("{}: {}", ["input", "fuel", "output"][slot], name),
+                        x0 + 15.0 + slot as f32 * col_w * 2.0,
+                        y0 + 174.0,
+                        14.0,
+                        [1.0, 0.85, 0.3, 1.0],
+                    );
+                }
+                frame.hud_text(
+                    format!(
+                        "furnace {:?} - cook {}% - fuel {}/{} ticks",
+                        furnace.position,
+                        furnace.cook_ticks / 2,
+                        furnace.burn_remaining,
+                        furnace.burn_total
+                    ),
+                    x0 + 15.0,
+                    y0 + 204.0,
+                    14.0,
+                    [1.0, 0.85, 0.3, 1.0],
                 );
             }
         }
@@ -1358,6 +1443,47 @@ impl App {
             }
             ServerPacket::EatingProgress { remaining } => {
                 self.eating_remaining = remaining;
+            }
+            ServerPacket::Furnace {
+                open,
+                x,
+                y,
+                z,
+                slots,
+                burn_remaining,
+                burn_total,
+                cook_ticks,
+            } => {
+                if open
+                    || self
+                        .furnace
+                        .as_ref()
+                        .is_some_and(|view| view.position == (x, y, z))
+                {
+                    self.furnace = Some(FurnaceView {
+                        position: (x, y, z),
+                        slots,
+                        burn_remaining,
+                        burn_total,
+                        cook_ticks,
+                    });
+                }
+                if open {
+                    self.picker_open = true;
+                    self.inv_drag = None;
+                    self.inv_pick = None;
+                    self.eating_remaining = 0;
+                    frame.set_mouse_locked(false);
+                    self.send(&ClientPacket::UseStop);
+                }
+            }
+            ServerPacket::ContainerClosed => {
+                if self.furnace.take().is_some() {
+                    self.picker_open = false;
+                    self.inv_drag = None;
+                    self.inv_pick = None;
+                    frame.set_mouse_locked(true);
+                }
             }
             ServerPacket::Status {
                 health,

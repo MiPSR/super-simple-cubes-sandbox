@@ -153,6 +153,7 @@ struct Session {
     /// In-progress use is transient, never restored from a player save.
     eating: Option<EatingState>,
     last_eating_sync: u8,
+    open_furnace: Option<(i32, i32, i32)>,
     /// Whether this death already emitted inventory drops.
     inventory_dropped_on_death: bool,
     /// Respawn point (set at join).
@@ -222,6 +223,7 @@ impl Session {
             survival: crate::survival::SurvivalState::default(),
             eating: None,
             last_eating_sync: 0,
+            open_furnace: None,
             inventory_dropped_on_death: false,
             spawn: Vec3::new(8.5, 128.0, 8.5),
             inv_dirty: true,
@@ -245,6 +247,8 @@ pub struct Server {
     persistence_ready: bool,
     item_persistence_ready: bool,
     mob_persistence_ready: bool,
+    furnace_persistence_ready: bool,
+    furnaces: crate::persistence::FurnaceSaves,
     sessions: HashMap<EntityId, Session>,
     /// Mobs (ids from `FIRST_MOB_ID`).
     mobs: HashMap<EntityId, crate::mobs::Mob>,
@@ -324,6 +328,34 @@ impl Server {
             None => (Vec::new(), false),
         };
         let edited = block_edits.keys().copied().collect();
+        let (furnaces, furnace_persistence_ready) = match cfg.world_path.as_deref() {
+            Some(path) => match crate::persistence::load_furnaces(
+                &crate::persistence::furnace_save_path(path),
+            ) {
+                Ok(data) => {
+                    let data = data.unwrap_or_default();
+                    let consistent = data.keys().all(|&(x, y, z)| {
+                        block_edits
+                            .get(&(x.div_euclid(16), z.div_euclid(16)))
+                            .and_then(|edits| edits.get(&(x.rem_euclid(16), y, z.rem_euclid(16))))
+                            .is_some_and(|block| ssc_world::is_furnace(*block))
+                    });
+                    if consistent {
+                        (data, true)
+                    } else {
+                        eprintln!(
+                            "[server] furnace save does not match world edits; preserving it"
+                        );
+                        (HashMap::new(), false)
+                    }
+                }
+                Err(error) => {
+                    eprintln!("[server] furnace save could not be loaded: {error}; preserving it");
+                    (HashMap::new(), false)
+                }
+            },
+            None => (HashMap::new(), false),
+        };
         let mut server = Self {
             gen: WorldGen::new(seed),
             world: World::default(),
@@ -332,6 +364,8 @@ impl Server {
             persistence_ready,
             item_persistence_ready,
             mob_persistence_ready,
+            furnace_persistence_ready,
+            furnaces,
             cfg,
             sessions: HashMap::new(),
             mobs: HashMap::new(),
@@ -571,6 +605,21 @@ impl Server {
         }
     }
 
+    fn save_furnaces(&self) {
+        if !self.furnace_persistence_ready {
+            return;
+        }
+        let Some(path) = self.cfg.world_path.as_deref() else {
+            return;
+        };
+        if let Err(error) = crate::persistence::save_furnaces(
+            &crate::persistence::furnace_save_path(path),
+            &self.furnaces,
+        ) {
+            eprintln!("[server] furnace save failed: {error}");
+        }
+    }
+
     fn record_block_edit(&mut self, x: i32, y: i32, z: i32, block: BlockId) {
         let key = (x.div_euclid(16), z.div_euclid(16));
         let local = (x.rem_euclid(16), y, z.rem_euclid(16));
@@ -654,6 +703,7 @@ impl Server {
         self.save_all_player_data();
         self.save_item_entities();
         self.save_mobs();
+        self.save_furnaces();
         self.save_world();
         let _ = self.broadcast(&ServerPacket::Goodbye {
             reason: "server closed".into(),
@@ -664,6 +714,7 @@ impl Server {
         self.tick += 1;
         let dt = 1.0 / TICK_RATE;
         self.tick_eating();
+        self.tick_furnaces();
 
         // --- Movement + survival simulation + dig progress, per session.
         // Effects are collected first, then applied (broadcasts need &mut
@@ -1109,6 +1160,7 @@ impl Server {
             self.save_all_player_data();
             self.save_item_entities();
             self.save_mobs();
+            self.save_furnaces();
             self.save_world();
         }
     }
@@ -1396,6 +1448,205 @@ impl Server {
             self.items.remove(&id);
             let _ = self.broadcast(&ServerPacket::EntityRemove { id });
         }
+    }
+
+    fn can_access_furnace(&self, id: EntityId, pos: (i32, i32, i32)) -> bool {
+        let Some(session) = self.sessions.get(&id) else {
+            return false;
+        };
+        let (x, y, z) = pos;
+        if !session.player.joined
+            || session.survival.dead
+            || !ssc_world::is_furnace(self.world.block_or_air(x, y, z))
+        {
+            return false;
+        }
+        let eye = session.player.pos + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0);
+        let min = Vec3::new(x as f32, y as f32, z as f32);
+        (eye - eye.clamp(min, min + Vec3::ONE)).length() <= REACH
+    }
+
+    fn furnace_packet(&self, pos: (i32, i32, i32), open: bool) -> Option<ServerPacket> {
+        let furnace = self.furnaces.get(&pos)?;
+        Some(ServerPacket::Furnace {
+            open,
+            x: pos.0,
+            y: pos.1,
+            z: pos.2,
+            slots: furnace.slots.map(|slot| slot.unwrap_or((0, 0))),
+            burn_remaining: furnace.burn_remaining,
+            burn_total: furnace.burn_total,
+            cook_ticks: furnace.cook_ticks,
+        })
+    }
+
+    fn sync_furnace(&mut self, pos: (i32, i32, i32)) {
+        let Some(packet) = self.furnace_packet(pos, false) else {
+            return;
+        };
+        let viewers: Vec<_> = self
+            .sessions
+            .iter()
+            .filter_map(|(id, session)| (session.open_furnace == Some(pos)).then_some(*id))
+            .collect();
+        for id in viewers {
+            let _ = self.direct(id, &packet);
+        }
+    }
+
+    fn tick_furnaces(&mut self) {
+        let invalid: Vec<_> = self
+            .sessions
+            .iter()
+            .filter_map(|(id, session)| {
+                session
+                    .open_furnace
+                    .filter(|pos| !self.can_access_furnace(*id, *pos))
+                    .map(|_| *id)
+            })
+            .collect();
+        for id in invalid {
+            self.sessions.get_mut(&id).unwrap().open_furnace = None;
+            let _ = self.direct(id, &ServerPacket::ContainerClosed);
+        }
+        let players: Vec<_> = self
+            .sessions
+            .values()
+            .filter(|session| session.player.joined)
+            .map(|session| {
+                (
+                    (session.player.pos.x.floor() as i32).div_euclid(16),
+                    (session.player.pos.z.floor() as i32).div_euclid(16),
+                )
+            })
+            .collect();
+        let mut changed = Vec::new();
+        let mut blocks = Vec::new();
+        for (&pos, furnace) in &mut self.furnaces {
+            let (x, y, z) = pos;
+            if !players.iter().any(|(px, pz)| {
+                (x.div_euclid(16) - px).abs() <= 4 && (z.div_euclid(16) - pz).abs() <= 4
+            }) {
+                continue;
+            }
+            let old_block = self.world.block_or_air(x, y, z);
+            if !ssc_world::is_furnace(old_block) {
+                continue;
+            }
+            let old_slots = furnace.slots;
+            if furnace.tick()
+                && (self.tick % 4 == 0 || old_slots != furnace.slots || furnace.burn_remaining == 0)
+            {
+                changed.push(pos);
+            }
+            let block = if furnace.burn_remaining > 0 {
+                ssc_world::LIT_FURNACE
+            } else {
+                ssc_world::FURNACE
+            };
+            if old_block != block {
+                blocks.push((pos, block));
+            }
+        }
+        for ((x, y, z), block) in blocks {
+            self.world.set_block(x, y, z, block);
+            self.record_block_edit(x, y, z, block);
+            let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block });
+            self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
+        }
+        for pos in changed {
+            self.sync_furnace(pos);
+        }
+    }
+
+    fn transfer_furnace(
+        &mut self,
+        id: EntityId,
+        inventory_slot: u8,
+        furnace_slot: u8,
+        from_furnace: bool,
+    ) -> Result<(), String> {
+        let inv = inventory_slot as usize;
+        let slot = furnace_slot as usize;
+        if inv >= crate::survival::INVENTORY_SIZE || slot >= 3 {
+            return Err("furnace slot out of range".into());
+        }
+        let Some(pos) = self
+            .sessions
+            .get(&id)
+            .and_then(|session| session.open_furnace)
+        else {
+            return Ok(());
+        };
+        if !self.can_access_furnace(id, pos) {
+            return Ok(());
+        }
+        let furnace = self.furnaces.entry(pos).or_default();
+        let session = self.sessions.get_mut(&id).unwrap();
+        let own = session.inventory[inv];
+        let stored = furnace.slots[slot];
+        let (source, destination) = if from_furnace {
+            (stored, own)
+        } else {
+            (own, stored)
+        };
+        let Some((item, count)) = source else {
+            return Ok(());
+        };
+        if !from_furnace && !crate::furnace::accepts(slot, item) {
+            return Ok(());
+        }
+        let (next_source, next_dest) = match destination {
+            Some((target, target_count)) if target == item => {
+                let moved = count.min(
+                    ssc_world::item_info(item)
+                        .max_stack
+                        .saturating_sub(target_count),
+                );
+                if moved == 0 {
+                    return Ok(());
+                }
+                (
+                    if moved == count {
+                        None
+                    } else {
+                        Some((item, count - moved))
+                    },
+                    Some((item, target_count + moved)),
+                )
+            }
+            _ => {
+                if from_furnace
+                    && destination.is_some_and(|(item, _)| !crate::furnace::accepts(slot, item))
+                {
+                    return Ok(());
+                }
+                (destination, source)
+            }
+        };
+        let previous_recipe =
+            furnace.slots[crate::furnace::INPUT].and_then(|(item, _)| crate::furnace::recipe(item));
+        if from_furnace {
+            furnace.slots[slot] = next_source;
+            session.inventory[inv] = next_dest;
+        } else {
+            session.inventory[inv] = next_source;
+            furnace.slots[slot] = next_dest;
+        }
+        session.durability[inv] = 0;
+        session.inv_dirty = true;
+        if inv == session.player.selected_slot as usize {
+            session.survival.digging = None;
+            session.eating = None;
+        }
+        if previous_recipe
+            != furnace.slots[crate::furnace::INPUT]
+                .and_then(|(item, _)| crate::furnace::recipe(item))
+        {
+            furnace.cook_ticks = 0;
+        }
+        self.sync_furnace(pos);
+        Ok(())
     }
 
     /// Random block ticks only run in loaded columns near joined players.
@@ -2397,6 +2648,18 @@ impl Server {
                     session.eating = None;
                 }
             }
+            ClientPacket::FurnaceSwap {
+                inventory_slot,
+                furnace_slot,
+                from_furnace,
+            } => {
+                self.transfer_furnace(id, inventory_slot, furnace_slot, from_furnace)?;
+            }
+            ClientPacket::CloseContainer => {
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    session.open_furnace = None;
+                }
+            }
             ClientPacket::Place => {
                 if self
                     .sessions
@@ -2544,7 +2807,9 @@ impl Server {
             .filter(|block| {
                 !matches!(
                     *block,
-                    ssc_world::OAK_SAPLING_READY | ssc_world::GROWN_OAK_LEAVES
+                    ssc_world::OAK_SAPLING_READY
+                        | ssc_world::GROWN_OAK_LEAVES
+                        | ssc_world::LIT_FURNACE
                 )
             })
             .collect();
@@ -2629,6 +2894,15 @@ impl Server {
             return;
         }
         self.record_block_edit(x, y, z, AIR);
+        if let Some(furnace) = self.furnaces.remove(&(x, y, z)) {
+            for (item, count) in furnace.slots.into_iter().flatten() {
+                self.spawn_item_entity(
+                    item,
+                    count,
+                    Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5),
+                );
+            }
+        }
         let _ = self.broadcast(&ServerPacket::BlockUpdate {
             x,
             y,
@@ -2742,6 +3016,30 @@ impl Server {
     /// Right-click use: eat the selected food, or place the selected
     /// block item (survival consumes, creative does not).
     fn handle_use(&mut self, id: EntityId) {
+        if let Some(session) = self.sessions.get(&id) {
+            if session.player.keys & keys::SNEAK == 0 {
+                let (yaw, pitch) = self.look_of(id);
+                if let Some(hit) =
+                    raycast(&self.world, self.eye_of(id), look_dir(yaw, pitch), REACH)
+                {
+                    let [x, y, z] = hit.block;
+                    let pos = (x, y, z);
+                    if ssc_world::is_furnace(self.world.block_or_air(x, y, z))
+                        && self.can_access_furnace(id, pos)
+                    {
+                        self.furnaces.entry(pos).or_default();
+                        let session = self.sessions.get_mut(&id).unwrap();
+                        session.open_furnace = Some(pos);
+                        session.eating = None;
+                        session.survival.digging = None;
+                        if let Some(packet) = self.furnace_packet(pos, true) {
+                            let _ = self.direct(id, &packet);
+                        }
+                        return;
+                    }
+                }
+            }
+        }
         let Some((item, count)) = self.selected_item(id) else {
             return;
         };
@@ -2830,6 +3128,9 @@ impl Server {
 
         if self.world.set_block(x, y, z, block) {
             self.record_block_edit(x, y, z, block);
+            if ssc_world::is_furnace(block) {
+                self.furnaces.entry((x, y, z)).or_default();
+            }
             let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block });
             self.send_sound(SoundId::Place, x, y, z);
             self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
@@ -3214,6 +3515,113 @@ mod tests {
             .items
             .values()
             .any(|item| item.item == ssc_world::OAK_SAPLING && item.count == 1));
+    }
+
+    #[test]
+    fn furnace_inventory_cooking_sync_and_break_drops_are_authoritative() {
+        let mut rig = Rig::new_mode(2, -1.5, GameMode::Survival);
+        let pos = (8, 54, 8);
+        rig.server
+            .world
+            .set_block(pos.0, pos.1, pos.2, ssc_world::FURNACE);
+        rig.server
+            .record_block_edit(pos.0, pos.1, pos.2, ssc_world::FURNACE);
+        rig.server.sessions.get_mut(&2).unwrap().player.pos.x = 8.5;
+        rig.server.handle_use(1);
+        rig.server.handle_use(2);
+        assert_eq!(rig.server.sessions[&1].open_furnace, Some(pos));
+        assert!(rig
+            .drain(0)
+            .iter()
+            .any(|p| matches!(p, ServerPacket::Furnace { open: true, .. })));
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::RAW_IRON, 2));
+        rig.server.sessions.get_mut(&1).unwrap().inventory[1] = Some((ssc_world::COAL, 1));
+        rig.server.transfer_furnace(1, 0, 2, false).unwrap();
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::RAW_IRON, 2))
+        );
+        rig.server.transfer_furnace(1, 0, 0, false).unwrap();
+        rig.server.transfer_furnace(1, 1, 1, false).unwrap();
+        assert_eq!(rig.server.sessions[&1].inventory[0], None);
+        for tick in 1..=200 {
+            rig.server.tick = tick;
+            rig.server.tick_furnaces();
+        }
+        assert_eq!(
+            rig.server.furnaces[&pos].slots[2],
+            Some((ssc_world::IRON_INGOT, 1))
+        );
+        assert_eq!(
+            rig.server.world.block_or_air(8, 54, 8),
+            ssc_world::LIT_FURNACE
+        );
+        assert!(rig.drain(1).iter().any(|p| matches!(p, ServerPacket::Furnace { slots, .. } if slots[2] == (ssc_world::IRON_INGOT, 1))));
+        rig.server.transfer_furnace(2, 0, 2, true).unwrap();
+        assert_eq!(
+            rig.server.sessions[&2].inventory[0],
+            Some((ssc_world::IRON_INGOT, 1))
+        );
+        assert_eq!(rig.server.furnaces[&pos].slots[2], None);
+        rig.server.sessions.get_mut(&2).unwrap().player.pos.x = 1000.0;
+        rig.server.transfer_furnace(2, 1, 0, true).unwrap();
+        assert_eq!(
+            rig.server.furnaces[&pos].slots[0],
+            Some((ssc_world::RAW_IRON, 1))
+        );
+        rig.server.tick_furnaces();
+        assert_eq!(rig.server.sessions[&2].open_furnace, None);
+        rig.server.sessions.get_mut(&1).unwrap().player.joined = false;
+        rig.server.sessions.get_mut(&2).unwrap().player.joined = false;
+        let before = rig.server.furnaces[&pos].clone();
+        rig.server.tick_furnaces();
+        assert_eq!(rig.server.furnaces[&pos], before);
+        rig.server.break_block(1, 8, 54, 8);
+        assert!(!rig.server.furnaces.contains_key(&pos));
+        assert!(rig
+            .server
+            .items
+            .values()
+            .any(|item| item.item == ssc_world::RAW_IRON && item.count == 1));
+    }
+
+    #[test]
+    fn furnaces_resume_saved_cooking_and_preserve_corrupt_sidecars() {
+        let path =
+            std::env::temp_dir().join(format!("ssc-furnace-resume-{}.bin", std::process::id()));
+        let sidecar = crate::persistence::furnace_save_path(&path);
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.cfg.world_path = Some(path.clone());
+        rig.server.furnace_persistence_ready = true;
+        rig.server.world.set_block(8, 54, 8, ssc_world::LIT_FURNACE);
+        rig.server
+            .record_block_edit(8, 54, 8, ssc_world::LIT_FURNACE);
+        rig.server.furnaces.insert(
+            (8, 54, 8),
+            crate::furnace::Furnace {
+                slots: [Some((ssc_world::PORKCHOP, 1)), None, None],
+                burn_remaining: 12,
+                burn_total: 300,
+                cook_ticks: 199,
+            },
+        );
+        rig.server.save_world();
+        rig.server.save_furnaces();
+        let mut restored = Server::empty(rig.server.cfg.clone());
+        assert!(restored.furnace_persistence_ready);
+        assert_eq!(restored.furnaces, rig.server.furnaces);
+        restored.furnaces.get_mut(&(8, 54, 8)).unwrap().tick();
+        assert_eq!(
+            restored.furnaces[&(8, 54, 8)].slots[2],
+            Some((ssc_world::COOKED_PORKCHOP, 1))
+        );
+        std::fs::write(&sidecar, b"corrupt furnace data").unwrap();
+        let restored = Server::empty(rig.server.cfg.clone());
+        assert!(!restored.furnace_persistence_ready);
+        restored.save_furnaces();
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"corrupt furnace data");
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(sidecar).unwrap();
     }
 
     #[test]

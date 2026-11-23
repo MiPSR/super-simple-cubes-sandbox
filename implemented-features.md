@@ -114,13 +114,26 @@ Every implemented wiki feature gets a line here. Status legend:
   Minecraft's 16×16 tile atlas convention; real texture packs load via
   `--textures <256×256 atlas.png>` (PNG decode through the approved
   `png` crate) — we cannot ship Mojang assets (specs §1).
+- `partial` — Furnaces craft from eight cobblestone (inventory key `0`).
+  Right-click opens shared server-owned input/fuel/output slots; drag whole
+  stacks between inventory and furnace, with output insertion forbidden.
+  Raw iron/copper smelt into ingots, pork cooks (8 food, 12.8 saturation),
+  and oak logs produce charcoal. Cooking takes 200 ticks; coal/charcoal
+  burn 1600, logs/planks 300, and sticks 100 ticks. Existing fuel keeps
+  burning with blocked output, and unfueled cooking cools by two ticks.
+  Nearby furnaces run without an open UI and pause away from joined
+  players. Slots/timers persist in validated `.furnaces` sidecars; corrupt
+  or world-mismatched saves are preserved. Breaking a furnace drops its
+  contents once; viewers close on death, range loss or block removal.
+  Placeholder lit textures do not emit light. XP, hoppers, orientation,
+  full recipe/fuel coverage and crash-atomic multi-file saves are pending.
 - `partial` — Coal and iron ore blocks (hardness 3) appear in generated
   stone and drop one coal/raw iron with the correct pickaxe tier.
-  No fortune, silk touch, or iron smelting yet.
+  No fortune or silk touch yet.
 - `partial` — Copper ore (hardness 3) and deepslate copper ore (4.5)
   generate in approximate depth-limited clusters and yield 2–5 raw copper
   with a stone pickaxe or better. Output partially fills inventory stacks
-  and any remainder drops as a server-owned item. No copper smelting,
+  and any remainder drops as a server-owned item. No
   Fortune, Silk Touch, or exact Bedrock ore distribution yet.
 - `partial` — Deepslate (hardness 3) and deepslate iron ore (4.5)
   generate below Y=0; breaking deepslate drops cobbled deepslate and both
@@ -215,7 +228,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 15
+  throwing snowballs and Silk Touch are missing. Protocol 16
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit

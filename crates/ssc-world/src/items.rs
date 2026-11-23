@@ -39,6 +39,10 @@ pub const STONE_AXE: ItemId = 111;
 pub const WOODEN_SHOVEL: ItemId = 112;
 pub const STONE_SHOVEL: ItemId = 113;
 pub const SNOWBALL: ItemId = 114;
+pub const IRON_INGOT: ItemId = 115;
+pub const COPPER_INGOT: ItemId = 116;
+pub const COOKED_PORKCHOP: ItemId = 117;
+pub const CHARCOAL: ItemId = 118;
 
 /// Static item description. No behavior — behavior lives in the server.
 pub struct ItemInfo {
@@ -95,6 +99,7 @@ pub fn item_info(id: ItemId) -> ItemInfo {
         23 => block_item(STRIPPED_OAK_LOG, "stripped_oak_log"),
         24 | 25 => block_item(super::OAK_SAPLING, "oak_sapling"),
         26 => block_item(OAK_LEAVES, "oak_leaves"),
+        27 | 28 => block_item(super::FURNACE, "furnace"),
         APPLE => ItemInfo {
             name: "apple",
             max_stack: 64,
@@ -185,6 +190,30 @@ pub fn item_info(id: ItemId) -> ItemInfo {
             places: None,
             food: None,
         },
+        IRON_INGOT => ItemInfo {
+            name: "iron_ingot",
+            max_stack: 64,
+            places: None,
+            food: None,
+        },
+        COPPER_INGOT => ItemInfo {
+            name: "copper_ingot",
+            max_stack: 64,
+            places: None,
+            food: None,
+        },
+        COOKED_PORKCHOP => ItemInfo {
+            name: "cooked_porkchop",
+            max_stack: 64,
+            places: None,
+            food: Some(8),
+        },
+        CHARCOAL => ItemInfo {
+            name: "charcoal",
+            max_stack: 64,
+            places: None,
+            food: None,
+        },
         _ => ItemInfo {
             name: "unknown",
             max_stack: 64,
@@ -215,6 +244,10 @@ pub fn valid_item_id(id: ItemId) -> bool {
             | WOODEN_SHOVEL
             | STONE_SHOVEL
             | SNOWBALL
+            | IRON_INGOT
+            | COPPER_INGOT
+            | COOKED_PORKCHOP
+            | CHARCOAL
     );
     id == EMPTY_ITEM || block_items || free_items
 }
@@ -225,6 +258,7 @@ pub fn food_saturation(id: ItemId) -> f32 {
         APPLE => 2.4,
         PORKCHOP => 1.8,
         ROTTEN_FLESH => 0.8,
+        COOKED_PORKCHOP => 12.8,
         _ => 0.0,
     }
 }
@@ -255,6 +289,7 @@ pub fn block_drop(b: BlockId) -> Option<ItemId> {
         GRASS_BLOCK => Some(for_block(DIRT)),
         OAK_LEAVES | super::GROWN_OAK_LEAVES => None,
         super::OAK_SAPLING | super::OAK_SAPLING_READY => Some(super::OAK_SAPLING),
+        super::FURNACE | super::LIT_FURNACE => Some(super::FURNACE),
         SNOW_BLOCK => Some(SNOWBALL),
         other => Some(for_block(other)),
     }

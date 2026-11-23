@@ -9,6 +9,7 @@
 //! semantics). See `implemented-features.md` for parity status.
 
 mod block_ticks;
+pub mod furnace;
 pub mod game;
 pub mod mobs;
 pub mod persistence;

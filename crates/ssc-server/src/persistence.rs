@@ -27,6 +27,7 @@ const ITEMS_MAGIC: &[u8; 8] = b"SSCITM01";
 const ITEMS_MAGIC_V2: &[u8; 8] = b"SSCITM02";
 const MOBS_MAGIC: &[u8; 8] = b"SSCMOB01";
 const MOBS_MAGIC_V2: &[u8; 8] = b"SSCMOB02";
+const FURNACE_MAGIC: &[u8; 8] = b"SSCFUR01";
 const MAX_SAVED_ITEMS: u32 = 1_000_000;
 const MAX_SAVED_MOBS: u32 = 4_096;
 
@@ -794,8 +795,145 @@ pub fn save_mobs(path: &Path, mobs: &[SavedMob]) -> io::Result<()> {
     Ok(())
 }
 
+pub type FurnaceSaves = HashMap<(i32, i32, i32), crate::furnace::Furnace>;
+
+pub fn furnace_save_path(world_path: &Path) -> std::path::PathBuf {
+    world_path.with_extension("furnaces")
+}
+
+fn valid_furnace_position((x, y, z): (i32, i32, i32)) -> bool {
+    x.unsigned_abs() <= 30_000_000 && z.unsigned_abs() <= 30_000_000 && (MIN_Y..MAX_Y).contains(&y)
+}
+
+pub fn load_furnaces(path: &Path) -> io::Result<Option<FurnaceSaves>> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let length = file.metadata()?.len();
+    if length < 12 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated furnace save",
+        ));
+    }
+    let mut header = [0u8; 12];
+    file.read_exact(&mut header)?;
+    let count = u32::from_le_bytes(header[8..12].try_into().expect("fixed header"));
+    if &header[..8] != FURNACE_MAGIC || count > 100_000 || length != 12 + count as u64 * 27 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid furnace save",
+        ));
+    }
+    let mut furnaces = FurnaceSaves::new();
+    for _ in 0..count {
+        let mut bytes = [0u8; 27];
+        file.read_exact(&mut bytes)?;
+        let i32_at = |at| i32::from_le_bytes(bytes[at..at + 4].try_into().expect("fixed position"));
+        let pos = (i32_at(0), i32_at(4), i32_at(8));
+        let mut slots = [None; 3];
+        for (index, slot) in slots.iter_mut().enumerate() {
+            let at = 12 + index * 3;
+            let item = u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+            let count = bytes[at + 2];
+            if item != 0 || count != 0 {
+                *slot = Some((item, count));
+            }
+        }
+        let furnace = crate::furnace::Furnace {
+            slots,
+            burn_remaining: u16::from_le_bytes([bytes[21], bytes[22]]),
+            burn_total: u16::from_le_bytes([bytes[23], bytes[24]]),
+            cook_ticks: u16::from_le_bytes([bytes[25], bytes[26]]),
+        };
+        if !valid_furnace_position(pos)
+            || !furnace.valid()
+            || furnaces.insert(pos, furnace).is_some()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid furnace state",
+            ));
+        }
+    }
+    Ok(Some(furnaces))
+}
+
+pub fn save_furnaces(path: &Path, furnaces: &FurnaceSaves) -> io::Result<()> {
+    if furnaces.len() > 100_000
+        || furnaces
+            .iter()
+            .any(|(pos, furnace)| !valid_furnace_position(*pos) || !furnace.valid())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid furnace state",
+        ));
+    }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("tmp");
+    let mut file = File::create(&temp)?;
+    file.write_all(FURNACE_MAGIC)?;
+    file.write_all(&(furnaces.len() as u32).to_le_bytes())?;
+    let mut positions: Vec<_> = furnaces.keys().copied().collect();
+    positions.sort_unstable();
+    for (x, y, z) in positions {
+        let furnace = &furnaces[&(x, y, z)];
+        for value in [x, y, z] {
+            file.write_all(&value.to_le_bytes())?;
+        }
+        for slot in furnace.slots {
+            let (item, count) = slot.unwrap_or((0, 0));
+            file.write_all(&item.to_le_bytes())?;
+            file.write_all(&[count])?;
+        }
+        for value in [
+            furnace.burn_remaining,
+            furnace.burn_total,
+            furnace.cook_ticks,
+        ] {
+            file.write_all(&value.to_le_bytes())?;
+        }
+    }
+    file.sync_all()?;
+    fs::rename(temp, path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn furnace_state_round_trips_and_corruption_is_rejected() {
+        use super::*;
+        let path =
+            std::env::temp_dir().join(format!("ssc-furnace-roundtrip-{}.bin", std::process::id()));
+        let mut saves = FurnaceSaves::new();
+        saves.insert(
+            (-16, 64, 8),
+            crate::furnace::Furnace {
+                slots: [
+                    Some((ssc_world::RAW_IRON, 3)),
+                    Some((ssc_world::COAL, 2)),
+                    Some((ssc_world::IRON_INGOT, 1)),
+                ],
+                burn_remaining: 123,
+                burn_total: 1600,
+                cook_ticks: 87,
+            },
+        );
+        save_furnaces(&path, &saves).unwrap();
+        assert_eq!(load_furnaces(&path).unwrap(), Some(saves));
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[37..39].copy_from_slice(&200u16.to_le_bytes());
+        fs::write(&path, &bytes).unwrap();
+        assert!(load_furnaces(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_file(path).unwrap();
+    }
     use super::*;
 
     #[test]

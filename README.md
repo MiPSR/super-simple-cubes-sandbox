@@ -72,6 +72,10 @@ runnable through Nix.
   cancels eating. Eating progress is shown under the crosshair.
 - Breaking or decaying oak leaves can drop saplings. Plant them on dirt or
   grass in daylight with room above; they grow into new oaks over time.
+- In the inventory, press `0` to craft a furnace from eight cobblestone.
+  Place it and right-click to open; drag raw iron/copper, pork or logs into
+  input and coal, charcoal, wood or sticks into fuel. Drag finished output
+  back to your inventory. `E` or Escape closes the furnace.
 - Q drops one item from the selected survival hotbar stack into the world.
 
 See `implemented-features.md` for the full parity tracker.

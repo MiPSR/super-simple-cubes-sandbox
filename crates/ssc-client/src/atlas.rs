@@ -131,6 +131,17 @@ fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgba {
                 mix([162, 130, 78], 0.9 + noise2(x, y, 12) * 0.2, 255)
             }
         }
+        ssc_world::TILE_FURNACE | ssc_world::TILE_LIT_FURNACE => {
+            if (3..=12).contains(&x) && (7..=12).contains(&y) {
+                if tile == ssc_world::TILE_LIT_FURNACE {
+                    mix([240, 119, 30], 0.8 + noise2(x, y, 33) * 0.2, 255)
+                } else {
+                    mix([35, 35, 35], 1.0, 255)
+                }
+            } else {
+                mix([118, 118, 118], 0.8 + noise2(x, y, 34) * 0.25, 255)
+            }
+        }
         ssc_world::TILE_OAK_SAPLING => {
             // Placeholder plant silhouette, displayed on a translucent cube
             // until crossed-quad vegetation meshes are implemented.
