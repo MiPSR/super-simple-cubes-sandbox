@@ -545,7 +545,17 @@ impl App {
                         continue;
                     }
                     if self.picker_open && self.mode == 0 && (1..=9).contains(&n) {
-                        self.send(&ClientPacket::Craft { recipe: n - 1 });
+                        let recipe = if frame.input().key(Key::Shift) {
+                            match n {
+                                3 => 10,
+                                5 => 11,
+                                7 => 12,
+                                _ => n - 1,
+                            }
+                        } else {
+                            n - 1
+                        };
+                        self.send(&ClientPacket::Craft { recipe });
                         continue;
                     }
                     self.selected_slot = n - 1;
@@ -969,7 +979,8 @@ impl App {
                 [1.0, 0.85, 0.3, 1.0],
             );
             frame.hud_text(
-                "craft 0:furnace 1:planks 2:sticks 3:wood pick 4:stone pick".to_string(),
+                "craft 0:furnace 1:planks 2:sticks 3:wood pick 4:stone pick (Shift+3/5/7:iron)"
+                    .to_string(),
                 x0 + 15.0,
                 y0 + 24.0,
                 14.0,

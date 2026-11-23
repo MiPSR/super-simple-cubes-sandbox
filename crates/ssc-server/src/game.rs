@@ -3067,7 +3067,10 @@ impl Server {
 
         // Axe use transforms a targeted log in place; it is not a break or
         // placement and never creates loot or charges mining exhaustion.
-        if matches!(item, ssc_world::WOODEN_AXE | ssc_world::STONE_AXE) {
+        if matches!(
+            item,
+            ssc_world::WOODEN_AXE | ssc_world::STONE_AXE | ssc_world::IRON_AXE
+        ) {
             let (yaw, pitch) = self.look_of(id);
             let Some(hit) = raycast(&self.world, self.eye_of(id), look_dir(yaw, pitch), REACH)
             else {
@@ -4105,6 +4108,28 @@ mod tests {
             .iter()
             .flatten()
             .any(|(item, _)| *item == ssc_world::COBBLESTONE));
+    }
+
+    #[test]
+    fn crafted_iron_tools_start_full_and_apply_combat_wear() {
+        for (recipe, item, ingots, damage) in [
+            (10, ssc_world::IRON_PICKAXE, 3, 5.0),
+            (11, ssc_world::IRON_AXE, 3, 6.0),
+            (12, ssc_world::IRON_SHOVEL, 1, 4.0),
+        ] {
+            let mut rig = Rig::new_mode(2, 0.0, GameMode::Survival);
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.inventory[0] = Some((ssc_world::IRON_INGOT, ingots));
+            session.inventory[1] = Some((ssc_world::STICK, 2));
+            rig.server
+                .handle_packet(1, ClientPacket::Craft { recipe })
+                .unwrap();
+            assert_eq!(rig.server.sessions[&1].inventory[0], Some((item, 1)));
+            assert_eq!(rig.server.sessions[&1].durability[0], 251);
+            rig.server.handle_packet(1, ClientPacket::DigStart).unwrap();
+            assert_eq!(rig.server.sessions[&2].survival.health, 20.0 - damage);
+            assert_eq!(rig.server.sessions[&1].durability[0], 249);
+        }
     }
 
     #[test]

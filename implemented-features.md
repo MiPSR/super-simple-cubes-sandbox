@@ -114,6 +114,12 @@ Every implemented wiki feature gets a line here. Status legend:
   Minecraft's 16×16 tile atlas convention; real texture packs load via
   `--textures <256×256 atlas.png>` (PNG decode through the approved
   `png` crate) — we cannot ship Mojang assets (specs §1).
+- `partial` — Iron pickaxes, axes and shovels craft from ingots and sticks
+  (inventory Shift+3/5/7). Effective mining speed is 6, Bedrock durability
+  is 251, and melee damage is 5/6/4 respectively. Iron pickaxes harvest all
+  current pickaxe ores; iron shovels harvest snow and axes strip logs.
+  Existing wear, repair, item drops and player saves preserve iron tools.
+  Diamond/netherite tools, armor and enchantments are pending.
 - `partial` — Furnaces craft from eight cobblestone (inventory key `0`).
   Right-click opens shared server-owned input/fuel/output slots; drag whole
   stacks between inventory and furnace, with output insertion forbidden.
@@ -228,7 +234,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 16
+  throwing snowballs and Silk Touch are missing. Protocol 17
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit
@@ -253,7 +259,7 @@ Every implemented wiki feature gets a line here. Status legend:
   maximum; one tool is consumed and wear syncs/persists normally. Unlike
   wiki crafting this uses the interim inventory-wide UI, not a grid.
   Grindstones, anvils and enchantment handling are not implemented.
-- `partial` — Using a wooden/stone axe on an oak log strips it in place,
+- `partial` — Using a wooden/stone/iron axe on an oak log strips it in place,
   within server-validated reach and line of sight; each successful strip
   costs one durability in survival and none in creative. Stripped oak logs
   persist as block edits, drop themselves and craft into four planks.

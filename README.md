@@ -76,6 +76,8 @@ runnable through Nix.
   Place it and right-click to open; drag raw iron/copper, pork or logs into
   input and coal, charcoal, wood or sticks into fuel. Drag finished output
   back to your inventory. `E` or Escape closes the furnace.
+- In the inventory, `Shift+3`, `Shift+5`, and `Shift+7` craft an iron
+  pickaxe, axe, and shovel from iron ingots and sticks.
 - Q drops one item from the selected survival hotbar stack into the world.
 
 See `implemented-features.md` for the full parity tracker.

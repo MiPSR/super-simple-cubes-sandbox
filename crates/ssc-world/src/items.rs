@@ -22,8 +22,7 @@ pub const FIRST_FREE_ITEM: ItemId = 100;
 
 /// Apple: the survival food source (drops from oak leaves).
 pub const APPLE: ItemId = 100;
-/// Raw porkchop dropped by pigs. Cooking requires a furnace, not yet
-/// implemented. It is edible raw (3 hunger points).
+/// Raw porkchop dropped by pigs; edible raw or cooked in a furnace.
 pub const PORKCHOP: ItemId = 101;
 /// Rotten flesh dropped by zombies.
 pub const ROTTEN_FLESH: ItemId = 102;
@@ -43,6 +42,9 @@ pub const IRON_INGOT: ItemId = 115;
 pub const COPPER_INGOT: ItemId = 116;
 pub const COOKED_PORKCHOP: ItemId = 117;
 pub const CHARCOAL: ItemId = 118;
+pub const IRON_PICKAXE: ItemId = 119;
+pub const IRON_AXE: ItemId = 120;
+pub const IRON_SHOVEL: ItemId = 121;
 
 /// Static item description. No behavior — behavior lives in the server.
 pub struct ItemInfo {
@@ -68,6 +70,16 @@ fn block_item(id: BlockId, name: &'static str) -> ItemInfo {
 /// by their explicit ids.
 pub fn item_info(id: ItemId) -> ItemInfo {
     match id {
+        IRON_PICKAXE | IRON_AXE | IRON_SHOVEL => ItemInfo {
+            name: match id {
+                IRON_PICKAXE => "iron_pickaxe",
+                IRON_AXE => "iron_axe",
+                _ => "iron_shovel",
+            },
+            max_stack: 1,
+            places: None,
+            food: None,
+        },
         0 => ItemInfo {
             name: "empty",
             max_stack: 0,
@@ -248,6 +260,9 @@ pub fn valid_item_id(id: ItemId) -> bool {
             | COPPER_INGOT
             | COOKED_PORKCHOP
             | CHARCOAL
+            | IRON_PICKAXE
+            | IRON_AXE
+            | IRON_SHOVEL
     );
     id == EMPTY_ITEM || block_items || free_items
 }

@@ -28,11 +28,12 @@ pub const RESPAWN_DELAY: Duration = Duration::from_secs(2);
 /// One inventory slot: (item, count). `None` = empty.
 pub type Slot = Option<(ItemId, u8)>;
 
-/// Bedrock durability for the currently implemented wooden/stone tools.
+/// Bedrock durability for the currently implemented wooden/stone/iron tools.
 pub fn max_durability(item: ItemId) -> u16 {
     match item {
         ssc_world::WOODEN_PICKAXE | ssc_world::WOODEN_AXE | ssc_world::WOODEN_SHOVEL => 60,
         ssc_world::STONE_PICKAXE | ssc_world::STONE_AXE | ssc_world::STONE_SHOVEL => 132,
+        ssc_world::IRON_PICKAXE | ssc_world::IRON_AXE | ssc_world::IRON_SHOVEL => 251,
         _ => 0,
     }
 }
@@ -55,6 +56,9 @@ pub fn attack_damage(held: Option<ItemId>) -> f32 {
         Some(ssc_world::STONE_AXE) => 5.0,
         Some(ssc_world::WOODEN_SHOVEL) => 2.0,
         Some(ssc_world::STONE_SHOVEL) => 3.0,
+        Some(ssc_world::IRON_PICKAXE) => 5.0,
+        Some(ssc_world::IRON_AXE) => 6.0,
+        Some(ssc_world::IRON_SHOVEL) => 4.0,
         _ => 1.0,
     }
 }
@@ -368,7 +372,7 @@ pub fn dig_time(block: BlockId) -> Option<f32> {
     dig_time_with_tool(block, None)
 }
 
-/// Wooden/stone tools mine their effective block classes at speed 2/4.
+/// Wooden/stone/iron tools mine their effective block classes at speed 2/4/6.
 /// An insufficient mining tier uses the slower, non-harvestable timing.
 pub fn dig_time_with_tool(block: BlockId, held: Option<ItemId>) -> Option<f32> {
     let bi = block_info(block);
@@ -376,23 +380,25 @@ pub fn dig_time_with_tool(block: BlockId, held: Option<ItemId>) -> Option<f32> {
         return None;
     }
     let effective = match held {
-        Some(ssc_world::WOODEN_PICKAXE | ssc_world::STONE_PICKAXE) => {
+        Some(ssc_world::WOODEN_PICKAXE | ssc_world::STONE_PICKAXE | ssc_world::IRON_PICKAXE) => {
             bi.needs_tool && block != ssc_world::SNOW_BLOCK
         }
-        Some(ssc_world::WOODEN_AXE | ssc_world::STONE_AXE) => {
+        Some(ssc_world::WOODEN_AXE | ssc_world::STONE_AXE | ssc_world::IRON_AXE) => {
             matches!(
                 block,
                 ssc_world::OAK_LOG | ssc_world::STRIPPED_OAK_LOG | ssc_world::OAK_PLANKS
             )
         }
-        Some(ssc_world::WOODEN_SHOVEL | ssc_world::STONE_SHOVEL) => matches!(
-            block,
-            ssc_world::DIRT
-                | ssc_world::GRASS_BLOCK
-                | ssc_world::SAND
-                | ssc_world::GRAVEL
-                | ssc_world::SNOW_BLOCK
-        ),
+        Some(ssc_world::WOODEN_SHOVEL | ssc_world::STONE_SHOVEL | ssc_world::IRON_SHOVEL) => {
+            matches!(
+                block,
+                ssc_world::DIRT
+                    | ssc_world::GRASS_BLOCK
+                    | ssc_world::SAND
+                    | ssc_world::GRAVEL
+                    | ssc_world::SNOW_BLOCK
+            )
+        }
         _ => false,
     };
     let speed = if !effective {
@@ -402,6 +408,7 @@ pub fn dig_time_with_tool(block: BlockId, held: Option<ItemId>) -> Option<f32> {
             Some(ssc_world::WOODEN_PICKAXE | ssc_world::WOODEN_AXE | ssc_world::WOODEN_SHOVEL) => {
                 2.0
             }
+            Some(ssc_world::IRON_PICKAXE | ssc_world::IRON_AXE | ssc_world::IRON_SHOVEL) => 6.0,
             _ => 4.0,
         }
     };
@@ -520,6 +527,18 @@ pub fn craft(inv: &mut [Slot], recipe: u8) -> bool {
             (ssc_world::STONE_SHOVEL, 1),
         ),
         9 => (&[(ssc_world::COBBLESTONE, 8)][..], (ssc_world::FURNACE, 1)),
+        10 => (
+            &[(ssc_world::IRON_INGOT, 3), (ssc_world::STICK, 2)][..],
+            (ssc_world::IRON_PICKAXE, 1),
+        ),
+        11 => (
+            &[(ssc_world::IRON_INGOT, 3), (ssc_world::STICK, 2)][..],
+            (ssc_world::IRON_AXE, 1),
+        ),
+        12 => (
+            &[(ssc_world::IRON_INGOT, 1), (ssc_world::STICK, 2)][..],
+            (ssc_world::IRON_SHOVEL, 1),
+        ),
         _ => return false,
     };
     let mut next = inv.to_vec();
@@ -571,7 +590,7 @@ fn can_harvest(block: BlockId, held: Option<ItemId>) -> bool {
     if block == ssc_world::SNOW_BLOCK {
         return matches!(
             held,
-            Some(ssc_world::WOODEN_SHOVEL | ssc_world::STONE_SHOVEL)
+            Some(ssc_world::WOODEN_SHOVEL | ssc_world::STONE_SHOVEL | ssc_world::IRON_SHOVEL)
         );
     }
     if block_info(block).needs_tool {
@@ -583,11 +602,16 @@ fn can_harvest(block: BlockId, held: Option<ItemId>) -> bool {
                 | ssc_world::DEEPSLATE_COPPER_ORE
         );
         let valid = if required_stone {
-            held == Some(ssc_world::STONE_PICKAXE)
+            matches!(
+                held,
+                Some(ssc_world::STONE_PICKAXE | ssc_world::IRON_PICKAXE)
+            )
         } else {
             matches!(
                 held,
-                Some(ssc_world::WOODEN_PICKAXE | ssc_world::STONE_PICKAXE)
+                Some(
+                    ssc_world::WOODEN_PICKAXE | ssc_world::STONE_PICKAXE | ssc_world::IRON_PICKAXE
+                )
             )
         };
         return valid;
@@ -645,6 +669,45 @@ pub fn drop_count(block: BlockId, rng: f32) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn iron_tools_craft_mine_harvest_and_repair_at_bedrock_values() {
+        for (recipe, tool, ingots, block, damage) in [
+            (10, ssc_world::IRON_PICKAXE, 3, ssc_world::IRON_ORE, 5.0),
+            (11, ssc_world::IRON_AXE, 3, ssc_world::OAK_LOG, 6.0),
+            (12, ssc_world::IRON_SHOVEL, 1, ssc_world::SNOW_BLOCK, 4.0),
+        ] {
+            let mut inv = vec![None; INVENTORY_SIZE];
+            inv[0] = Some((ssc_world::IRON_INGOT, ingots));
+            inv[1] = Some((ssc_world::STICK, 2));
+            assert!(craft(&mut inv, recipe));
+            assert_eq!(inv[0], Some((tool, 1)));
+            assert_eq!(inv[1], None);
+            assert_eq!(max_durability(tool), 251);
+            assert_eq!(attack_damage(Some(tool)), damage);
+            assert!(
+                (dig_time_with_tool(block, Some(tool)).unwrap()
+                    - block_info(block).hardness * 1.5 / 6.0)
+                    .abs()
+                    < 0.001
+            );
+            assert!(!block_drops(block, 0, Some(tool)).is_empty());
+            let mut wear = vec![0; INVENTORY_SIZE];
+            wear[0] = 100;
+            inv[1] = Some((tool, 1));
+            wear[1] = 50;
+            assert!(repair_tool(&mut inv, &mut wear, 0));
+            assert_eq!(wear[0], 162);
+            assert_eq!(inv[1], None);
+        }
+        assert_eq!(
+            drop_with_tool(ssc_world::FURNACE, 0.5, Some(ssc_world::IRON_PICKAXE)),
+            Some(ssc_world::FURNACE)
+        );
+        assert_eq!(
+            drop_with_tool(ssc_world::COPPER_ORE, 0.5, Some(ssc_world::IRON_AXE)),
+            None
+        );
+    }
     use super::*;
 
     #[test]

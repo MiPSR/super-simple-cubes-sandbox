@@ -907,6 +907,31 @@ pub fn save_furnaces(path: &Path, furnaces: &FurnaceSaves) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn iron_tools_preserve_wear_and_validate_durability() {
+        use super::*;
+        let path =
+            std::env::temp_dir().join(format!("ssc-iron-tools-save-{}.dat", std::process::id()));
+        let id = [0xb4; 16];
+        let mut data = PlayerSave::default();
+        data.position = Some([8.5, 70.0, 8.5]);
+        for (slot, item) in [
+            ssc_world::IRON_PICKAXE,
+            ssc_world::IRON_AXE,
+            ssc_world::IRON_SHOVEL,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            data.inventory[slot] = Some((item, 1));
+            data.durability[slot] = 200 + slot as u16;
+        }
+        save_player(&path, &id, &data).unwrap();
+        assert_eq!(load_player(&path, &id).unwrap(), Some(data.clone()));
+        data.durability[0] = 252;
+        assert!(save_player(&path, &id, &data).is_err());
+        fs::remove_file(path).unwrap();
+    }
+    #[test]
     fn furnace_state_round_trips_and_corruption_is_rejected() {
         use super::*;
         let path =
