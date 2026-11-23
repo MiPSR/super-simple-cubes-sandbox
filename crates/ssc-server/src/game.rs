@@ -3224,6 +3224,9 @@ impl Server {
                         | ssc_world::WHEAT_5
                         | ssc_world::WHEAT_6
                         | ssc_world::WHEAT_7
+                        | ssc_world::DOOR_UPPER
+                        | ssc_world::DOOR_OPEN
+                        | ssc_world::DOOR_OPEN_UPPER
                 )
             })
             .collect();
@@ -3357,6 +3360,24 @@ impl Server {
         self.send_sound(SoundId::Dig, x, y, z);
         // LOD must reflect the edit (server-driven LOD, specs.md §3).
         self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
+
+        if ssc_world::is_door(block) {
+            let partner_y = if matches!(block, ssc_world::DOOR_UPPER | ssc_world::DOOR_OPEN_UPPER) {
+                y - 1
+            } else {
+                y + 1
+            };
+            if ssc_world::is_door(self.world.block_or_air(x, partner_y, z)) {
+                self.world.set_block(x, partner_y, z, AIR);
+                self.record_block_edit(x, partner_y, z, AIR);
+                let _ = self.broadcast(&ServerPacket::BlockUpdate {
+                    x,
+                    y: partner_y,
+                    z,
+                    block: AIR,
+                });
+            }
+        }
 
         // Survival: deposit into inventory, then spawn any overflow as a
         // server-owned item entity.
@@ -3725,6 +3746,36 @@ impl Server {
         session.survival.digging = None;
     }
 
+    /// Toggle both halves of the door containing this block.
+    fn toggle_door(&mut self, x: i32, y: i32, z: i32) {
+        let block = self.world.block_or_air(x, y, z);
+        if !ssc_world::is_door(block) {
+            return;
+        }
+        let lower_y = if matches!(block, ssc_world::DOOR_UPPER | ssc_world::DOOR_OPEN_UPPER) {
+            y - 1
+        } else {
+            y
+        };
+        let open = matches!(self.world.block_or_air(x, lower_y, z), ssc_world::DOOR_OPEN);
+        let (lower, upper) = ssc_world::door_pair(!open);
+        for (block_y, block_id) in [(lower_y, lower), (lower_y + 1, upper)] {
+            if self.world.block_or_air(x, block_y, z) == block_id {
+                continue;
+            }
+            self.world.set_block(x, block_y, z, block_id);
+            self.record_block_edit(x, block_y, z, block_id);
+            let _ = self.broadcast(&ServerPacket::BlockUpdate {
+                x,
+                y: block_y,
+                z,
+                block: block_id,
+            });
+        }
+        self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
+        self.send_sound(SoundId::Place, x, y, z);
+    }
+
     /// Sleep in a bed at night: skip to dawn and set the respawn point.
     /// Only zombies count as nearby monsters for now.
     fn use_bed(&mut self, id: EntityId, pos: (i32, i32, i32)) -> bool {
@@ -3813,6 +3864,10 @@ impl Server {
                 {
                     let [x, y, z] = hit.block;
                     let pos = (x, y, z);
+                    if ssc_world::is_door(self.world.block_or_air(x, y, z)) {
+                        self.toggle_door(x, y, z);
+                        return;
+                    }
                     if self.world.block_or_air(x, y, z) == ssc_world::BED && self.use_bed(id, pos) {
                         return;
                     }
@@ -3955,6 +4010,54 @@ impl Server {
             if !supported {
                 return;
             }
+        }
+        if block == ssc_world::DOOR {
+            if y + 1 >= ssc_world::MAX_Y
+                || !is_solid(self.world.block_or_air(x, y - 1, z))
+                || self.world.block_or_air(x, y, z) != AIR
+                || self.world.block_or_air(x, y + 1, z) != AIR
+            {
+                return;
+            }
+            for session in self.sessions.values() {
+                if session.player.joined && !session.survival.dead {
+                    let body = player_aabb(session.player.pos);
+                    if body.intersects(&ssc_math::Aabb::block(x, y, z))
+                        || body.intersects(&ssc_math::Aabb::block(x, y + 1, z))
+                    {
+                        return;
+                    }
+                }
+            }
+            let (lower, upper) = ssc_world::door_pair(false);
+            self.world.set_block(x, y, z, lower);
+            self.world.set_block(x, y + 1, z, upper);
+            self.record_block_edit(x, y, z, lower);
+            self.record_block_edit(x, y + 1, z, upper);
+            let _ = self.broadcast(&ServerPacket::BlockUpdate {
+                x,
+                y,
+                z,
+                block: lower,
+            });
+            let _ = self.broadcast(&ServerPacket::BlockUpdate {
+                x,
+                y: y + 1,
+                z,
+                block: upper,
+            });
+            self.send_sound(SoundId::Place, x, y, z);
+            self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
+            if self.cfg.game_mode == GameMode::Survival && count > 0 {
+                let slot = self.sessions[&id].player.selected_slot as usize % 9;
+                if let Some(session) = self.sessions.get_mut(&id) {
+                    if let Some((i, c)) = session.inventory[slot] {
+                        session.inventory[slot] = if c <= 1 { None } else { Some((i, c - 1)) };
+                    }
+                    session.inv_dirty = true;
+                }
+            }
+            return;
         }
         // Never place inside any player.
         for session in self.sessions.values() {
@@ -4660,6 +4763,114 @@ mod tests {
             })
             .count();
         assert_eq!(removals, 1, "sheep is removed exactly once");
+    }
+
+    #[test]
+    fn doors_place_two_blocks_toggle_and_break_together() {
+        let mut rig = Rig::new_mode(1, -0.6, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::DOOR, 3));
+        rig.server.world.set_block(10, 55, 8, ssc_world::STONE);
+        rig.server.world.set_block(10, 56, 8, ssc_world::STONE);
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(9, 55, 8), ssc_world::DOOR);
+        assert_eq!(
+            rig.server.world.block_or_air(9, 56, 8),
+            ssc_world::DOOR_UPPER
+        );
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::DOOR, 2))
+        );
+        assert_eq!(
+            rig.server.block_edits[&(0, 0)][&(9, 55, 8)],
+            ssc_world::DOOR
+        );
+        assert_eq!(
+            rig.server.block_edits[&(0, 0)][&(9, 56, 8)],
+            ssc_world::DOOR_UPPER
+        );
+        assert!(rig.drain(0).iter().any(|packet| matches!(
+            packet,
+            ServerPacket::BlockUpdate {
+                x: 9,
+                y: 56,
+                z: 8,
+                block: ssc_world::DOOR_UPPER
+            }
+        )));
+
+        // The upper half blocks placement when occupied.
+        rig.server.world.set_block(9, 55, 8, AIR);
+        rig.server.world.set_block(9, 56, 8, ssc_world::STONE);
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(9, 55, 8), AIR);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::DOOR, 2))
+        );
+
+        rig.server.world.set_block(9, 56, 8, AIR);
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(9, 55, 8), ssc_world::DOOR);
+        assert_eq!(
+            rig.server.world.block_or_air(9, 56, 8),
+            ssc_world::DOOR_UPPER
+        );
+        rig.server.sessions.get_mut(&1).unwrap().player.pitch = 0.0;
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.world.block_or_air(9, 55, 8),
+            ssc_world::DOOR_OPEN
+        );
+        assert_eq!(
+            rig.server.world.block_or_air(9, 56, 8),
+            ssc_world::DOOR_OPEN_UPPER
+        );
+        assert!(!ssc_world::is_solid(ssc_world::DOOR_OPEN));
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(9, 55, 8), ssc_world::DOOR);
+        assert_eq!(
+            rig.server.world.block_or_air(9, 56, 8),
+            ssc_world::DOOR_UPPER
+        );
+
+        rig.server.break_block(1, 9, 55, 8);
+        assert_eq!(rig.server.world.block_or_air(9, 55, 8), AIR);
+        assert_eq!(rig.server.world.block_or_air(9, 56, 8), AIR);
+        assert_eq!(rig.server.block_edits[&(0, 0)][&(9, 56, 8)], AIR);
+        let doors = rig.server.sessions[&1]
+            .inventory
+            .iter()
+            .flatten()
+            .filter(|(item, _)| *item == ssc_world::DOOR)
+            .map(|(_, count)| *count as u16)
+            .sum::<u16>();
+        assert_eq!(doors, 2, "one door item drops from the pair");
+    }
+
+    #[test]
+    fn doors_need_support_and_room_for_both_halves() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::DOOR, 1));
+        rig.server.world.set_block(9, 55, 8, ssc_world::STONE);
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::DOOR, 1))
+        );
+        assert_eq!(
+            rig.server.world.block_or_air(8, 55, 8),
+            AIR,
+            "no room inside the player"
+        );
+
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::DOOR, 1));
+        rig.server.sessions.get_mut(&1).unwrap().player.pitch = 0.0;
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::DOOR, 1))
+        );
     }
 
     #[test]

@@ -201,6 +201,14 @@ Every implemented wiki feature gets a line here. Status legend:
 
 ## Player
 
+- `partial` — Oak doors craft three at a time from six planks (`Ctrl+8`).
+  Placement requires solid support below and two clear cells, then creates
+  saved lower/upper halves; placing inside either player cell is rejected.
+  Right-clicking either half toggles both between solid closed halves and
+  passable open halves, with synchronized block updates and a placement
+  sound. Breaking either half removes the partner and drops exactly one door
+  item. Doors do not block skylight. Orientation, hinges, iron doors,
+  trapdoors, redstone and zombie door-breaking are pending.
 - `partial` — Ladders craft three at a time from seven sticks (`Ctrl+7`)
   and must be placed beside a solid block. They are non-solid but
   selectable; holding jump climbs at up to 2.35 blocks/s, sneaking holds
@@ -329,7 +337,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 29
+  throwing snowballs and Silk Touch are missing. Protocol 30
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit

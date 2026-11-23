@@ -22,6 +22,7 @@ pub fn raycast(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<
         is_solid(block)
             || ssc_world::is_oak_sapling(block)
             || ssc_world::is_wheat(block)
+            || ssc_world::is_door(block)
             || block == ssc_world::LADDER
     })
 }

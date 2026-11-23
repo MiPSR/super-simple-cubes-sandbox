@@ -244,6 +244,7 @@ pub fn item_info(id: ItemId) -> ItemInfo {
         42 => block_item(super::BED, "bed"),
         43 => block_item(super::CHEST, "chest"),
         44 => block_item(super::LADDER, "ladder"),
+        45..=48 => block_item(super::DOOR, "oak_door"),
         APPLE => ItemInfo {
             name: "apple",
             max_stack: 64,
@@ -459,6 +460,7 @@ pub fn block_drop(b: BlockId) -> Option<ItemId> {
         super::OAK_SAPLING | super::OAK_SAPLING_READY => Some(super::OAK_SAPLING),
         super::FURNACE | super::LIT_FURNACE => Some(super::FURNACE),
         super::GLASS => None,
+        super::DOOR..=super::DOOR_OPEN_UPPER => Some(for_block(super::DOOR)),
         super::FARMLAND | super::FARMLAND_WET => Some(for_block(DIRT)),
         super::WHEAT_0..=super::WHEAT_7 => None,
         SNOW_BLOCK => Some(SNOWBALL),

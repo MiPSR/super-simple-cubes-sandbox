@@ -222,6 +222,32 @@ fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgba {
                 mix([150, 104, 54], 0.86 + noise2(x, y, 46) * 0.14, 255)
             }
         }
+        ssc_world::TILE_DOOR | ssc_world::TILE_DOOR_UPPER => {
+            if x < 2 || x > 13 {
+                mix([96, 66, 38], 0.9, 255)
+            } else if tile == ssc_world::TILE_DOOR_UPPER
+                && (5..=10).contains(&x)
+                && (4..=9).contains(&y)
+            {
+                mix([168, 198, 206], 0.95 + noise2(x, y, 47) * 0.05, 255)
+            } else if (tile == ssc_world::TILE_DOOR
+                && (x - 11).abs() <= 1
+                && (10..=12).contains(&y))
+            {
+                mix([214, 188, 92], 0.95, 255)
+            } else {
+                let panel = x == 5 || x == 10 || y == 7;
+                mix(
+                    [150, 108, 62],
+                    if panel {
+                        0.82
+                    } else {
+                        0.94 + noise2(x, y, 48) * 0.08
+                    },
+                    255,
+                )
+            }
+        }
         ssc_world::TILE_LADDER => {
             if x == 3 || x == 12 || (y % 4 == 1 && (3..=12).contains(&x)) {
                 mix([146, 108, 62], 0.9 + noise2(x, y, 45) * 0.1, 255)

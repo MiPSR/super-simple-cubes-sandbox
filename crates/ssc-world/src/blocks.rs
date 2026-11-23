@@ -56,6 +56,12 @@ pub const WOOL: BlockId = 41;
 pub const BED: BlockId = 42;
 pub const CHEST: BlockId = 43;
 pub const LADDER: BlockId = 44;
+/// Closed wooden door: lower and upper halves.
+pub const DOOR: BlockId = 45;
+pub const DOOR_UPPER: BlockId = 46;
+/// Open wooden door halves (non-solid, passable).
+pub const DOOR_OPEN: BlockId = 47;
+pub const DOOR_OPEN_UPPER: BlockId = 48;
 
 // Atlas tile ids (16×16 tiles per row/column in the 256×256 atlas).
 pub const TILE_MISSING: u16 = 0;
@@ -101,6 +107,8 @@ pub const TILE_BED_SIDE: u16 = 39;
 pub const TILE_CHEST: u16 = 40;
 pub const TILE_CHEST_FRONT: u16 = 41;
 pub const TILE_LADDER: u16 = 42;
+pub const TILE_DOOR: u16 = 43;
+pub const TILE_DOOR_UPPER: u16 = 44;
 
 /// Face indices into [`BlockInfo::tiles`].
 pub const FACE_TOP: usize = 0;
@@ -390,7 +398,53 @@ pub const BLOCKS: &[BlockInfo] = &[
         hardness: 0.4,
         needs_tool: false,
     },
+    BlockInfo {
+        name: "oak_door",
+        solid: true,
+        opaque: false,
+        tiles: t(TILE_DOOR, TILE_DOOR, TILE_DOOR),
+        hardness: 3.0,
+        needs_tool: false,
+    },
+    BlockInfo {
+        name: "oak_door_upper",
+        solid: true,
+        opaque: false,
+        tiles: t(TILE_DOOR_UPPER, TILE_DOOR_UPPER, TILE_DOOR_UPPER),
+        hardness: 3.0,
+        needs_tool: false,
+    },
+    BlockInfo {
+        name: "oak_door_open",
+        solid: false,
+        opaque: false,
+        tiles: t(TILE_DOOR, TILE_DOOR, TILE_DOOR),
+        hardness: 3.0,
+        needs_tool: false,
+    },
+    BlockInfo {
+        name: "oak_door_open_upper",
+        solid: false,
+        opaque: false,
+        tiles: t(TILE_DOOR_UPPER, TILE_DOOR_UPPER, TILE_DOOR_UPPER),
+        hardness: 3.0,
+        needs_tool: false,
+    },
 ];
+
+/// Any half of a wooden door, open or closed.
+pub fn is_door(block: BlockId) -> bool {
+    matches!(block, DOOR | DOOR_UPPER | DOOR_OPEN | DOOR_OPEN_UPPER)
+}
+
+/// The door halves for the opposite open state, (lower, upper).
+pub fn door_pair(open: bool) -> (BlockId, BlockId) {
+    if open {
+        (DOOR_OPEN, DOOR_OPEN_UPPER)
+    } else {
+        (DOOR, DOOR_UPPER)
+    }
+}
 
 const fn plant(name: &'static str, tile: u16) -> BlockInfo {
     BlockInfo {

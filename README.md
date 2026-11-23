@@ -92,6 +92,9 @@ runnable through Nix.
   mutton in a furnace for a stronger meal, or use wool as a building block.
   `Ctrl+6` crafts shears (two iron ingots); right-click an unsheared sheep
   for wool. Sheared sheep regrow wool after grazing grass for a minute.
+- `Ctrl+8` crafts three oak doors from six planks. Place a door on solid
+  ground with two clear blocks above; right-click either half to open or
+  close it. Breaking either half removes the whole door.
 - `Ctrl+7` crafts three ladders from seven sticks. Place a ladder against a
   wall; hold jump to climb, sneak to hold position, or release to slide down.
 - `Ctrl+5` crafts a chest from eight planks. Place it and right-click to
