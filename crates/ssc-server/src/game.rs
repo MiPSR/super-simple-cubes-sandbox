@@ -1268,37 +1268,7 @@ impl Server {
                 expired.push(*id);
                 continue;
             }
-            if let Some(target) = players
-                .iter()
-                .filter_map(|player| {
-                    let delta = *player - item.pos;
-                    let distance = delta.length();
-                    (distance < 8.0 && distance > 0.001).then_some((delta, distance))
-                })
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-                .map(|(delta, distance)| delta / distance)
-            {
-                // Gentle server-authoritative homing toward nearby players.
-                item.vel += target * (8.0 * dt);
-                let speed = item.vel.length();
-                if speed > 12.0 {
-                    item.vel = item.vel * (12.0 / speed);
-                }
-            }
-            item.vel.y = (item.vel.y - GRAVITY * dt).max(-TERMINAL_VELOCITY);
-            let result = crate::physics::move_entity(
-                &self.world,
-                &mut item.pos,
-                &mut item.vel,
-                dt,
-                0.125,
-                0.25,
-            );
-            if result.on_ground {
-                item.vel.y = 0.0;
-            }
-            item.vel.x *= 0.8;
-            item.vel.z *= 0.8;
+            crate::physics::move_item(&self.world, &mut item.pos, &mut item.vel, dt);
         }
 
         expired.sort_unstable();
@@ -1323,11 +1293,14 @@ impl Server {
             let mut candidates: Vec<(EntityId, f32)> = self
                 .sessions
                 .iter()
-                .filter(|(_, s)| s.player.joined && !s.survival.dead)
+                .filter(|(_, s)| {
+                    s.player.joined
+                        && !s.survival.dead
+                        && crate::physics::item_in_pickup_range(s.player.pos, pos)
+                })
                 .map(|(id, s)| (*id, (s.player.pos - pos).length()))
-                .filter(|(_, distance)| *distance <= 1.25)
                 .collect();
-            candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
+            candidates.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
             for (player_id, _) in candidates {
                 let Some(session) = self.sessions.get_mut(&player_id) else {
                     continue;
@@ -4874,7 +4847,7 @@ mod tests {
     }
 
     #[test]
-    fn dropped_items_are_attracted_toward_nearby_players() {
+    fn dropped_items_do_not_home_toward_nearby_players() {
         let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
         let player_pos = rig.server.sessions[&1].player.pos;
         rig.server
@@ -4885,10 +4858,71 @@ mod tests {
 
         rig.server.tick_items(0.05);
 
-        assert!(
-            rig.server.items.values().next().unwrap().vel.x < 0.0,
-            "item velocity should point toward the player"
+        assert_eq!(rig.server.items.values().next().unwrap().vel.x, 0.0);
+    }
+
+    #[test]
+    fn item_pickup_reaches_above_the_head_and_diagonally_but_respects_delay() {
+        for offset in [Vec3::new(0.0, 2.0, 0.0), Vec3::new(1.4, 0.0, 1.4)] {
+            let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+            let pos = rig.server.sessions[&1].player.pos + offset;
+            rig.server.spawn_item_entity(ssc_world::APPLE, 1, pos);
+            let item = rig.server.items.values_mut().next().unwrap();
+            item.vel = Vec3::ZERO;
+            item.pickup_delay = 2;
+            rig.server.tick_items(0.05);
+            assert_eq!(rig.server.items.len(), 1);
+            rig.server.tick_items(0.05);
+            assert!(rig.server.items.is_empty());
+            assert_eq!(
+                rig.server.sessions[&1].inventory[0],
+                Some((ssc_world::APPLE, 1))
+            );
+        }
+    }
+
+    #[test]
+    fn floating_loot_keeps_stack_metadata_pauses_and_can_be_picked_up() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        for x in 20..25 {
+            for z in 6..11 {
+                for y in 60..64 {
+                    rig.server.world.set_block(x, y, z, ssc_world::WATER);
+                }
+            }
+        }
+        rig.server.spawn_item_entity_with_durability(
+            ssc_world::IRON_SWORD,
+            1,
+            Vec3::new(22.5, 60.1, 8.5),
+            17,
         );
+        let id = *rig.server.items.keys().next().unwrap();
+        for _ in 0..400 {
+            rig.server.tick_items(0.05);
+        }
+        let item = &rig.server.items[&id];
+        assert!((63.8..64.0).contains(&item.pos.y));
+        assert_eq!(item.age, 400);
+        assert_eq!(item.durability, 17);
+        let packet = item_state(id, item);
+        assert_eq!(ServerPacket::decode(&packet.encode()).unwrap(), packet);
+        let before = item.pos;
+        rig.server.sessions.get_mut(&1).unwrap().player.joined = false;
+        rig.server.tick_items(0.05);
+        assert_eq!(rig.server.items[&id].pos, before);
+        assert_eq!(rig.server.items[&id].age, 400);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.player.joined = true;
+        session.player.pos = before;
+        rig.server.tick_items(0.05);
+        assert!(!rig.server.items.contains_key(&id));
+        let slot = rig.server.sessions[&1]
+            .inventory
+            .iter()
+            .position(|slot| *slot == Some((ssc_world::IRON_SWORD, 1)))
+            .unwrap();
+        assert_eq!(rig.server.sessions[&1].durability[slot], 17);
     }
 
     #[test]

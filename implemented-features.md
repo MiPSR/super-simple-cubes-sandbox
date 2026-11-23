@@ -301,9 +301,17 @@ Every implemented wiki feature gets a line here. Status legend:
   stacks have basic gravity, same-item
   merging, 10-tick pickup delay, 5-minute despawn and partial inventory
   pickup (including passing a partial stack to the next nearby player), with
-  merged stacks retaining the longer pickup delay, plus
-  gentle attraction toward nearby players. Client renders gentle
+   merged stacks retaining the longer pickup delay. Pickup tests the item
+   hitbox against the player's body expanded one block horizontally and
+   half a block vertically; ordinary loot no longer homes toward players.
+   Equidistant pickup candidates use entity ID as a stable tie-breaker.
+   Client renders gentle
   bobbing and rotation; merge radius/timing refinements pending.
+  Dropped items rise through static water and settle near half submersion;
+  water drag slows motion and substeps catch fast falls into shallow pools.
+  Quarter-block collision prevents buoyancy from pushing loot through a
+  solid or glass ceiling. This is an approximate fluid integrator, not
+  exact Bedrock acceleration; currents, bubble columns and lava are absent.
   36-slot inventories (9 hotbar + 27 storage, stack 64) are server-owned
   and synced. Sticks, coal and raw iron are non-block items.
 - `partial` — Q drops one item from the selected survival hotbar stack as

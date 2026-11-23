@@ -36,6 +36,19 @@ pub fn entity_aabb(pos: Vec3, hw: f32, height: f32) -> Aabb {
     )
 }
 
+/// Item pickup uses the player's body expanded one block horizontally and
+/// half a block vertically, not a sphere around the player's feet.
+pub fn item_in_pickup_range(player: Vec3, item: Vec3) -> bool {
+    let player = player_aabb(player);
+    let item = entity_aabb(item, 0.125, 0.25);
+    item.max.x >= player.min.x - 1.0
+        && item.min.x <= player.max.x + 1.0
+        && item.max.z >= player.min.z - 1.0
+        && item.min.z <= player.max.z + 1.0
+        && item.max.y > player.min.y - 0.5
+        && item.min.y < player.max.y + 0.5
+}
+
 /// Integrate one tick of player movement: applies `vel * dt` to `pos` with
 /// block collision. `vel` is zeroed on the axes that get blocked.
 pub fn move_player(world: &World, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> MoveResult {
@@ -47,6 +60,36 @@ pub fn move_player(world: &World, pos: &mut Vec3, vel: &mut Vec3, dt: f32) -> Mo
         ssc_math::PLAYER_HALF_WIDTH,
         ssc_math::PLAYER_HEIGHT,
     )
+}
+
+/// Dropped stacks use a quarter-block body. Approximate buoyancy balances
+/// at half submersion; this is not the exact Bedrock fluid integrator.
+/// Recheck water each short step so fast drops cannot skip a shallow pool.
+pub fn move_item(world: &World, pos: &mut Vec3, vel: &mut Vec3, dt: f32) {
+    let steps = (((vel.length() + ssc_math::GRAVITY * dt) * dt / 0.2).ceil() as usize).clamp(1, 64);
+    let step_dt = dt / steps as f32;
+    for _ in 0..steps {
+        let x = pos.x.floor() as i32;
+        let z = pos.z.floor() as i32;
+        let mut submerged = 0.0;
+        for y in pos.y.floor() as i32..=(pos.y + 0.25).floor() as i32 {
+            if world.block_or_air(x, y, z) == WATER {
+                submerged += ((pos.y + 0.25).min(y as f32 + 1.0) - pos.y.max(y as f32)).max(0.0);
+            }
+        }
+        if submerged > 0.0 {
+            let drag = 0.8_f32.powf(step_dt * 20.0);
+            vel.x *= drag;
+            vel.z *= drag;
+            vel.y = (vel.y * drag + ssc_math::GRAVITY * (2.0 * submerged / 0.25 - 1.0) * step_dt)
+                .clamp(-2.0, 0.6);
+        } else {
+            vel.y = (vel.y - ssc_math::GRAVITY * step_dt).max(-ssc_math::TERMINAL_VELOCITY);
+        }
+        move_entity(world, pos, vel, step_dt, 0.125, 0.25);
+    }
+    vel.x *= 0.8;
+    vel.z *= 0.8;
 }
 
 /// Grounded sneaking keeps part of the player's footprint over support.
@@ -276,6 +319,86 @@ fn sweep_axis(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn item_pickup_range_uses_body_height_and_asymmetric_boundary_rules() {
+        let player = Vec3::ZERO;
+        assert!(item_in_pickup_range(player, Vec3::new(1.425, 1.8, 0.0)));
+        assert!(!item_in_pickup_range(player, Vec3::new(1.426, 1.8, 0.0)));
+        assert!(item_in_pickup_range(player, Vec3::new(0.0, 2.299, 0.0)));
+        assert!(!item_in_pickup_range(player, Vec3::new(0.0, 2.3, 0.0)));
+        assert!(item_in_pickup_range(player, Vec3::new(0.0, -0.749, 0.0)));
+        assert!(!item_in_pickup_range(player, Vec3::new(0.0, -0.75, 0.0)));
+        assert!(item_in_pickup_range(player, Vec3::new(1.4, 0.0, 1.4)));
+    }
+
+    fn item_pool() -> World {
+        let mut world = World::default();
+        for x in 0..8 {
+            for z in 0..8 {
+                world.set_block(x, 59, z, ssc_world::STONE);
+                for y in 60..64 {
+                    world.set_block(x, y, z, WATER);
+                }
+            }
+        }
+        world
+    }
+
+    #[test]
+    fn dropped_items_rise_and_settle_near_the_water_surface() {
+        let world = item_pool();
+        let mut pos = Vec3::new(3.5, 60.1, 3.5);
+        let mut vel = Vec3::ZERO;
+        for _ in 0..400 {
+            move_item(&world, &mut pos, &mut vel, 0.05);
+        }
+        assert!(
+            (63.8..64.0).contains(&pos.y),
+            "floating feet position: {pos:?}"
+        );
+        assert!(
+            vel.y.abs() < 0.05,
+            "float should settle rather than bounce: {vel:?}"
+        );
+    }
+
+    #[test]
+    fn water_drag_and_collision_keep_items_inside_a_roofed_pool() {
+        let mut world = item_pool();
+        for x in 0..8 {
+            for z in 0..8 {
+                world.set_block(x, 64, z, ssc_world::GLASS);
+            }
+        }
+        let mut pos = Vec3::new(3.5, 61.0, 3.5);
+        let mut vel = Vec3::new(3.0, 0.0, 0.0);
+        for _ in 0..200 {
+            move_item(&world, &mut pos, &mut vel, 0.05);
+        }
+        assert!(pos.x < 4.5);
+        assert!(vel.x.abs() < 0.01);
+        assert!(pos.y <= 63.75);
+        assert!(pos.y > 63.7);
+    }
+
+    #[test]
+    fn fast_item_falls_do_not_skip_a_one_block_pool() {
+        let mut world = World::default();
+        world.set_block(3, 60, 3, WATER);
+        let mut pos = Vec3::new(3.5, 62.0, 3.5);
+        let mut vel = Vec3::new(0.0, -78.4, 0.0);
+        move_item(&world, &mut pos, &mut vel, 0.05);
+        assert!(
+            pos.y >= 60.0 && pos.y < 61.0,
+            "drop should be slowed by water: {pos:?}"
+        );
+        assert!(vel.y >= -2.0);
+        for _ in 0..100 {
+            move_item(&world, &mut pos, &mut vel, 0.05);
+        }
+        assert!((60.8..61.0).contains(&pos.y));
+    }
 
     #[test]
     fn sneaking_stops_at_edges_and_corners_including_negative_coordinates() {
