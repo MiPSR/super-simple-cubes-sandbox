@@ -41,6 +41,17 @@ pub const FURNACE: BlockId = 27;
 pub const LIT_FURNACE: BlockId = 28;
 pub const GLASS: BlockId = 29;
 pub const SMOOTH_STONE: BlockId = 30;
+pub const FARMLAND: BlockId = 31;
+pub const FARMLAND_WET: BlockId = 32;
+/// Wheat growth ages 0..=7 (Bedrock uses eight stages).
+pub const WHEAT_0: BlockId = 33;
+pub const WHEAT_1: BlockId = 34;
+pub const WHEAT_2: BlockId = 35;
+pub const WHEAT_3: BlockId = 36;
+pub const WHEAT_4: BlockId = 37;
+pub const WHEAT_5: BlockId = 38;
+pub const WHEAT_6: BlockId = 39;
+pub const WHEAT_7: BlockId = 40;
 
 // Atlas tile ids (16×16 tiles per row/column in the 256×256 atlas).
 pub const TILE_MISSING: u16 = 0;
@@ -74,6 +85,12 @@ pub const TILE_FURNACE: u16 = 27;
 pub const TILE_LIT_FURNACE: u16 = 28;
 pub const TILE_GLASS: u16 = 29;
 pub const TILE_SMOOTH_STONE: u16 = 30;
+pub const TILE_FARMLAND: u16 = 31;
+pub const TILE_FARMLAND_WET: u16 = 32;
+pub const TILE_WHEAT_0: u16 = 33;
+pub const TILE_WHEAT_1: u16 = 34;
+pub const TILE_WHEAT_2: u16 = 35;
+pub const TILE_WHEAT_3: u16 = 36;
 
 /// Face indices into [`BlockInfo::tiles`].
 pub const FACE_TOP: usize = 0;
@@ -309,7 +326,55 @@ pub const BLOCKS: &[BlockInfo] = &[
         needs_tool: false,
     },
     b("smooth_stone", [TILE_SMOOTH_STONE; 6], 2.0, true),
+    BlockInfo {
+        name: "farmland",
+        solid: true,
+        opaque: true,
+        tiles: t(TILE_FARMLAND, TILE_DIRT, TILE_DIRT),
+        hardness: 0.6,
+        needs_tool: false,
+    },
+    BlockInfo {
+        name: "farmland_wet",
+        solid: true,
+        opaque: true,
+        tiles: t(TILE_FARMLAND_WET, TILE_DIRT, TILE_DIRT),
+        hardness: 0.6,
+        needs_tool: false,
+    },
+    plant("wheat_0", TILE_WHEAT_0),
+    plant("wheat_1", TILE_WHEAT_0),
+    plant("wheat_2", TILE_WHEAT_1),
+    plant("wheat_3", TILE_WHEAT_1),
+    plant("wheat_4", TILE_WHEAT_2),
+    plant("wheat_5", TILE_WHEAT_2),
+    plant("wheat_6", TILE_WHEAT_3),
+    plant("wheat_7", TILE_WHEAT_3),
 ];
+
+const fn plant(name: &'static str, tile: u16) -> BlockInfo {
+    BlockInfo {
+        name,
+        solid: false,
+        opaque: false,
+        tiles: [tile; 6],
+        hardness: 0.0,
+        needs_tool: false,
+    }
+}
+
+pub fn is_wheat(block: BlockId) -> bool {
+    (WHEAT_0..=WHEAT_7).contains(&block)
+}
+
+/// Growth age 0..=7 for a wheat block id.
+pub fn wheat_age(block: BlockId) -> Option<u8> {
+    is_wheat(block).then(|| (block - WHEAT_0) as u8)
+}
+
+pub fn is_farmland(block: BlockId) -> bool {
+    matches!(block, FARMLAND | FARMLAND_WET)
+}
 
 pub fn is_oak_leaves(block: BlockId) -> bool {
     matches!(block, OAK_LEAVES | GROWN_OAK_LEAVES)

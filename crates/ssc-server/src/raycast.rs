@@ -19,7 +19,7 @@ pub struct RayHit {
 /// Skips the starting cell; includes non-solid, selectable saplings.
 pub fn raycast(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<RayHit> {
     raycast_matching(world, origin, dir, max_dist, |block| {
-        is_solid(block) || ssc_world::is_oak_sapling(block)
+        is_solid(block) || ssc_world::is_oak_sapling(block) || ssc_world::is_wheat(block)
     })
 }
 

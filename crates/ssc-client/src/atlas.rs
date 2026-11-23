@@ -144,6 +144,41 @@ fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgba {
                 mix([162, 130, 78], 0.9 + noise2(x, y, 12) * 0.2, 255)
             }
         }
+        ssc_world::TILE_FARMLAND | ssc_world::TILE_FARMLAND_WET => {
+            // Dirt rows; wet farmland is darker and has faint water sheen.
+            let furrow = y % 4 == 2;
+            let base = if tile == ssc_world::TILE_FARMLAND_WET {
+                [84, 62, 45]
+            } else {
+                [120, 86, 58]
+            };
+            if furrow {
+                mix(base, 0.7, 255)
+            } else {
+                mix(base, 0.9 + noise2(x, y, 37) * 0.2, 255)
+            }
+        }
+        ssc_world::TILE_WHEAT_0
+        | ssc_world::TILE_WHEAT_1
+        | ssc_world::TILE_WHEAT_2
+        | ssc_world::TILE_WHEAT_3 => {
+            // Stems with heads. Each stage is taller and more golden.
+            let stage = (tile - ssc_world::TILE_WHEAT_0) as i32;
+            let height = 4 + stage * 3;
+            let stem_x = x % 5 == 2;
+            if stem_x && (15 - y) <= height {
+                mix([74, 132, 52], 0.9 + noise2(x, y, 38) * 0.2, 220)
+            } else if (15 - y) <= height && (x % 5 - 2).abs() <= 1 && y < 7 {
+                let gold = stage >= 2;
+                mix(
+                    if gold { [196, 168, 70] } else { [122, 158, 64] },
+                    0.85 + noise2(x, y, 39) * 0.3,
+                    if stage == 0 { 180 } else { 230 },
+                )
+            } else {
+                [0, 0, 0, 0]
+            }
+        }
         ssc_world::TILE_GLASS => {
             if x == 0 || x == 15 || y == 0 || y == 15 {
                 [180, 220, 230, 180]

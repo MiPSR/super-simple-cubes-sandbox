@@ -88,9 +88,10 @@ Every implemented wiki feature gets a line here. Status legend:
   upward, three downward). Water-covered dirt does not accept grass.
   Updates are broadcast, refresh LODs and persist as ordinary world edits;
   random ticking pauses with no joined players or beyond a fixed four-column
-  radius. The one-sample-per-section scheduler and direct-skylight estimate
-  are approximations; propagated lighting, gamerule tuning and other
-  random-ticked blocks such as crops are pending.
+  radius. Four deterministic samples per loaded section per tick approximate
+  Bedrock's scheduler; the direct-skylight estimate is still an
+  approximation. Propagated lighting, gamerule tuning and other
+  random-ticked blocks are pending.
 - `partial` — Unsupported natural oak leaves decay on nearby random ticks.
   Support follows connected leaves to ordinary or stripped oak logs within
   Bedrock's four-block distance; unloaded neighboring columns defer the
@@ -181,6 +182,23 @@ Every implemented wiki feature gets a line here. Status legend:
   animated falling entity, water displacement, suffocation or automatic
   updates of suspended worldgen deposits yet); no Fortune/Silk Touch yet.
 
+## Farming
+
+- `partial` — Hoes (wooden/stone/iron, durability 60/132/251) craft from two
+  planks/cobblestone/ingots and two sticks (inventory Shift+6/8/9). Using a
+  hoe on grass or dirt with clear space above creates farmland and costs one
+  durability; wet/dry farmland is a saved block state and drops dirt.
+- `partial` — Wheat seeds plant only on the top face of farmland and grow
+  through eight saved ages. Growth needs daylight light 9 and consumes a
+  random tick; hydrated farmland (water within four blocks horizontally and
+  one block vertically) advances more often. Mature wheat yields one wheat
+  plus 0–3 seeds, immature crops yield one seed, and removing support pops
+  the crop. Three wheat craft into bread (5 hunger, 6.0 saturation;
+  inventory `B`). Grass blocks currently provide the interim seed source at
+  1/8 (short grass is not implemented). Placeholder crops use translucent
+  cubes; trampling, bone meal, exact Bedrock growth points, crop particles
+  and animal sources of seeds are pending.
+
 ## Player
 
 - `1:1` (values) — Player physics constants: 0.6×1.8 AABB, eye 1.62,
@@ -260,7 +278,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 21
+  throwing snowballs and Silk Touch are missing. Protocol 22
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit

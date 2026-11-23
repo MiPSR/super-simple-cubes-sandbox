@@ -13,14 +13,25 @@ fn mix(mut value: u64) -> u64 {
     value ^ (value >> 31)
 }
 
-/// One deterministic sample per allocated section per tick. This is a
-/// simplified scheduler, not Bedrock's exact relative randomTickSpeed.
-pub fn sample(tick: u64, seed: u64, cx: i32, cz: i32, section: usize) -> ((i32, i32, i32), u64) {
+/// Approximate Bedrock random ticks: several deterministic positions per
+/// allocated section per tick. The count is a simplification, not the exact
+/// relative randomTickSpeed scheduler.
+pub const SAMPLES_PER_SECTION: usize = 4;
+
+fn sample_at(
+    tick: u64,
+    seed: u64,
+    cx: i32,
+    cz: i32,
+    section: usize,
+    index: usize,
+) -> ((i32, i32, i32), u64) {
     let roll = mix(tick.wrapping_mul(0x9e37_79b9_7f4a_7c15)
         ^ seed
         ^ (cx as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f)
         ^ (cz as u64).wrapping_mul(0x1656_67b1_9e37_79f9)
-        ^ (section as u64).wrapping_mul(0xd1b5_4a32_d192_ed05));
+        ^ (section as u64).wrapping_mul(0xd1b5_4a32_d192_ed05)
+        ^ (index as u64).wrapping_mul(0x2545_f491_4f6c_dd1d));
     (
         (
             cx * 16 + (roll & 15) as i32,
@@ -29,6 +40,21 @@ pub fn sample(tick: u64, seed: u64, cx: i32, cz: i32, section: usize) -> ((i32, 
         ),
         mix(roll ^ 0xb10c_71c5),
     )
+}
+
+/// One deterministic sample per allocated section per tick.
+pub fn sample(tick: u64, seed: u64, cx: i32, cz: i32, section: usize) -> ((i32, i32, i32), u64) {
+    sample_at(tick, seed, cx, cz, section, 0)
+}
+
+pub fn samples(
+    tick: u64,
+    seed: u64,
+    cx: i32,
+    cz: i32,
+    section: usize,
+) -> [((i32, i32, i32), u64); SAMPLES_PER_SECTION] {
+    std::array::from_fn(|index| sample_at(tick, seed, cx, cz, section, index))
 }
 
 fn blocks_light(block: BlockId) -> bool {
@@ -133,6 +159,49 @@ pub fn leaf_can_decay(world: &World, x: i32, y: i32, z: i32) -> bool {
         }
     }
     true
+}
+
+/// Farmland hydrates from water within four blocks horizontally and one
+/// block vertically.
+pub fn farmland_should_be_wet(world: &World, x: i32, y: i32, z: i32) -> bool {
+    for dx in -4..=4 {
+        for dz in -4..=4 {
+            for dy in -1..=1 {
+                if world.block_or_air(x + dx, y + dy, z + dz) == WATER {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Wheat advances through eight saved growth ages. Growth needs daylight
+/// light 9 (approximated as direct skylight) and hydrated farmland raises
+/// the per-tick chance. Bedrock's exact growth-point formula is simplified.
+pub fn wheat_changes(
+    world: &World,
+    x: i32,
+    y: i32,
+    z: i32,
+    roll: u64,
+    daylight: bool,
+    hydrated: bool,
+) -> Vec<BlockChange> {
+    let block = world.block_or_air(x, y, z);
+    let Some(age) = ssc_world::wheat_age(block) else {
+        return Vec::new();
+    };
+    if !ssc_world::is_farmland(world.block_or_air(x, y - 1, z)) {
+        return vec![((x, y, z), ssc_world::AIR)];
+    }
+    if skylight(world, x, y, z, daylight) < 9 {
+        return Vec::new();
+    }
+    if age >= 7 || roll % 7 >= if hydrated { 3 } else { 1 } {
+        return Vec::new();
+    }
+    vec![((x, y, z), block + 1)]
 }
 
 pub fn can_plant_sapling(world: &World, x: i32, y: i32, z: i32) -> bool {
@@ -362,5 +431,67 @@ mod tests {
         let changes = sapling_changes(&world, 15, 64, 8, 0, true);
         assert!(!changes.is_empty());
         assert!(!changes.iter().any(|(pos, _)| *pos == (16, 65, 8)));
+    }
+
+    #[test]
+    fn wheat_advances_one_age_only_with_support_light_and_a_growth_roll() {
+        let mut world = World::default();
+        world.set_block(8, 63, 8, ssc_world::FARMLAND);
+        world.set_block(8, 64, 8, ssc_world::WHEAT_0);
+        assert_eq!(
+            wheat_changes(&world, 8, 64, 8, 0, true, false),
+            vec![((8, 64, 8), ssc_world::WHEAT_1)]
+        );
+        assert!(wheat_changes(&world, 8, 64, 8, 0, false, true).is_empty());
+        assert!(wheat_changes(&world, 8, 64, 8, 1, true, false).is_empty());
+        assert_eq!(
+            wheat_changes(&world, 8, 64, 8, 2, true, true),
+            vec![((8, 64, 8), ssc_world::WHEAT_1)],
+            "wet farmland has a higher chance"
+        );
+        world.set_block(8, 64, 8, ssc_world::WHEAT_7);
+        assert!(wheat_changes(&world, 8, 64, 8, 0, true, true).is_empty());
+        world.set_block(8, 64, 8, ssc_world::WHEAT_3);
+        world.set_block(8, 63, 8, ssc_world::DIRT);
+        assert_eq!(
+            wheat_changes(&world, 8, 64, 8, 0, true, true),
+            vec![((8, 64, 8), ssc_world::AIR)]
+        );
+    }
+
+    #[test]
+    fn farmland_hydration_scans_four_blocks_and_adjacent_levels() {
+        let mut world = World::default();
+        world.set_block(8, 63, 8, ssc_world::FARMLAND);
+        assert!(!farmland_should_be_wet(&world, 8, 63, 8));
+        world.set_block(12, 62, 8, WATER);
+        assert!(farmland_should_be_wet(&world, 8, 63, 8));
+        world.set_block(12, 62, 8, ssc_world::AIR);
+        world.set_block(13, 64, 8, WATER);
+        assert!(!farmland_should_be_wet(&world, 8, 63, 8), "13 is too far");
+        world.set_block(12, 64, 8, WATER);
+        assert!(farmland_should_be_wet(&world, 8, 63, 8));
+    }
+
+    #[test]
+    fn multiple_samples_per_section_are_distinct_and_stable() {
+        let picks = samples(7, 99, 0, 0, 8);
+        assert_eq!(picks.len(), SAMPLES_PER_SECTION);
+        assert_eq!(picks[0], sample(7, 99, 0, 0, 8));
+        for (index, (pos, roll)) in picks.iter().enumerate() {
+            assert_eq!(*pos, samples(7, 99, 0, 0, 8)[index].0);
+            assert!((0..16).contains(&pos.0));
+            assert!((64..80).contains(&pos.1));
+            assert!((0..16).contains(&pos.2));
+            assert!(*roll != 0);
+        }
+        assert!(
+            picks
+                .iter()
+                .map(|(pos, _)| *pos)
+                .collect::<HashSet<_>>()
+                .len()
+                > 1
+        );
     }
 }

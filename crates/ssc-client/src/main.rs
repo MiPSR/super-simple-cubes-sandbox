@@ -554,7 +554,10 @@ impl App {
                                 3 => 10,
                                 4 => 15,
                                 5 => 11,
+                                6 => 17,
                                 7 => 12,
+                                8 => 18,
+                                9 => 19,
                                 _ => n - 1,
                             }
                         } else {
@@ -610,6 +613,14 @@ impl App {
                         frame.set_mouse_locked(false);
                     } else if !self.picker_open && !locked {
                         frame.set_mouse_locked(true);
+                    }
+                }
+                EngineEvent::Key {
+                    key: Key::B,
+                    state: KeyState::Pressed,
+                } => {
+                    if self.picker_open && self.mode == 0 {
+                        self.send(&ClientPacket::Craft { recipe: 20 });
                     }
                 }
                 EngineEvent::Key {
@@ -996,7 +1007,8 @@ impl App {
                 [1.0, 0.85, 0.3, 1.0],
             );
             frame.hud_text(
-                "5/6:axes 7/8:shovels 9:repair (Shift+1/2/4:wood/stone/iron sword)".to_string(),
+                "5/6:axes 7/8:shovels 9:repair (Shift+1/2/4:swords, 6/8/9:hoes, B:bread)"
+                    .to_string(),
                 x0 + 15.0,
                 y0 + 42.0,
                 14.0,

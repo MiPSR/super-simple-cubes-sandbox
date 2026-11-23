@@ -88,5 +88,10 @@ runnable through Nix.
   with a water bucket to place water beside it. Water is currently static.
 - Q drops one item from the selected survival hotbar stack into the world;
   Ctrl+Q drops the entire stack.
+- Farming: `Shift+6`, `Shift+8`, and `Shift+9` craft wooden, stone, and iron
+  hoes. Right-click grass or dirt into farmland, then plant wheat seeds on
+  top. Water within four blocks keeps farmland wet and speeds growth. Break
+  mature wheat for wheat and seeds; press `B` in the inventory to craft bread
+  from three wheat.
 
 See `implemented-features.md` for the full parity tracker.

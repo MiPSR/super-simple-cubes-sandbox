@@ -50,6 +50,16 @@ pub const STONE_SWORD: ItemId = 123;
 pub const IRON_SWORD: ItemId = 124;
 pub const BUCKET: ItemId = 125;
 pub const WATER_BUCKET: ItemId = 126;
+pub const WOODEN_HOE: ItemId = 127;
+pub const STONE_HOE: ItemId = 128;
+pub const IRON_HOE: ItemId = 129;
+pub const WHEAT_SEEDS: ItemId = 130;
+pub const WHEAT: ItemId = 131;
+pub const BREAD: ItemId = 132;
+
+pub fn is_hoe(item: ItemId) -> bool {
+    matches!(item, WOODEN_HOE | STONE_HOE | IRON_HOE)
+}
 
 pub fn is_sword(item: ItemId) -> bool {
     matches!(item, WOODEN_SWORD | STONE_SWORD | IRON_SWORD)
@@ -109,6 +119,34 @@ pub fn item_info(id: ItemId) -> ItemInfo {
             places: None,
             food: None,
         },
+        WOODEN_HOE | STONE_HOE | IRON_HOE => ItemInfo {
+            name: match id {
+                WOODEN_HOE => "wooden_hoe",
+                STONE_HOE => "stone_hoe",
+                _ => "iron_hoe",
+            },
+            max_stack: 1,
+            places: None,
+            food: None,
+        },
+        WHEAT_SEEDS => ItemInfo {
+            name: "wheat_seeds",
+            max_stack: 64,
+            places: Some(super::WHEAT_0),
+            food: None,
+        },
+        WHEAT => ItemInfo {
+            name: "wheat",
+            max_stack: 64,
+            places: None,
+            food: None,
+        },
+        BREAD => ItemInfo {
+            name: "bread",
+            max_stack: 64,
+            places: None,
+            food: Some(5),
+        },
         0 => ItemInfo {
             name: "empty",
             max_stack: 0,
@@ -143,6 +181,8 @@ pub fn item_info(id: ItemId) -> ItemInfo {
         27 | 28 => block_item(super::FURNACE, "furnace"),
         29 => block_item(super::GLASS, "glass"),
         30 => block_item(super::SMOOTH_STONE, "smooth_stone"),
+        31 | 32 => block_item(super::FARMLAND, "farmland"),
+        33..=40 => block_item(super::WHEAT_0, "wheat"),
         APPLE => ItemInfo {
             name: "apple",
             max_stack: 64,
@@ -299,6 +339,12 @@ pub fn valid_item_id(id: ItemId) -> bool {
             | IRON_SWORD
             | BUCKET
             | WATER_BUCKET
+            | WOODEN_HOE
+            | STONE_HOE
+            | IRON_HOE
+            | WHEAT_SEEDS
+            | WHEAT
+            | BREAD
     );
     id == EMPTY_ITEM || block_items || free_items
 }
@@ -310,6 +356,7 @@ pub fn food_saturation(id: ItemId) -> f32 {
         PORKCHOP => 1.8,
         ROTTEN_FLESH => 0.8,
         COOKED_PORKCHOP => 12.8,
+        BREAD => 6.0,
         _ => 0.0,
     }
 }
@@ -342,6 +389,8 @@ pub fn block_drop(b: BlockId) -> Option<ItemId> {
         super::OAK_SAPLING | super::OAK_SAPLING_READY => Some(super::OAK_SAPLING),
         super::FURNACE | super::LIT_FURNACE => Some(super::FURNACE),
         super::GLASS => None,
+        super::FARMLAND | super::FARMLAND_WET => Some(for_block(DIRT)),
+        super::WHEAT_0..=super::WHEAT_7 => None,
         SNOW_BLOCK => Some(SNOWBALL),
         other => Some(for_block(other)),
     }

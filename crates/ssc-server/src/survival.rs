@@ -34,15 +34,18 @@ pub fn max_durability(item: ItemId) -> u16 {
         ssc_world::WOODEN_PICKAXE
         | ssc_world::WOODEN_AXE
         | ssc_world::WOODEN_SHOVEL
-        | ssc_world::WOODEN_SWORD => 60,
+        | ssc_world::WOODEN_SWORD
+        | ssc_world::WOODEN_HOE => 60,
         ssc_world::STONE_PICKAXE
         | ssc_world::STONE_AXE
         | ssc_world::STONE_SHOVEL
-        | ssc_world::STONE_SWORD => 132,
+        | ssc_world::STONE_SWORD
+        | ssc_world::STONE_HOE => 132,
         ssc_world::IRON_PICKAXE
         | ssc_world::IRON_AXE
         | ssc_world::IRON_SHOVEL
-        | ssc_world::IRON_SWORD => 251,
+        | ssc_world::IRON_SWORD
+        | ssc_world::IRON_HOE => 251,
         _ => 0,
     }
 }
@@ -566,6 +569,19 @@ pub fn craft(inv: &mut [Slot], recipe: u8) -> bool {
             (ssc_world::IRON_SWORD, 1),
         ),
         16 => (&[(ssc_world::IRON_INGOT, 3)][..], (ssc_world::BUCKET, 1)),
+        17 => (
+            &[(ssc_world::OAK_PLANKS, 2), (ssc_world::STICK, 2)][..],
+            (ssc_world::WOODEN_HOE, 1),
+        ),
+        18 => (
+            &[(ssc_world::COBBLESTONE, 2), (ssc_world::STICK, 2)][..],
+            (ssc_world::STONE_HOE, 1),
+        ),
+        19 => (
+            &[(ssc_world::IRON_INGOT, 2), (ssc_world::STICK, 2)][..],
+            (ssc_world::IRON_HOE, 1),
+        ),
+        20 => (&[(ssc_world::WHEAT, 3)][..], (ssc_world::BREAD, 1)),
         _ => return false,
     };
     let mut next = inv.to_vec();
@@ -673,9 +689,28 @@ pub fn block_drops(block: BlockId, roll: u64, held: Option<ItemId>) -> Vec<(Item
         }
         return drops;
     }
-    drop_with_tool(block, unit(0), held)
+    // Wheat harvest: mature crops yield wheat and 0–3 seeds, immature ones
+    // a single seed. Bedrock uses a separate seed roll per crop.
+    if ssc_world::is_wheat(block) {
+        let age = ssc_world::wheat_age(block).unwrap_or(0);
+        if age == 7 {
+            let mut drops = vec![(ssc_world::WHEAT, 1)];
+            let seeds = ((roll >> 16) % 4) as u8;
+            if seeds > 0 {
+                drops.push((ssc_world::WHEAT_SEEDS, seeds));
+            }
+            return drops;
+        }
+        return vec![(ssc_world::WHEAT_SEEDS, 1)];
+    }
+    let mut drops = drop_with_tool(block, unit(0), held)
         .map(|item| vec![(item, drop_count(block, unit(0)))])
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Interim seed source until short grass exists: 1/8 from grass blocks.
+    if block == ssc_world::GRASS_BLOCK && unit(32) < 0.125 {
+        drops.push((ssc_world::WHEAT_SEEDS, 1));
+    }
+    drops
 }
 
 /// Unenchanted copper ore yields 2–5 raw copper; other block drops are
@@ -696,6 +731,63 @@ pub fn drop_count(block: BlockId, rng: f32) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hoes_craft_bread_is_food_and_wheat_drops_follow_growth_age() {
+        for (recipe, material, hoe, durability) in [
+            (17, ssc_world::OAK_PLANKS, ssc_world::WOODEN_HOE, 60),
+            (18, ssc_world::COBBLESTONE, ssc_world::STONE_HOE, 132),
+            (19, ssc_world::IRON_INGOT, ssc_world::IRON_HOE, 251),
+        ] {
+            let mut inv = vec![None; INVENTORY_SIZE];
+            inv[0] = Some((material, 2));
+            inv[1] = Some((ssc_world::STICK, 2));
+            assert!(craft(&mut inv, recipe));
+            assert_eq!(inv[0], Some((hoe, 1)));
+            assert_eq!(max_durability(hoe), durability);
+            assert_eq!(attack_damage(Some(hoe)), 1.0);
+        }
+        assert!(max_durability(ssc_world::WOODEN_HOE) > 0);
+        assert_eq!(ssc_world::item_info(ssc_world::BREAD).food, Some(5));
+        assert_eq!(ssc_world::food_saturation(ssc_world::BREAD), 6.0);
+        let mut inv = vec![None; INVENTORY_SIZE];
+        inv[0] = Some((ssc_world::WHEAT, 3));
+        assert!(craft(&mut inv, 20));
+        assert_eq!(inv[0], Some((ssc_world::BREAD, 1)));
+
+        assert_eq!(
+            block_drops(ssc_world::WHEAT_0, 0, None),
+            vec![(ssc_world::WHEAT_SEEDS, 1)]
+        );
+        let mature = block_drops(ssc_world::WHEAT_7, 0, None);
+        assert_eq!(mature[0], (ssc_world::WHEAT, 1));
+        assert!(mature.iter().all(|(_, count)| *count > 0));
+        let many_seeds = block_drops(ssc_world::WHEAT_7, 3 << 16, None);
+        assert_eq!(
+            many_seeds
+                .iter()
+                .find(|(item, _)| *item == ssc_world::WHEAT_SEEDS),
+            Some(&(ssc_world::WHEAT_SEEDS, 3))
+        );
+        assert!(block_drops(ssc_world::WHEAT_7, 4 << 16, None)
+            .iter()
+            .all(|(item, _)| *item != ssc_world::WHEAT_SEEDS));
+        assert_eq!(
+            ssc_world::items::block_drop(ssc_world::FARMLAND_WET),
+            Some(ssc_world::DIRT)
+        );
+    }
+
+    #[test]
+    fn grass_blocks_can_yield_an_interim_wheat_seed() {
+        let with_seed = block_drops(ssc_world::GRASS_BLOCK, 0, None);
+        assert!(with_seed.contains(&(ssc_world::DIRT, 1)));
+        assert!(with_seed.contains(&(ssc_world::WHEAT_SEEDS, 1)));
+        let without = block_drops(ssc_world::GRASS_BLOCK, 0xffffu64 << 32, None);
+        assert!(without
+            .iter()
+            .all(|(item, _)| *item != ssc_world::WHEAT_SEEDS));
+    }
+
     #[test]
     fn bucket_crafting_and_stack_limits() {
         let mut inv = vec![None; INVENTORY_SIZE];

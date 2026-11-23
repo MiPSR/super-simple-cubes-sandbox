@@ -1654,12 +1654,12 @@ impl Server {
             })
             .collect();
         columns.sort_unstable();
-        let mut samples = Vec::new();
+        let mut picks = Vec::new();
         for (cx, cz) in columns {
             let column = &self.world.columns[&(cx, cz)];
             for (section, subchunk) in column.subchunks.iter().enumerate() {
                 if subchunk.is_some() {
-                    samples.push(crate::block_ticks::sample(
+                    picks.extend_from_slice(&crate::block_ticks::samples(
                         self.tick,
                         self.gen.seed(),
                         cx,
@@ -1671,7 +1671,7 @@ impl Server {
         }
         let daylight = self.time_of_day > 0.25 && self.time_of_day < 0.75;
         let mut dirty_columns = HashSet::new();
-        for ((x, y, z), roll) in samples {
+        for ((x, y, z), roll) in picks {
             let sampled = self.world.block_or_air(x, y, z);
             let changes = if ssc_world::is_oak_sapling(sampled) {
                 let changes =
@@ -1683,6 +1683,33 @@ impl Server {
                         Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5),
                     );
                 }
+                changes
+            } else if ssc_world::is_wheat(sampled) {
+                let soil = (x, y - 1, z);
+                let mut changes = Vec::new();
+                let soil_block = self.world.block_or_air(soil.0, soil.1, soil.2);
+                let wet =
+                    crate::block_ticks::farmland_should_be_wet(&self.world, soil.0, soil.1, soil.2);
+                if ssc_world::is_farmland(soil_block) {
+                    let desired = if wet {
+                        ssc_world::FARMLAND_WET
+                    } else {
+                        ssc_world::FARMLAND
+                    };
+                    if soil_block != desired {
+                        changes.push((soil, desired));
+                    }
+                }
+                let wheat =
+                    crate::block_ticks::wheat_changes(&self.world, x, y, z, roll, daylight, wet);
+                if wheat.contains(&((x, y, z), AIR)) {
+                    self.spawn_item_entity(
+                        ssc_world::WHEAT_SEEDS,
+                        1,
+                        Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5),
+                    );
+                }
+                changes.extend(wheat);
                 changes
             } else if ssc_world::is_oak_leaves(sampled) {
                 let column = (x.div_euclid(16), z.div_euclid(16));
@@ -2805,6 +2832,14 @@ impl Server {
                     ssc_world::OAK_SAPLING_READY
                         | ssc_world::GROWN_OAK_LEAVES
                         | ssc_world::LIT_FURNACE
+                        | ssc_world::FARMLAND_WET
+                        | ssc_world::WHEAT_1
+                        | ssc_world::WHEAT_2
+                        | ssc_world::WHEAT_3
+                        | ssc_world::WHEAT_4
+                        | ssc_world::WHEAT_5
+                        | ssc_world::WHEAT_6
+                        | ssc_world::WHEAT_7
                 )
             })
             .collect();
@@ -2968,6 +3003,27 @@ impl Server {
                 Vec3::new(x as f32 + 0.5, y as f32 + 1.5, z as f32 + 0.5),
             );
         }
+        if ssc_world::is_wheat(self.world.block_or_air(x, y + 1, z)) {
+            let crop = self.world.block_or_air(x, y + 1, z);
+            self.world.set_block(x, y + 1, z, AIR);
+            self.record_block_edit(x, y + 1, z, AIR);
+            let _ = self.broadcast(&ServerPacket::BlockUpdate {
+                x,
+                y: y + 1,
+                z,
+                block: AIR,
+            });
+            self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
+            for (item, count) in
+                crate::survival::block_drops(crop, hash_tick(self.tick, x, z.wrapping_add(1)), None)
+            {
+                self.spawn_item_entity(
+                    item,
+                    count,
+                    Vec3::new(x as f32 + 0.5, y as f32 + 1.5, z as f32 + 0.5),
+                );
+            }
+        }
         if self.cfg.game_mode == GameMode::Survival && ssc_world::block_info(block).hardness > 0.0 {
             if let Some(session) = self.sessions.get_mut(&id) {
                 let sword = session.inventory[session.player.selected_slot as usize % 9]
@@ -3087,6 +3143,7 @@ impl Server {
         self.record_block_edit(x, y, z, block);
         let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block });
         self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
+        self.update_farmland_moisture(x, y, z);
         self.send_sound(SoundId::Place, x, y, z);
         let session = self.sessions.get_mut(&id).unwrap();
         session.inventory = inventory;
@@ -3107,6 +3164,82 @@ impl Server {
                     pickup_delay: 10,
                 },
             );
+        }
+    }
+
+    /// Update wet/dry farmland state around a water edit. Every changed cell
+    /// is a normal persisted block update, so reloads keep hydration.
+    fn update_farmland_moisture(&mut self, x: i32, y: i32, z: i32) {
+        let mut changes = Vec::new();
+        for fx in x - 4..=x + 4 {
+            for fz in z - 4..=z + 4 {
+                for fy in y - 1..=y + 1 {
+                    let block = self.world.block_or_air(fx, fy, fz);
+                    if !ssc_world::is_farmland(block) {
+                        continue;
+                    }
+                    let wet = crate::block_ticks::farmland_should_be_wet(&self.world, fx, fy, fz);
+                    let desired = if wet {
+                        ssc_world::FARMLAND_WET
+                    } else {
+                        ssc_world::FARMLAND
+                    };
+                    if block != desired {
+                        changes.push(((fx, fy, fz), desired));
+                    }
+                }
+            }
+        }
+        let mut dirty = HashSet::new();
+        for ((x, y, z), block) in changes {
+            self.world.set_block(x, y, z, block);
+            self.record_block_edit(x, y, z, block);
+            let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block });
+            dirty.insert((x.div_euclid(16), z.div_euclid(16)));
+        }
+        for column in dirty {
+            self.refresh_lod_for(column);
+        }
+    }
+
+    /// Hoe use: till grass or dirt into farmland when the space above is
+    /// clear. Water within four blocks decides the initial wet state.
+    fn use_hoe(&mut self, id: EntityId) {
+        let Some(session) = self.sessions.get(&id) else {
+            return;
+        };
+        if !session.player.joined || session.survival.dead {
+            return;
+        }
+        let dir = look_dir(session.player.yaw, session.player.pitch);
+        let Some(hit) = raycast(&self.world, self.eye_of(id), dir, REACH) else {
+            return;
+        };
+        let [x, y, z] = hit.block;
+        if !matches!(
+            self.world.block_or_air(x, y, z),
+            ssc_world::GRASS_BLOCK | ssc_world::DIRT
+        ) || y + 1 >= ssc_world::MAX_Y
+            || self.world.block_or_air(x, y + 1, z) != AIR
+        {
+            return;
+        }
+        let wet = crate::block_ticks::farmland_should_be_wet(&self.world, x, y, z);
+        let block = if wet {
+            ssc_world::FARMLAND_WET
+        } else {
+            ssc_world::FARMLAND
+        };
+        self.world.set_block(x, y, z, block);
+        self.record_block_edit(x, y, z, block);
+        let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block });
+        self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
+        self.send_sound(SoundId::Place, x, y, z);
+        let session = self.sessions.get_mut(&id).unwrap();
+        session.survival.digging = None;
+        session.eating = None;
+        if self.cfg.game_mode == GameMode::Survival {
+            damage_held_tool(session, 1);
         }
     }
 
@@ -3140,6 +3273,10 @@ impl Server {
         };
         if matches!(item, ssc_world::BUCKET | ssc_world::WATER_BUCKET) {
             self.use_bucket(id, item);
+            return;
+        }
+        if ssc_world::items::is_hoe(item) {
+            self.use_hoe(id);
             return;
         }
         let item_info = ssc_world::item_info(item);
@@ -3217,6 +3354,13 @@ impl Server {
         {
             return;
         }
+        if ssc_world::is_wheat(block)
+            && (block != ssc_world::WHEAT_0
+                || ny != 1
+                || !ssc_world::is_farmland(self.world.block_or_air(x, y - 1, z)))
+        {
+            return;
+        }
         // Never place inside any player.
         for session in self.sessions.values() {
             if is_solid(block)
@@ -3232,6 +3376,9 @@ impl Server {
             self.record_block_edit(x, y, z, block);
             if ssc_world::is_furnace(block) {
                 self.furnaces.entry((x, y, z)).or_default();
+            }
+            if block == ssc_world::WATER {
+                self.update_farmland_moisture(x, y, z);
             }
             let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block });
             self.send_sound(SoundId::Place, x, y, z);
@@ -4608,6 +4755,178 @@ mod tests {
             rig.server.sessions[&1].inventory[0],
             Some((ssc_world::WATER_BUCKET, 1))
         );
+    }
+
+    #[test]
+    fn hoe_tills_grass_into_farmland_wears_and_requires_clear_space() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        let session = rig.server.sessions.get_mut(&1).unwrap();
+        session.inventory[0] = Some((ssc_world::WOODEN_HOE, 1));
+        session.durability[0] = 5;
+        rig.server.world.set_block(8, 54, 8, ssc_world::GRASS_BLOCK);
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(8, 54, 8), ssc_world::FARMLAND);
+        assert_eq!(
+            rig.server.block_edits[&(0, 0)][&(8, 54, 8)],
+            ssc_world::FARMLAND
+        );
+        assert_eq!(rig.server.sessions[&1].durability[0], 4);
+        assert!(rig.drain(0).iter().any(|packet| matches!(
+            packet,
+            ServerPacket::BlockUpdate {
+                x: 8,
+                y: 54,
+                z: 8,
+                block: ssc_world::FARMLAND
+            }
+        )));
+
+        rig.server.world.set_block(10, 54, 8, ssc_world::DIRT);
+        rig.server.world.set_block(10, 55, 8, ssc_world::STONE);
+        rig.server.sessions.get_mut(&1).unwrap().player.pos.x = 10.5;
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(10, 54, 8), ssc_world::DIRT);
+        assert_eq!(rig.server.sessions[&1].durability[0], 4);
+        rig.server.world.set_block(10, 55, 8, AIR);
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.world.block_or_air(10, 54, 8),
+            ssc_world::FARMLAND
+        );
+        assert_eq!(rig.server.sessions[&1].durability[0], 3);
+    }
+
+    #[test]
+    fn water_updates_farmland_moisture_and_wheat_can_only_plant_on_farmland() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        rig.server.world.set_block(8, 54, 8, ssc_world::FARMLAND);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::WHEAT_SEEDS, 2));
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(8, 55, 8), ssc_world::WHEAT_0);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::WHEAT_SEEDS, 1))
+        );
+        assert_eq!(
+            rig.server.block_edits[&(0, 0)][&(8, 55, 8)],
+            ssc_world::WHEAT_0
+        );
+
+        rig.server.world.set_block(11, 55, 8, ssc_world::WATER);
+        rig.server.update_farmland_moisture(11, 55, 8);
+        assert_eq!(
+            rig.server.world.block_or_air(8, 54, 8),
+            ssc_world::FARMLAND_WET
+        );
+        assert_eq!(
+            rig.server.block_edits[&(0, 0)][&(8, 54, 8)],
+            ssc_world::FARMLAND_WET
+        );
+        rig.server.world.set_block(11, 55, 8, AIR);
+        rig.server.update_farmland_moisture(11, 55, 8);
+        assert_eq!(rig.server.world.block_or_air(8, 54, 8), ssc_world::FARMLAND);
+
+        rig.server.world.set_block(8, 55, 8, AIR);
+        rig.server.world.set_block(8, 54, 8, ssc_world::STONE);
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(8, 55, 8), AIR);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::WHEAT_SEEDS, 1))
+        );
+    }
+
+    #[test]
+    fn wheat_random_ticks_advance_hydrated_crops_and_persist_growth() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.time_of_day = 0.5;
+        let seed = rig.server.gen.seed();
+        let (tick, (x, y, z)) = (1..20_000)
+            .find_map(|tick| {
+                crate::block_ticks::samples(tick, seed, 0, 0, 8)
+                    .into_iter()
+                    .find(|((x, _, z), roll)| *x <= 11 && *z <= 15 && roll % 7 == 0)
+                    .map(|((x, y, z), _)| (tick, (x, y, z)))
+            })
+            .expect("a deterministic growth sample");
+        rig.server.tick = tick;
+        rig.server.world.set_block(x, y - 1, z, ssc_world::FARMLAND);
+        rig.server.world.set_block(x, y, z, ssc_world::WHEAT_2);
+        rig.server.world.set_block(x + 2, y, z, ssc_world::WATER);
+        rig.server.tick_blocks();
+        let grown = rig.server.world.block_or_air(x, y, z);
+        assert!(
+            matches!(grown, ssc_world::WHEAT_3 | ssc_world::WHEAT_4),
+            "age advanced from 2: {grown}"
+        );
+        assert_eq!(
+            rig.server.world.block_or_air(x, y - 1, z),
+            ssc_world::FARMLAND_WET
+        );
+        assert_eq!(rig.server.block_edits[&(0, 0)][&(x, y, z)], grown);
+
+        rig.server.sessions.get_mut(&1).unwrap().player.joined = false;
+        rig.server.tick += 1;
+        rig.server.tick_blocks();
+        assert_eq!(rig.server.world.block_or_air(x, y, z), grown);
+
+        let path =
+            std::env::temp_dir().join(format!("ssc-wheat-growth-save-{}.bin", std::process::id()));
+        rig.server.cfg.world_path = Some(path.clone());
+        rig.server.save_world();
+        let (_, _, edits) = crate::persistence::load(&path).unwrap().unwrap();
+        assert_eq!(edits[&(0, 0)][&(x, y, z)], grown);
+        assert_eq!(edits[&(0, 0)][&(x, y - 1, z)], ssc_world::FARMLAND_WET);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn harvesting_and_breaking_farmland_drop_wheat_and_seeds() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        rig.server
+            .world
+            .set_block(8, 54, 8, ssc_world::FARMLAND_WET);
+        rig.server.world.set_block(8, 55, 8, ssc_world::WHEAT_7);
+        rig.server.break_block(1, 8, 55, 8);
+        assert_eq!(rig.server.world.block_or_air(8, 55, 8), AIR);
+        let inv = &rig.server.sessions[&1].inventory;
+        assert!(inv.iter().any(|slot| *slot == Some((ssc_world::WHEAT, 1))));
+        assert_eq!(
+            rig.server.world.block_or_air(8, 54, 8),
+            ssc_world::FARMLAND_WET,
+            "crop harvest leaves soil"
+        );
+
+        rig.server.world.set_block(8, 55, 8, ssc_world::WHEAT_4);
+        rig.server.break_block(1, 8, 54, 8);
+        assert_eq!(rig.server.world.block_or_air(8, 54, 8), AIR);
+        assert_eq!(
+            rig.server.world.block_or_air(8, 55, 8),
+            AIR,
+            "unsupported crop pops"
+        );
+        assert_eq!(rig.server.block_edits[&(0, 0)][&(8, 55, 8)], AIR);
+        assert!(rig
+            .server
+            .items
+            .values()
+            .any(|item| item.item == ssc_world::WHEAT_SEEDS && item.count == 1));
+    }
+
+    #[test]
+    fn bread_crafts_from_three_wheat_in_the_inventory() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::WHEAT, 3));
+        rig.server.sessions.get_mut(&1).unwrap().survival.hunger = 10;
+        rig.server
+            .handle_packet(1, ClientPacket::Craft { recipe: 20 })
+            .unwrap();
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::BREAD, 1))
+        );
+        rig.server.handle_use(1);
+        assert!(rig.server.sessions[&1].eating.is_some());
     }
 
     #[test]
