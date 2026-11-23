@@ -2114,12 +2114,14 @@ impl Server {
                 }
                 let kind = if want_zombie {
                     crate::mobs::MobKind::Zombie
-                } else if hash_tick(self.tick, ax + 3, az + 11) % 4 == 0 {
-                    crate::mobs::MobKind::Sheep
                 } else {
-                    crate::mobs::MobKind::Pig
+                    match hash_tick(self.tick, ax + 3, az + 11) % 6 {
+                        0 => crate::mobs::MobKind::Sheep,
+                        1 => crate::mobs::MobKind::Cow,
+                        _ => crate::mobs::MobKind::Pig,
+                    }
                 };
-                // Bedrock pigs and sheep spawn in grass groups of 1–3. Each
+                // Bedrock passive mobs spawn in grass groups of 1–3. Each
                 // member must independently have grass, clearance and player
                 // distance; never exceed the server's shared mob cap.
                 let group_size = if want_pig {
@@ -3678,6 +3680,68 @@ impl Server {
         Some(mid)
     }
 
+    fn milk_cow(&mut self, id: EntityId) -> bool {
+        let Some(target) = self.target_mob(id) else {
+            return false;
+        };
+        if self
+            .mobs
+            .get(&target)
+            .is_none_or(|mob| mob.kind != crate::mobs::MobKind::Cow || mob.dead)
+        {
+            return false;
+        }
+        if self.cfg.game_mode == GameMode::Creative {
+            return true;
+        }
+        let slot = self.sessions[&id].player.selected_slot as usize % 9;
+        let Some((item, count)) = self.sessions[&id].inventory[slot] else {
+            return false;
+        };
+        if item != ssc_world::BUCKET {
+            return false;
+        }
+        let mut inventory = self.sessions[&id].inventory.clone();
+        let overflow = if count == 1 {
+            inventory[slot] = Some((ssc_world::MILK_BUCKET, 1));
+            0
+        } else {
+            inventory[slot] = Some((ssc_world::BUCKET, count - 1));
+            crate::survival::add_item(&mut inventory, ssc_world::MILK_BUCKET, 1)
+        };
+        if overflow > 0 {
+            return false;
+        }
+        let session = self.sessions.get_mut(&id).unwrap();
+        session.inventory = inventory;
+        session.durability[slot] = 0;
+        session.inv_dirty = true;
+        session.eating = None;
+        session.survival.digging = None;
+        true
+    }
+
+    fn drink_milk(&mut self, id: EntityId) {
+        if self.cfg.game_mode != GameMode::Survival {
+            return;
+        }
+        let slot = self.sessions[&id].player.selected_slot as usize % 9;
+        let Some((item, count)) = self.sessions[&id].inventory[slot] else {
+            return;
+        };
+        if item != ssc_world::MILK_BUCKET || count != 1 {
+            return;
+        }
+        let session = self.sessions.get_mut(&id).unwrap();
+        session.inventory[slot] = Some((ssc_world::BUCKET, 1));
+        session.durability[slot] = 0;
+        session.survival.hunger_effect_ticks = 0;
+        session.survival.digging = None;
+        session.eating = None;
+        session.inv_dirty = true;
+        session.status_dirty = true;
+    }
+
     fn use_shears(&mut self, id: EntityId) {
         let Some(target) = self.target_mob(id) else {
             return;
@@ -3905,6 +3969,13 @@ impl Server {
         let Some((item, count)) = self.selected_item(id) else {
             return;
         };
+        if item == ssc_world::MILK_BUCKET {
+            self.drink_milk(id);
+            return;
+        }
+        if item == ssc_world::BUCKET && self.milk_cow(id) {
+            return;
+        }
         if matches!(item, ssc_world::BUCKET | ssc_world::WATER_BUCKET) {
             self.use_bucket(id, item);
             return;
@@ -4635,7 +4706,9 @@ mod tests {
             for mob in rig.server.mobs.values() {
                 assert!(matches!(
                     mob.kind,
-                    crate::mobs::MobKind::Pig | crate::mobs::MobKind::Sheep
+                    crate::mobs::MobKind::Pig
+                        | crate::mobs::MobKind::Sheep
+                        | crate::mobs::MobKind::Cow
                 ));
                 let x = mob.pos.x.floor() as i32;
                 let z = mob.pos.z.floor() as i32;
@@ -4921,6 +4994,82 @@ mod tests {
             step_player(world, player, 0.05, false, false, false);
         }
         assert!(player.vel.y >= -1.5 - 0.001, "ladder slide is capped");
+    }
+
+    #[test]
+    fn cows_spawn_on_grass_can_be_milked_and_drop_beef() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        for x in -48..48 {
+            for z in -48..48 {
+                rig.server.world.set_block(x, 54, z, ssc_world::GRASS_BLOCK);
+            }
+        }
+        rig.server.time_of_day = 0.5;
+        let mut cow = None;
+        for tick in 1..=512 {
+            rig.server.mobs.clear();
+            rig.server.tick = tick;
+            rig.server.spawn_mobs();
+            if let Some(mob) = rig
+                .server
+                .mobs
+                .values()
+                .find(|mob| mob.kind == crate::mobs::MobKind::Cow)
+            {
+                assert_eq!(
+                    rig.server.world.block_or_air(
+                        mob.pos.x.floor() as i32,
+                        54,
+                        mob.pos.z.floor() as i32
+                    ),
+                    ssc_world::GRASS_BLOCK
+                );
+                cow = Some(mob.pos);
+                break;
+            }
+        }
+        cow.expect("cows join day grass spawns");
+
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::BUCKET, 1));
+        rig.server.sessions.get_mut(&1).unwrap().player.pitch = -0.4;
+        rig.server.mobs.insert(
+            FIRST_MOB_ID,
+            crate::mobs::Mob::new(crate::mobs::MobKind::Cow, Vec3::new(10.5, 55.02, 8.5)),
+        );
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::MILK_BUCKET, 1))
+        );
+        rig.server
+            .sessions
+            .get_mut(&1)
+            .unwrap()
+            .survival
+            .hunger_effect_ticks = 200;
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::BUCKET, 1))
+        );
+        assert_eq!(rig.server.sessions[&1].survival.hunger_effect_ticks, 0);
+
+        rig.server.items.clear();
+        let cow = rig.server.mobs.get_mut(&FIRST_MOB_ID).unwrap();
+        assert!(cow.hurt(10.0, Vec3::new(8.5, 55.0, 8.5)));
+        rig.server.tick();
+        assert!(!rig.server.mobs.contains_key(&FIRST_MOB_ID));
+        assert!(rig
+            .server
+            .items
+            .values()
+            .any(|item| item.item == ssc_world::RAW_BEEF));
+        assert!(rig
+            .server
+            .items
+            .values()
+            .all(|item| item.item == ssc_world::RAW_BEEF || item.item == ssc_world::LEATHER));
     }
 
     #[test]

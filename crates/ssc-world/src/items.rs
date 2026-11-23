@@ -63,6 +63,10 @@ pub const IRON_CHESTPLATE: ItemId = 136;
 pub const IRON_LEGGINGS: ItemId = 137;
 pub const IRON_BOOTS: ItemId = 138;
 pub const SHEARS: ItemId = 139;
+pub const RAW_BEEF: ItemId = 140;
+pub const STEAK: ItemId = 141;
+pub const LEATHER: ItemId = 142;
+pub const MILK_BUCKET: ItemId = 143;
 
 /// Armor slot order: helmet, chestplate, leggings, boots.
 pub fn armor_slot(item: ItemId) -> Option<usize> {
@@ -189,6 +193,30 @@ pub fn item_info(id: ItemId) -> ItemInfo {
         },
         SHEARS => ItemInfo {
             name: "shears",
+            max_stack: 1,
+            places: None,
+            food: None,
+        },
+        RAW_BEEF => ItemInfo {
+            name: "raw_beef",
+            max_stack: 64,
+            places: None,
+            food: Some(3),
+        },
+        STEAK => ItemInfo {
+            name: "steak",
+            max_stack: 64,
+            places: None,
+            food: Some(8),
+        },
+        LEATHER => ItemInfo {
+            name: "leather",
+            max_stack: 64,
+            places: None,
+            food: None,
+        },
+        MILK_BUCKET => ItemInfo {
+            name: "milk_bucket",
             max_stack: 1,
             places: None,
             food: None,
@@ -414,6 +442,10 @@ pub fn valid_item_id(id: ItemId) -> bool {
             | IRON_LEGGINGS
             | IRON_BOOTS
             | SHEARS
+            | RAW_BEEF
+            | STEAK
+            | LEATHER
+            | MILK_BUCKET
     );
     id == EMPTY_ITEM || block_items || free_items
 }
@@ -428,6 +460,8 @@ pub fn food_saturation(id: ItemId) -> f32 {
         BREAD => 6.0,
         MUTTON => 1.2,
         COOKED_MUTTON => 9.6,
+        RAW_BEEF => 1.8,
+        STEAK => 12.8,
         _ => 0.0,
     }
 }

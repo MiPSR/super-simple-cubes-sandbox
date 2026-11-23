@@ -871,6 +871,7 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
             1 => 10.0,
             2 => 20.0,
             4 => 8.0,
+            5 => 10.0,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -906,7 +907,7 @@ pub fn load_mobs(path: &Path) -> io::Result<Option<Vec<SavedMob>>> {
             || attack_cooldown > 20
             || burn_timer >= 20
             || panic_timer > 60
-            || (panic_timer > 0 && (!matches!(kind, 1 | 4) || wander_dir.is_none()))
+            || (panic_timer > 0 && (!matches!(kind, 1 | 4 | 5) || wander_dir.is_none()))
             || wander_dir.is_some_and(|d| d.iter().any(|v| !v.is_finite()))
         {
             return Err(io::Error::new(
@@ -941,6 +942,7 @@ pub fn save_mobs(path: &Path, mobs: &[SavedMob]) -> io::Result<()> {
             1 => 10.0,
             2 => 20.0,
             4 => 8.0,
+            5 => 10.0,
             _ => return true,
         };
         mob.pos.iter().chain(mob.vel.iter()).any(|v| !v.is_finite())
@@ -955,7 +957,7 @@ pub fn save_mobs(path: &Path, mobs: &[SavedMob]) -> io::Result<()> {
             || mob.attack_cooldown > 20
             || mob.burn_timer >= 20
             || mob.panic_timer > 60
-            || (mob.panic_timer > 0 && (!matches!(mob.kind, 1 | 4) || mob.wander_dir.is_none()))
+            || (mob.panic_timer > 0 && (!matches!(mob.kind, 1 | 4 | 5) || mob.wander_dir.is_none()))
             || mob
                 .wander_dir
                 .is_some_and(|d| d.iter().any(|v| !v.is_finite()))
@@ -1334,6 +1336,29 @@ mod tests {
         assert!(save_player(&path, &id, &data).is_err());
         fs::remove_file(path).unwrap();
     }
+    #[test]
+    fn cow_mob_state_round_trips() {
+        use super::*;
+        let path = std::env::temp_dir().join(format!("ssc-cow-mobs-{}.bin", std::process::id()));
+        let cow = SavedMob {
+            kind: 5,
+            pos: [8.5, 55.0, 8.5],
+            vel: [0.0; 3],
+            yaw: 0.5,
+            health: 10.0,
+            wander_timer: 12,
+            wander_dir: None,
+            attack_cooldown: 0,
+            burn_timer: 0,
+            panic_timer: 0,
+            on_ground: true,
+            sheared: false,
+        };
+        save_mobs(&path, &[cow]).unwrap();
+        assert_eq!(load_mobs(&path).unwrap(), Some(vec![cow]));
+        fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn sheep_mob_state_and_flee_direction_round_trip() {
         use super::*;

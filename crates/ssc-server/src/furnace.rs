@@ -22,6 +22,7 @@ const RECIPES: &[(ItemId, ItemId)] = &[
     (ssc_world::RAW_COPPER, ssc_world::COPPER_INGOT),
     (ssc_world::PORKCHOP, ssc_world::COOKED_PORKCHOP),
     (ssc_world::MUTTON, ssc_world::COOKED_MUTTON),
+    (ssc_world::RAW_BEEF, ssc_world::STEAK),
     (ssc_world::OAK_LOG, ssc_world::CHARCOAL),
     (ssc_world::STRIPPED_OAK_LOG, ssc_world::CHARCOAL),
     (ssc_world::SAND, ssc_world::GLASS),

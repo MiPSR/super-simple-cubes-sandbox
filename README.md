@@ -88,8 +88,10 @@ runnable through Nix.
   with a water bucket to place water beside it. Water is currently static.
 - Q drops one item from the selected survival hotbar stack into the world;
   Ctrl+Q drops the entire stack.
-- Sheep roam the grass by day and drop white wool and raw mutton. Cook
-  mutton in a furnace for a stronger meal, or use wool as a building block.
+- Sheep and cows roam the grass by day. Sheep drop white wool and raw
+  mutton; cows drop raw beef and leather. Cook meat in a furnace for a
+  stronger meal, or use wool as a building block. Right-click a cow with an
+  empty bucket to collect milk; drinking it clears the Hunger effect.
   `Ctrl+6` crafts shears (two iron ingots); right-click an unsheared sheep
   for wool. Sheared sheep regrow wool after grazing grass for a minute.
 - `Ctrl+8` crafts three oak doors from six planks. Place a door on solid

@@ -18,6 +18,7 @@ pub enum MobKind {
     Pig,
     Zombie,
     Sheep,
+    Cow,
 }
 
 impl MobKind {
@@ -27,6 +28,7 @@ impl MobKind {
             MobKind::Pig => 1,
             MobKind::Zombie => 2,
             MobKind::Sheep => 4,
+            MobKind::Cow => 5,
         }
     }
 
@@ -35,6 +37,7 @@ impl MobKind {
             1 => Some(MobKind::Pig),
             2 => Some(MobKind::Zombie),
             4 => Some(MobKind::Sheep),
+            5 => Some(MobKind::Cow),
             _ => None,
         }
     }
@@ -44,22 +47,23 @@ impl MobKind {
             MobKind::Pig => 10.0,
             MobKind::Zombie => 20.0,
             MobKind::Sheep => 8.0,
+            MobKind::Cow => 10.0,
         }
     }
 
     /// Movement speed (blocks/s).
     pub fn speed(self) -> f32 {
         match self {
-            MobKind::Pig | MobKind::Sheep => 1.2,
+            MobKind::Pig | MobKind::Sheep | MobKind::Cow => 1.2,
             MobKind::Zombie => 2.3,
         }
     }
 
-    /// Attack damage (zombies only; pigs and sheep are passive).
+    /// Attack damage (zombies only; other current mobs are passive).
     pub fn attack_damage(self) -> f32 {
         match self {
             MobKind::Zombie => 3.0,
-            MobKind::Pig | MobKind::Sheep => 0.0,
+            MobKind::Pig | MobKind::Sheep | MobKind::Cow => 0.0,
         }
     }
 
@@ -69,11 +73,12 @@ impl MobKind {
             MobKind::Pig => (0.45, 0.9),
             MobKind::Zombie => (0.3, 1.9),
             MobKind::Sheep => (0.45, 1.3),
+            MobKind::Cow => (0.45, 1.4),
         }
     }
 
     pub fn is_passive(self) -> bool {
-        matches!(self, MobKind::Pig | MobKind::Sheep)
+        matches!(self, MobKind::Pig | MobKind::Sheep | MobKind::Cow)
     }
 }
 
@@ -86,6 +91,14 @@ pub fn drops_for(kind: MobKind, roll: u64) -> Vec<(ssc_world::ItemId, u8)> {
             (ssc_world::WOOL, 1),
             (ssc_world::MUTTON, 1 + (roll % 2) as u8),
         ],
+        MobKind::Cow => {
+            let mut drops = vec![(ssc_world::RAW_BEEF, 1 + (roll % 3) as u8)];
+            let leather = ((roll >> 8) % 3) as u8;
+            if leather > 0 {
+                drops.push((ssc_world::LEATHER, leather));
+            }
+            drops
+        }
         MobKind::Zombie => {
             let count = (roll % 3) as u8;
             (count > 0)
@@ -100,7 +113,7 @@ pub fn drops_for(kind: MobKind, roll: u64) -> Vec<(ssc_world::ItemId, u8)> {
 pub fn xp_for(kind: MobKind, roll: u64) -> u32 {
     match kind {
         MobKind::Zombie => 5,
-        MobKind::Pig | MobKind::Sheep => 1 + (roll % 3) as u32,
+        MobKind::Pig | MobKind::Sheep | MobKind::Cow => 1 + (roll % 3) as u32,
     }
 }
 
@@ -528,6 +541,13 @@ mod tests {
             assert_eq!(sheep[0], (ssc_world::WOOL, 1));
             assert_eq!(sheep[1].0, ssc_world::MUTTON);
             assert!((1..=2).contains(&sheep[1].1));
+            let cow = drops_for(MobKind::Cow, roll);
+            assert_eq!(cow[0].0, ssc_world::RAW_BEEF);
+            assert!((1..=3).contains(&cow[0].1));
+            assert!(cow
+                .iter()
+                .skip(1)
+                .all(|(item, count)| *item == ssc_world::LEATHER && *count > 0));
             if let Some((item, count)) = drops_for(MobKind::Zombie, roll).first().copied() {
                 assert_eq!(item, ssc_world::ROTTEN_FLESH);
                 assert!((1..=2).contains(&count));
