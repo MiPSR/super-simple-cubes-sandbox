@@ -250,7 +250,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 19
+  throwing snowballs and Silk Touch are missing. Protocol 20
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit
@@ -318,10 +318,12 @@ Every implemented wiki feature gets a line here. Status legend:
   them while their simulation is inactive.
   36-slot inventories (9 hotbar + 27 storage, stack 64) are server-owned
   and synced. Sticks, coal and raw iron are non-block items.
-- `partial` — Q drops one item from the selected survival hotbar stack as
+- `partial` — Q drops one item and Ctrl+Q drops the entire selected
+  survival hotbar stack as
   a server-owned world item with a 40-tick pickup delay and forward toss;
-  creative/dead/empty requests do nothing. Full-stack drops (Ctrl+Q) and
-  exact throw animation/velocity are pending.
+  creative/dead/unjoined/empty requests do nothing. Stack counts and tool
+  durability are preserved; the emptied slot and wear synchronize normally.
+  Exact throw animation/velocity and inventory-screen drop gestures are pending.
 - `partial` — Gamepad (owner-approved gilrs, engine-side input abstraction):
   left stick moves, right stick looks (rate-normalized), A jumps, RT digs,
   LT places, Start = Escape; dead-zoned, works alongside keyboard/mouse.

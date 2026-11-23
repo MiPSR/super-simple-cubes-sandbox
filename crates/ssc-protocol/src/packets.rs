@@ -116,6 +116,8 @@ pub enum ClientPacket {
     },
     /// Drop one item from the selected survival hotbar stack (Q).
     DropSelected,
+    /// Drop the whole selected survival hotbar stack (Ctrl+Q).
+    DropStack,
     /// Release use; cancels an in-progress food consumption.
     UseStop,
     /// Transfer a stack between own inventory and the currently open furnace.
@@ -169,6 +171,7 @@ impl ClientPacket {
                 w.put_u8(*recipe);
             }
             ClientPacket::DropSelected => w.put_u8(10),
+            ClientPacket::DropStack => w.put_u8(14),
             ClientPacket::UseStop => w.put_u8(11),
             ClientPacket::FurnaceSwap {
                 inventory_slot,
@@ -232,6 +235,7 @@ impl ClientPacket {
                 }
             }
             13 => ClientPacket::CloseContainer,
+            14 => ClientPacket::DropStack,
             _ => {
                 return Err(crate::codec::DecodeError(format!(
                     "bad client packet tag {tag}"
@@ -807,6 +811,8 @@ mod tests {
     #[test]
     fn drop_selected_survives_wire_round_trip() {
         let packet = ClientPacket::DropSelected;
+        assert_eq!(ClientPacket::decode(&packet.encode()).unwrap(), packet);
+        let packet = ClientPacket::DropStack;
         assert_eq!(ClientPacket::decode(&packet.encode()).unwrap(), packet);
     }
 

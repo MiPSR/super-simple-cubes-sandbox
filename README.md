@@ -83,6 +83,7 @@ runnable through Nix.
 - Furnaces also turn sand into glass, cobblestone into stone, stone into
   smooth stone, and cobbled deepslate into deepslate. Glass breaks without
   dropping an item.
-- Q drops one item from the selected survival hotbar stack into the world.
+- Q drops one item from the selected survival hotbar stack into the world;
+  Ctrl+Q drops the entire stack.
 
 See `implemented-features.md` for the full parity tracker.

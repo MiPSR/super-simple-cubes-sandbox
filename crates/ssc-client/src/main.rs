@@ -615,7 +615,11 @@ impl App {
                     state: KeyState::Pressed,
                 } => {
                     if self.joined && self.mode == 0 && !self.picker_open {
-                        self.send(&ClientPacket::DropSelected);
+                        self.send(&if frame.input().key(Key::Ctrl) {
+                            ClientPacket::DropStack
+                        } else {
+                            ClientPacket::DropSelected
+                        });
                     }
                 }
                 // Immediate action on the press event: a quick click never

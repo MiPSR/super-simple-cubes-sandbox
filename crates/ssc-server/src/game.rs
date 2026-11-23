@@ -2562,7 +2562,7 @@ impl Server {
                     session.eating = None;
                 }
             }
-            ClientPacket::DropSelected => {
+            request @ (ClientPacket::DropSelected | ClientPacket::DropStack) => {
                 if self.cfg.game_mode != GameMode::Survival {
                     return Ok(());
                 }
@@ -2575,6 +2575,11 @@ impl Server {
                 let slot = session.player.selected_slot as usize % 9;
                 let Some((item, count)) = session.inventory[slot] else {
                     return Ok(());
+                };
+                let dropped_count = if matches!(request, ClientPacket::DropStack) {
+                    count
+                } else {
+                    1
                 };
                 // Reserve the entity before mutating inventory, so an
                 // exhausted entity-id range cannot silently delete an item.
@@ -2589,11 +2594,11 @@ impl Server {
                     session.player.pos + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0) + direction * 0.5;
                 let durability =
                     crate::survival::effective_durability(item, session.durability[slot]);
-                session.inventory[slot] = if count == 1 {
+                session.inventory[slot] = if count == dropped_count {
                     session.durability[slot] = 0;
                     None
                 } else {
-                    Some((item, count - 1))
+                    Some((item, count - dropped_count))
                 };
                 session.inv_dirty = true;
                 session.survival.digging = None;
@@ -2602,7 +2607,7 @@ impl Server {
                     entity_id,
                     ItemEntity {
                         item,
-                        count: 1,
+                        count: dropped_count,
                         durability,
                         pos,
                         vel: direction * 4.0 + Vec3::new(0.0, 2.0, 0.0),
@@ -4300,12 +4305,70 @@ mod tests {
             rig.server
                 .handle_packet(1, ClientPacket::DropSelected)
                 .unwrap();
+            rig.server
+                .handle_packet(1, ClientPacket::DropStack)
+                .unwrap();
             assert_eq!(
                 rig.server.sessions[&1].inventory[0],
                 Some((ssc_world::OAK_LOG, 2))
             );
             assert!(rig.server.items.is_empty());
         }
+    }
+
+    #[test]
+    fn dropping_full_stacks_preserves_counts_wear_and_prevents_repeated_duplication() {
+        for (item, count, wear) in [
+            (ssc_world::APPLE, 64, 0),
+            (ssc_world::SNOWBALL, 16, 0),
+            (ssc_world::IRON_SWORD, 1, 17),
+        ] {
+            let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+            let session = rig.server.sessions.get_mut(&1).unwrap();
+            session.player.selected_slot = 3;
+            session.inventory[3] = Some((item, count));
+            session.durability[3] = wear;
+            for _ in 0..3 {
+                rig.server
+                    .handle_packet(1, ClientPacket::DropStack)
+                    .unwrap();
+            }
+            assert_eq!(rig.server.sessions[&1].inventory[3], None);
+            assert_eq!(rig.server.sessions[&1].durability[3], 0);
+            assert_eq!(rig.server.items.len(), 1);
+            let entity = rig.server.items.values().next().unwrap();
+            assert_eq!(
+                (entity.item, entity.count, entity.durability),
+                (item, count, wear)
+            );
+            assert_eq!(entity.pickup_delay, 40);
+            rig.server.tick();
+            assert!(rig.drain(0).iter().any(|packet| matches!(
+                packet, ServerPacket::Inventory { slots } if slots[3] == (0, 0)
+            )));
+        }
+    }
+
+    #[test]
+    fn dropping_full_food_stack_cancels_eating_and_unjoined_requests_do_nothing() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::APPLE, 5));
+        rig.server.handle_use(1);
+        assert!(rig.server.sessions[&1].eating.is_some());
+        rig.server
+            .handle_packet(1, ClientPacket::DropStack)
+            .unwrap();
+        assert!(rig.server.sessions[&1].eating.is_none());
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::APPLE, 5));
+        rig.server.sessions.get_mut(&1).unwrap().player.joined = false;
+        rig.server
+            .handle_packet(1, ClientPacket::DropStack)
+            .unwrap();
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::APPLE, 5))
+        );
+        assert_eq!(rig.server.items.len(), 1);
     }
 
     #[test]
