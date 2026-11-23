@@ -243,6 +243,7 @@ pub fn item_info(id: ItemId) -> ItemInfo {
         41 => block_item(super::WOOL, "white_wool"),
         42 => block_item(super::BED, "bed"),
         43 => block_item(super::CHEST, "chest"),
+        44 => block_item(super::LADDER, "ladder"),
         APPLE => ItemInfo {
             name: "apple",
             max_stack: 64,

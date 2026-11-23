@@ -55,6 +55,7 @@ pub const WHEAT_7: BlockId = 40;
 pub const WOOL: BlockId = 41;
 pub const BED: BlockId = 42;
 pub const CHEST: BlockId = 43;
+pub const LADDER: BlockId = 44;
 
 // Atlas tile ids (16×16 tiles per row/column in the 256×256 atlas).
 pub const TILE_MISSING: u16 = 0;
@@ -99,6 +100,7 @@ pub const TILE_BED_TOP: u16 = 38;
 pub const TILE_BED_SIDE: u16 = 39;
 pub const TILE_CHEST: u16 = 40;
 pub const TILE_CHEST_FRONT: u16 = 41;
+pub const TILE_LADDER: u16 = 42;
 
 /// Face indices into [`BlockInfo::tiles`].
 pub const FACE_TOP: usize = 0;
@@ -378,6 +380,14 @@ pub const BLOCKS: &[BlockInfo] = &[
             TILE_CHEST,
         ],
         hardness: 2.5,
+        needs_tool: false,
+    },
+    BlockInfo {
+        name: "ladder",
+        solid: false,
+        opaque: false,
+        tiles: [TILE_LADDER; 6],
+        hardness: 0.4,
         needs_tool: false,
     },
 ];

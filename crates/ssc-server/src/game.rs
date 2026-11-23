@@ -2393,6 +2393,13 @@ fn step_player(
             eye.y.floor() as i32,
             eye.z.floor() as i32,
         ) == WATER;
+    let in_ladder = [0.1, 0.9, 1.6].iter().any(|dy| {
+        world.block_or_air(
+            feet.x.floor() as i32,
+            (feet.y + dy).floor() as i32,
+            feet.z.floor() as i32,
+        ) == ssc_world::LADDER
+    });
 
     let fwd = yaw_forward(yaw);
     let right = yaw_right(yaw);
@@ -2456,6 +2463,17 @@ fn step_player(
             player.vel.y = (player.vel.y + 2.4).min(3.5);
         }
         player.vel.y = player.vel.y.clamp(-3.5, 4.0);
+    } else if in_ladder {
+        // Climb up with jump, hold still while sneaking, otherwise slide.
+        player.vel.x += (target.0 - player.vel.x) * 0.5;
+        player.vel.z += (target.1 - player.vel.z) * 0.5;
+        if k & keys::JUMP != 0 {
+            player.vel.y = (player.vel.y + GRAVITY * 0.6 * dt).min(2.35);
+        } else if sneak {
+            player.vel.y = 0.0;
+        } else {
+            player.vel.y = (player.vel.y - GRAVITY * 0.2 * dt).max(-1.5);
+        }
     } else {
         // Ground: instant target velocity. Air: limited steering.
         if player.on_ground {
@@ -3930,6 +3948,14 @@ impl Server {
         {
             return;
         }
+        if block == ssc_world::LADDER {
+            let supported = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                .iter()
+                .any(|(dx, dz)| is_solid(self.world.block_or_air(x + dx, y, z + dz)));
+            if !supported {
+                return;
+            }
+        }
         // Never place inside any player.
         for session in self.sessions.values() {
             if is_solid(block)
@@ -4634,6 +4660,56 @@ mod tests {
             })
             .count();
         assert_eq!(removals, 1, "sheep is removed exactly once");
+    }
+
+    #[test]
+    fn ladders_need_wall_support_and_climb_with_jump() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::LADDER, 3));
+        rig.server.world.set_block(9, 56, 8, ssc_world::STONE);
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(8, 56, 8), ssc_world::LADDER);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::LADDER, 2))
+        );
+
+        // Looking down at the floor has no horizontal support.
+        rig.server.sessions.get_mut(&1).unwrap().player.pitch = -1.5;
+        rig.server.world.set_block(9, 55, 8, AIR);
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.world.block_or_air(8, 55, 8),
+            AIR,
+            "no wall support"
+        );
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::LADDER, 2))
+        );
+
+        for y in 55..59 {
+            rig.server.world.set_block(8, y, 8, ssc_world::LADDER);
+            rig.server.world.set_block(9, y, 8, ssc_world::STONE);
+        }
+        let world = &rig.server.world;
+        let player = &mut rig.server.sessions.get_mut(&1).unwrap().player;
+        player.pos.y = 55.02;
+        player.on_ground = false;
+        player.keys = keys::JUMP;
+        for _ in 0..20 {
+            step_player(world, player, 0.05, false, false, false);
+        }
+        assert!(
+            player.pos.y > 56.0,
+            "jump climbs the ladder: {}",
+            player.pos.y
+        );
+        player.keys = 0;
+        for _ in 0..40 {
+            step_player(world, player, 0.05, false, false, false);
+        }
+        assert!(player.vel.y >= -1.5 - 0.001, "ladder slide is capped");
     }
 
     #[test]

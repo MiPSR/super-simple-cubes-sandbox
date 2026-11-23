@@ -201,6 +201,13 @@ Every implemented wiki feature gets a line here. Status legend:
 
 ## Player
 
+- `partial` — Ladders craft three at a time from seven sticks (`Ctrl+7`)
+  and must be placed beside a solid block. They are non-solid but
+  selectable; holding jump climbs at up to 2.35 blocks/s, sneaking holds
+  position, and otherwise players slide down at no more than 1.5 blocks/s.
+  Ladder placement/breaking broadcasts, persists and meshes with a
+  transparent placeholder texture. Orientation-specific sides, water
+  climbing, trapdoors and ladder break physics are pending.
 - `partial` — Chests craft from eight planks (`Ctrl+5` in the inventory) and
   provide 27 shared server-owned slots. Drag stacks between the chest grid
   and the inventory; matching stacks merge up to their limit, and tool wear
@@ -322,7 +329,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 28
+  throwing snowballs and Silk Touch are missing. Protocol 29
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit

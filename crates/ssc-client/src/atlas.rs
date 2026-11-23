@@ -211,6 +211,24 @@ fn paint_pixel(tile: u16, x: i32, y: i32) -> Rgba {
                 255,
             )
         }
+        ssc_world::TILE_CHEST | ssc_world::TILE_CHEST_FRONT => {
+            if x == 0 || x == 15 || y == 0 || y == 15 {
+                mix([92, 62, 34], 0.85, 255)
+            } else if tile == ssc_world::TILE_CHEST_FRONT && y == 12 {
+                mix([60, 60, 60], 0.9, 255)
+            } else if tile == ssc_world::TILE_CHEST_FRONT && (x - 8).abs() <= 1 && y >= 5 {
+                mix([220, 190, 90], 0.95, 255)
+            } else {
+                mix([150, 104, 54], 0.86 + noise2(x, y, 46) * 0.14, 255)
+            }
+        }
+        ssc_world::TILE_LADDER => {
+            if x == 3 || x == 12 || (y % 4 == 1 && (3..=12).contains(&x)) {
+                mix([146, 108, 62], 0.9 + noise2(x, y, 45) * 0.1, 255)
+            } else {
+                [0, 0, 0, 0]
+            }
+        }
         ssc_world::TILE_GLASS => {
             if x == 0 || x == 15 || y == 0 || y == 15 {
                 [180, 220, 230, 180]

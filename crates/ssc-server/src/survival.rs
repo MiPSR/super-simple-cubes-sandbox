@@ -647,6 +647,7 @@ pub fn craft(inv: &mut [Slot], recipe: u8) -> bool {
         ),
         26 => (&[(ssc_world::OAK_PLANKS, 8)][..], (ssc_world::CHEST, 1)),
         27 => (&[(ssc_world::IRON_INGOT, 2)][..], (ssc_world::SHEARS, 1)),
+        28 => (&[(ssc_world::STICK, 7)][..], (ssc_world::LADDER, 3)),
         _ => return false,
     };
     let mut next = inv.to_vec();
@@ -796,6 +797,14 @@ pub fn drop_count(block: BlockId, rng: f32) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ladders_craft_three_from_seven_sticks() {
+        let mut inv = vec![None; INVENTORY_SIZE];
+        inv[0] = Some((ssc_world::STICK, 7));
+        assert!(craft(&mut inv, 28));
+        assert_eq!(inv[0], Some((ssc_world::LADDER, 3)));
+    }
+
     #[test]
     fn shears_craft_from_two_ingots_with_bedrock_durability() {
         let mut inv = vec![None; INVENTORY_SIZE];
