@@ -141,6 +141,16 @@ Every implemented wiki feature gets a line here. Status legend:
   contents once; viewers close on death, range loss or block removal.
   Placeholder lit textures do not emit light. XP, hoppers, orientation,
   full recipe/fuel coverage and crash-atomic multi-file saves are pending.
+- `partial` — Iron buckets craft from three ingots (inventory Shift+0).
+  Empty buckets stack to 16, filled water buckets to one. Right-click
+  collects a visible water cell or places water into loaded air within
+  reach; solids, including glass, block collection. Survival exchanges
+  filled/empty buckets without losing stacked empties, drops filled
+  overflow when inventory is full, and reserves an entity ID before
+  changing anything. Creative placement keeps its filled bucket.
+  Water edits broadcast, refresh LODs and persist. All existing water is
+  treated as a source; flow, waterlogging, vegetation washing, lava,
+  dedicated sounds and bucket icons are pending.
 - `partial` — Building-material smelting: sand → glass, cobblestone →
   stone → smooth stone (two separate cooks), and cobbled deepslate →
   deepslate. Glass is solid but non-opaque, uses the translucent mesh pass,
@@ -250,7 +260,7 @@ Every implemented wiki feature gets a line here. Status legend:
   2/3; wear uses the same persisted tool metadata as pickaxes and survives
   swaps between tools of the same type. Snow blocks require a shovel and
   drop four snowballs (stack limit 16), not a snow block. Making paths,
-  throwing snowballs and Silk Touch are missing. Protocol 20
+  throwing snowballs and Silk Touch are missing. Protocol 21
   requires matching clients for the expanded block/item registries.
 - `partial` — Player/PvP and mob melee damage now uses a ten-tick (0.5 s)
   immunity window. Equal/weaker follow-ups are ignored; a stronger hit

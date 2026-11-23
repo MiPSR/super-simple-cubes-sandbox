@@ -48,6 +48,8 @@ pub const IRON_SHOVEL: ItemId = 121;
 pub const WOODEN_SWORD: ItemId = 122;
 pub const STONE_SWORD: ItemId = 123;
 pub const IRON_SWORD: ItemId = 124;
+pub const BUCKET: ItemId = 125;
+pub const WATER_BUCKET: ItemId = 126;
 
 pub fn is_sword(item: ItemId) -> bool {
     matches!(item, WOODEN_SWORD | STONE_SWORD | IRON_SWORD)
@@ -77,6 +79,16 @@ fn block_item(id: BlockId, name: &'static str) -> ItemInfo {
 /// by their explicit ids.
 pub fn item_info(id: ItemId) -> ItemInfo {
     match id {
+        BUCKET | WATER_BUCKET => ItemInfo {
+            name: if id == BUCKET {
+                "bucket"
+            } else {
+                "water_bucket"
+            },
+            max_stack: if id == BUCKET { 16 } else { 1 },
+            places: None,
+            food: None,
+        },
         WOODEN_SWORD | STONE_SWORD | IRON_SWORD => ItemInfo {
             name: match id {
                 WOODEN_SWORD => "wooden_sword",
@@ -285,6 +297,8 @@ pub fn valid_item_id(id: ItemId) -> bool {
             | WOODEN_SWORD
             | STONE_SWORD
             | IRON_SWORD
+            | BUCKET
+            | WATER_BUCKET
     );
     id == EMPTY_ITEM || block_items || free_items
 }

@@ -3018,6 +3018,98 @@ impl Server {
 
     /// Right-click use: eat the selected food, or place the selected
     /// block item (survival consumes, creative does not).
+    fn use_bucket(&mut self, id: EntityId, item: ssc_world::ItemId) {
+        let Some(session) = self.sessions.get(&id) else {
+            return;
+        };
+        if !session.player.joined || session.survival.dead {
+            return;
+        }
+        let dir = look_dir(session.player.yaw, session.player.pitch);
+        let empty = item == ssc_world::BUCKET;
+        let hit = if empty {
+            crate::raycast::raycast_water(&self.world, self.eye_of(id), dir, REACH)
+        } else {
+            raycast(&self.world, self.eye_of(id), dir, REACH)
+        };
+        let Some(hit) = hit else { return };
+        let [hx, hy, hz] = hit.block;
+        let [nx, ny, nz] = hit.normal;
+        let (x, y, z) = if empty {
+            (hx, hy, hz)
+        } else {
+            (hx + nx, hy + ny, hz + nz)
+        };
+        if !(ssc_world::MIN_Y..ssc_world::MAX_Y).contains(&y) {
+            return;
+        }
+        let expected = if empty { ssc_world::WATER } else { AIR };
+        if self.world.get_block(x, y, z) != Some(expected) {
+            return;
+        }
+        let slot = session.player.selected_slot as usize % 9;
+        let Some((held, count)) = session.inventory[slot] else {
+            return;
+        };
+        if held != item {
+            return;
+        }
+        let mut inventory = session.inventory.clone();
+        let result = if empty {
+            ssc_world::WATER_BUCKET
+        } else {
+            ssc_world::BUCKET
+        };
+        let overflow = if self.cfg.game_mode == GameMode::Creative {
+            if empty {
+                inventory[slot] = Some((result, 1));
+            }
+            0
+        } else if count == 1 {
+            inventory[slot] = Some((result, 1));
+            0
+        } else {
+            inventory[slot] = Some((held, count - 1));
+            crate::survival::add_item(&mut inventory, result, 1)
+        };
+        let drop_pos = session.player.pos + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0);
+        // Reserve overflow capacity before removing water or consuming a bucket.
+        let overflow_id = if overflow > 0 {
+            let Some(id) = self.allocate_item_id() else {
+                return;
+            };
+            Some(id)
+        } else {
+            None
+        };
+        let block = if empty { AIR } else { ssc_world::WATER };
+        self.world.set_block(x, y, z, block);
+        self.record_block_edit(x, y, z, block);
+        let _ = self.broadcast(&ServerPacket::BlockUpdate { x, y, z, block });
+        self.refresh_lod_for((x.div_euclid(16), z.div_euclid(16)));
+        self.send_sound(SoundId::Place, x, y, z);
+        let session = self.sessions.get_mut(&id).unwrap();
+        session.inventory = inventory;
+        session.durability[slot] = 0;
+        session.inv_dirty = true;
+        session.eating = None;
+        session.survival.digging = None;
+        if let Some(entity_id) = overflow_id {
+            self.items.insert(
+                entity_id,
+                ItemEntity {
+                    item: result,
+                    count: overflow,
+                    durability: 0,
+                    pos: drop_pos,
+                    vel: dir * 2.0,
+                    age: 0,
+                    pickup_delay: 10,
+                },
+            );
+        }
+    }
+
     fn handle_use(&mut self, id: EntityId) {
         if let Some(session) = self.sessions.get(&id) {
             if session.player.keys & keys::SNEAK == 0 {
@@ -3046,6 +3138,10 @@ impl Server {
         let Some((item, count)) = self.selected_item(id) else {
             return;
         };
+        if matches!(item, ssc_world::BUCKET | ssc_world::WATER_BUCKET) {
+            self.use_bucket(id, item);
+            return;
+        }
         let item_info = ssc_world::item_info(item);
 
         // Eating (survival only — hunger doesn't exist in creative).
@@ -4369,6 +4465,171 @@ mod tests {
             Some((ssc_world::APPLE, 5))
         );
         assert_eq!(rig.server.items.len(), 1);
+    }
+
+    #[test]
+    fn buckets_collect_and_place_static_water_with_inventory_and_world_sync() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::BUCKET, 1));
+        rig.server.world.set_block(8, 55, 8, ssc_world::WATER);
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(8, 55, 8), AIR);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::WATER_BUCKET, 1))
+        );
+        assert_eq!(rig.server.block_edits[&(0, 0)][&(8, 55, 8)], AIR);
+        assert!(rig.drain(0).iter().any(|packet| matches!(
+            packet,
+            ServerPacket::BlockUpdate {
+                x: 8,
+                y: 55,
+                z: 8,
+                block: AIR
+            }
+        )));
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(8, 55, 8), ssc_world::WATER);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::BUCKET, 1))
+        );
+        assert_eq!(
+            rig.server.block_edits[&(0, 0)][&(8, 55, 8)],
+            ssc_world::WATER
+        );
+        let path =
+            std::env::temp_dir().join(format!("ssc-bucket-water-world-{}.bin", std::process::id()));
+        rig.server.cfg.world_path = Some(path.clone());
+        rig.server.save_world();
+        let (_, _, edits) = crate::persistence::load(&path).unwrap().unwrap();
+        assert_eq!(edits[&(0, 0)][&(8, 55, 8)], ssc_world::WATER);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stacked_buckets_keep_empty_buckets_and_drop_filled_overflow_once() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        rig.server
+            .sessions
+            .get_mut(&1)
+            .unwrap()
+            .inventory
+            .fill(Some((ssc_world::COBBLESTONE, 64)));
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::BUCKET, 2));
+        rig.server.world.set_block(8, 55, 8, ssc_world::WATER);
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::BUCKET, 1))
+        );
+        assert_eq!(rig.server.items.len(), 1);
+        let item = rig.server.items.values().next().unwrap();
+        assert_eq!((item.item, item.count), (ssc_world::WATER_BUCKET, 1));
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.items.len(),
+            1,
+            "repeat requests cannot refill from air"
+        );
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::BUCKET, 1))
+        );
+    }
+
+    #[test]
+    fn exhausted_item_ids_do_not_delete_dropped_stacks_or_bucket_overflow() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        for id in FIRST_ITEM_ID..=EntityId::MAX {
+            rig.server.items.insert(
+                id,
+                ItemEntity {
+                    item: ssc_world::APPLE,
+                    count: 1,
+                    durability: 0,
+                    pos: Vec3::ZERO,
+                    vel: Vec3::ZERO,
+                    age: 0,
+                    pickup_delay: 10,
+                },
+            );
+        }
+        rig.server
+            .sessions
+            .get_mut(&1)
+            .unwrap()
+            .inventory
+            .fill(Some((ssc_world::COBBLESTONE, 64)));
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::BUCKET, 2));
+        rig.server
+            .handle_packet(1, ClientPacket::DropStack)
+            .unwrap();
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::BUCKET, 2))
+        );
+        rig.server.world.set_block(8, 55, 8, ssc_world::WATER);
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(8, 55, 8), ssc_world::WATER);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::BUCKET, 2))
+        );
+        assert!(rig.server.block_edits.is_empty());
+    }
+
+    #[test]
+    fn buckets_cannot_collect_through_walls_or_place_over_existing_water() {
+        let mut rig = Rig::new_mode(1, 0.0, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::BUCKET, 1));
+        rig.server.world.set_block(9, 56, 8, ssc_world::GLASS);
+        rig.server.world.set_block(10, 56, 8, ssc_world::WATER);
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(10, 56, 8), ssc_world::WATER);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::BUCKET, 1))
+        );
+        rig.server.world.set_block(9, 56, 8, AIR);
+        rig.server.world.set_block(10, 56, 8, AIR);
+        rig.server.world.set_block(14, 56, 8, ssc_world::WATER);
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.world.block_or_air(14, 56, 8),
+            ssc_world::WATER,
+            "out of reach"
+        );
+        rig.server.sessions.get_mut(&1).unwrap().player.pitch = -1.5;
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::WATER_BUCKET, 1));
+        rig.server.world.set_block(8, 55, 8, ssc_world::WATER);
+        rig.server.handle_use(1);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::WATER_BUCKET, 1))
+        );
+    }
+
+    #[test]
+    fn creative_water_placement_keeps_bucket_and_dead_players_cannot_use_buckets() {
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Creative);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::WATER_BUCKET, 1));
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(8, 55, 8), ssc_world::WATER);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::WATER_BUCKET, 1))
+        );
+        let mut rig = Rig::new_mode(1, -1.5, GameMode::Survival);
+        rig.server.sessions.get_mut(&1).unwrap().inventory[0] = Some((ssc_world::BUCKET, 1));
+        rig.server.sessions.get_mut(&1).unwrap().survival.dead = true;
+        rig.server.world.set_block(8, 55, 8, ssc_world::WATER);
+        rig.server.handle_use(1);
+        assert_eq!(rig.server.world.block_or_air(8, 55, 8), ssc_world::WATER);
+        assert_eq!(
+            rig.server.sessions[&1].inventory[0],
+            Some((ssc_world::BUCKET, 1))
+        );
     }
 
     #[test]

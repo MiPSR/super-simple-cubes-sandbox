@@ -565,6 +565,7 @@ pub fn craft(inv: &mut [Slot], recipe: u8) -> bool {
             &[(ssc_world::IRON_INGOT, 2), (ssc_world::STICK, 1)][..],
             (ssc_world::IRON_SWORD, 1),
         ),
+        16 => (&[(ssc_world::IRON_INGOT, 3)][..], (ssc_world::BUCKET, 1)),
         _ => return false,
     };
     let mut next = inv.to_vec();
@@ -695,6 +696,16 @@ pub fn drop_count(block: BlockId, rng: f32) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bucket_crafting_and_stack_limits() {
+        let mut inv = vec![None; INVENTORY_SIZE];
+        inv[0] = Some((ssc_world::IRON_INGOT, 3));
+        assert!(craft(&mut inv, 16));
+        assert_eq!(inv[0], Some((ssc_world::BUCKET, 1)));
+        assert_eq!(ssc_world::item_info(ssc_world::BUCKET).max_stack, 16);
+        assert_eq!(ssc_world::item_info(ssc_world::WATER_BUCKET).max_stack, 1);
+        assert!(!craft(&mut inv, 16));
+    }
     #[test]
     fn swords_mine_faster_but_cannot_harvest_pickaxe_blocks_and_can_repair() {
         for item in [

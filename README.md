@@ -83,6 +83,9 @@ runnable through Nix.
 - Furnaces also turn sand into glass, cobblestone into stone, stone into
   smooth stone, and cobbled deepslate into deepslate. Glass breaks without
   dropping an item.
+- `Shift+0` in the inventory crafts a bucket from three iron ingots.
+  Right-click water with an empty bucket to collect it; right-click a block
+  with a water bucket to place water beside it. Water is currently static.
 - Q drops one item from the selected survival hotbar stack into the world;
   Ctrl+Q drops the entire stack.
 

@@ -906,6 +906,24 @@ pub fn save_furnaces(path: &Path, furnaces: &FurnaceSaves) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn empty_and_filled_buckets_round_trip_with_distinct_stack_limits() {
+        use super::*;
+        let path = std::env::temp_dir().join(format!(
+            "ssc-bucket-inventory-save-{}.dat",
+            std::process::id()
+        ));
+        let id = [0xd2; 16];
+        let mut data = PlayerSave::default();
+        data.position = Some([8.5, 70.0, 8.5]);
+        data.inventory[0] = Some((ssc_world::BUCKET, 16));
+        data.inventory[1] = Some((ssc_world::WATER_BUCKET, 1));
+        save_player(&path, &id, &data).unwrap();
+        assert_eq!(load_player(&path, &id).unwrap(), Some(data.clone()));
+        data.inventory[1] = Some((ssc_world::WATER_BUCKET, 2));
+        assert!(save_player(&path, &id, &data).is_err());
+        fs::remove_file(path).unwrap();
+    }
+    #[test]
     fn swords_round_trip_with_remaining_durability() {
         use super::*;
         let path = std::env::temp_dir().join(format!("ssc-sword-save-{}.dat", std::process::id()));

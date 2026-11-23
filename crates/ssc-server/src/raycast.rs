@@ -28,6 +28,24 @@ pub fn raycast_solids(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> 
     raycast_matching(world, origin, dir, max_dist, is_solid)
 }
 
+/// Empty buckets select source water, but cannot reach through solid blocks.
+pub fn raycast_water(world: &World, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<RayHit> {
+    let block = [
+        origin.x.floor() as i32,
+        origin.y.floor() as i32,
+        origin.z.floor() as i32,
+    ];
+    if world.block_or_air(block[0], block[1], block[2]) == ssc_world::WATER {
+        return Some(RayHit {
+            block,
+            normal: [0, 0, 0],
+        });
+    }
+    raycast_matching(world, origin, dir, max_dist, |block| {
+        is_solid(block) || block == ssc_world::WATER
+    })
+}
+
 fn raycast_matching(
     world: &World,
     origin: Vec3,
@@ -117,6 +135,24 @@ fn raycast_matching(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bucket_rays_include_water_containing_the_eye_and_stop_at_solids() {
+        let mut world = World::default();
+        let origin = Vec3::new(0.5, 64.5, 0.5);
+        world.set_block(0, 64, 0, ssc_world::WATER);
+        assert_eq!(
+            raycast_water(&world, origin, Vec3::X, 4.5).unwrap().block,
+            [0, 64, 0]
+        );
+        world.set_block(0, 64, 0, ssc_world::AIR);
+        world.set_block(1, 64, 0, ssc_world::GLASS);
+        world.set_block(2, 64, 0, ssc_world::WATER);
+        assert_eq!(
+            raycast_water(&world, origin, Vec3::X, 4.5).unwrap().block,
+            [1, 64, 0]
+        );
+    }
 
     #[test]
     fn saplings_are_selectable_but_do_not_block_combat_rays() {

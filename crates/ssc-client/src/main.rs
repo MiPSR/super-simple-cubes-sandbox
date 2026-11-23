@@ -540,7 +540,9 @@ impl App {
                 } => {
                     if n == 0 {
                         if self.picker_open && self.mode == 0 {
-                            self.send(&ClientPacket::Craft { recipe: 9 });
+                            self.send(&ClientPacket::Craft {
+                                recipe: if frame.input().key(Key::Shift) { 16 } else { 9 },
+                            });
                         }
                         continue;
                     }
@@ -986,7 +988,7 @@ impl App {
                 [1.0, 0.85, 0.3, 1.0],
             );
             frame.hud_text(
-                "craft 0:furnace 1:planks 2:sticks 3:wood pick 4:stone pick (Shift+3/5/7:iron)"
+                "craft 0:furnace 1:planks 2:sticks 3:wood pick 4:stone pick (Shift+0:bucket, +3/5/7:iron)"
                     .to_string(),
                 x0 + 15.0,
                 y0 + 24.0,
